@@ -100,6 +100,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         ui.preview.pdfView.onInverse = { [weak self] in self?.inverseSync(page: $0, x: $1, y: $2) }
         ui.preview.onExport = { [weak self] in self?.exportPDF() }
         ui.terminal.onError = { [weak self] in self?.error($0) }
+        ui.terminal.onOpenFile = { [weak self] in self?.openFile($0) }
         ui.terminal.currentContext = { [weak self] in
             guard let self, let file = self.active?.url else { return nil }
             let text = self.ui.editor.textView.string as NSString
@@ -491,24 +492,57 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     }
     func reviewCommit(_ state: GitState, service: GitService) {
         let alert = NSAlert(); alert.messageText = "提交并 Push 到远端"
-        alert.informativeText = "选择本次提交文件。未跟踪文件默认不勾选；已有提交也可以直接推送。Git 认证使用本机凭据。"
+        alert.informativeText = "选择本次提交文件。未跟踪文件默认不勾选；已有提交也可以直接推送。GPT Luna 会自动总结提交说明，改动勾选后可点「AI 生成」重写。Git 认证使用本机凭据。"
         alert.addButton(withTitle: "提交并 Push"); alert.addButton(withTitle: "仅 Push 已有提交"); alert.addButton(withTitle: "取消")
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 280))
-        let message = NSTextField(frame: NSRect(x: 0, y: 244, width: 500, height: 26)); message.placeholderString = "提交说明，例如：完善方法章节"; container.addSubview(message)
+        let message = NSTextField(frame: NSRect(x: 0, y: 244, width: 400, height: 26)); message.placeholderString = "提交说明，例如：完善方法章节"; container.addSubview(message)
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 230)); scroll.hasVerticalScroller = true
         let rows = NSStackView(); rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 7
-        var checks: [(NSButton, [String])] = []
+        var checks: [(NSButton, GitChange)] = []
         for change in state.changes where !change.path.contains(".bettertex/") && change.path != ".DS_Store" {
             let checkbox = NSButton(checkboxWithTitle: "[\(change.status)] \(change.path)", target: nil, action: nil)
             checkbox.font = .monospacedSystemFont(ofSize: 11, weight: .regular); checkbox.state = change.isUntracked ? .off : .on
-            rows.addArrangedSubview(checkbox); checks.append((checkbox, change.commitPaths))
+            rows.addArrangedSubview(checkbox); checks.append((checkbox, change))
         }
+        // Drafts the message from the ticked files with GPT Luna; the user can still edit it.
+        // A first draft starts as the sheet opens so it is usually there by the time they look.
+        let writer = ProcessRunner(); let tools = self.tools; let terminal = ui.terminal
+        let placeholder = message.placeholderString
+        var generate: ActionButton!
+        let draft: (Bool) -> Void = { [weak alert] automatic in
+            guard let tools, generate.isEnabled else { return }
+            let selected = checks.filter { $0.0.state == .on }.map { $0.1 }
+            if automatic { guard tools["codex"] != nil, !selected.isEmpty else { return }; message.placeholderString = "GPT Luna 正在总结提交说明…" }
+            generate.isEnabled = false; generate.title = "生成中…"
+            DispatchQueue.global(qos: .userInitiated).async {
+                let model = CommitMessageWriter.lunaModel(tools: tools)
+                let result = Result { try CommitMessageWriter.generate(changes: try service.changeSummary(selected), recentSubjects: service.recentSubjects(), model: model, tools: tools, runner: writer) }
+                DispatchQueue.main.async {
+                    generate.isEnabled = true; generate.title = "AI 生成"; message.placeholderString = placeholder
+                    guard alert?.window.isVisible == true else { return }
+                    switch result {
+                    case .success(let text):
+                        // Never replace what the user typed while the automatic draft was on its way.
+                        guard !automatic || message.stringValue.isEmpty else { return }
+                        message.stringValue = text; message.toolTip = "由 \(model) 生成，可继续修改"
+                    case .failure(let error):
+                        let reason = error.localizedDescription
+                        if !automatic { message.placeholderString = "生成失败：" + (reason.components(separatedBy: .newlines).first ?? reason) }
+                        terminal.append("\n提交说明生成\n" + reason + "\n")
+                    }
+                }
+            }
+        }
+        generate = ActionButton("AI 生成", style: .push) { draft(false) }
+        generate.frame = NSRect(x: 406, y: 241, width: 98, height: 32); generate.toolTip = "用 GPT Luna 根据勾选的更改总结提交说明"; container.addSubview(generate)
         rows.frame = NSRect(x: 0, y: 0, width: 480, height: max(220, checks.count * 25)); scroll.documentView = rows; container.addSubview(scroll); alert.accessoryView = container
+        draft(true)
         alert.beginSheetModal(for: window) { [weak self] result in
+            writer.cancel()
             guard let self else { return }
             if result == .alertSecondButtonReturn { self.runGit("Push") { try service.push() } }
             else if result == .alertFirstButtonReturn {
-                let paths = checks.filter { $0.0.state == .on }.flatMap { $0.1 }
+                let paths = checks.filter { $0.0.state == .on }.flatMap { $0.1.commitPaths }
                 guard !message.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !paths.isEmpty else { self.error("提交说明和已选文件不能为空，请重新点击 Push。"); return }
                 let text = message.stringValue
                 self.runGit("Commit + Push") { try service.commitAndPush(message: text, paths: paths) }

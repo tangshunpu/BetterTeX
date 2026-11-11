@@ -40,8 +40,13 @@ final class ComposerTextView: NSTextView {
 
 final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextViewDelegate {
     let header = PanelHeader("agent", title: "Agent")
-    private let tabNames = ["Codex", "Claude", "Shell", "Output"]
-    private let switcher = SegmentedTabs(["Codex", "Claude", "Shell", "输出"])
+    // "Agent" is the native Codex conversation; the others are terminal sessions and the build log.
+    private let tabNames = ["Agent", "Codex", "Claude", "Shell", "Output"]
+    private let switcher = SegmentedTabs(["对话", "Codex", "Claude", "Shell", "输出"])
+    let chat = AgentChatView()
+    var onOpenFile: ((URL) -> Void)?
+    private var sandboxButton: ActionButton!
+    private var sandbox = CodexSandbox(rawValue: UserDefaults.standard.string(forKey: "agent.codex.sandbox") ?? "") ?? .workspaceWrite
     let content = Surface()
     let logView = NSTextView()
     let logScroll = NSScrollView()
@@ -125,7 +130,16 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         for button in [modelButton!, effortButton!] { button.cell?.lineBreakMode = .byTruncatingTail; button.setContentCompressionResistancePriority(.init(200), for: .horizontal) }
         let send = ActionButton("", symbol: "arrow.up", style: .send) { [weak self] in self?.sendPrompt() }; send.toolTip = "发送  ↩"
         let toolSpacer = NSView(); toolSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let toolRow = NSStackView(views: [attach, modelButton, effortButton, toolSpacer, send]); toolRow.spacing = 2; toolRow.alignment = .centerY
+        sandboxButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showSandboxMenu() }; sandboxButton.toolTip = "Codex 可以做什么"
+        sandboxButton.setContentCompressionResistancePriority(.init(600), for: .horizontal); sandboxButton.setTitle(sandbox.title)
+        chat.onOpenFile = { [weak self] in self?.onOpenFile?($0) }
+        chat.onLog = { [weak self] in self?.append("\nCodex\n" + $0 + "\n") }
+        chat.onChange = { [weak self] in
+            guard let self else { return }
+            if self.active == "Agent" { self.showChatOrEmpty() }
+            self.hint.stringValue = self.chat.running ? "Codex 正在工作 · 可在对话里点停止" : "↩ 发送给 Codex · ⇧↩ 换行 · 使用本机 codex 登录"
+        }
+        let toolRow = NSStackView(views: [attach, modelButton, effortButton, sandboxButton, toolSpacer, send]); toolRow.spacing = 2; toolRow.alignment = .centerY
         let cardStack = NSStackView(views: [contextRow, composerScroll, toolRow]); cardStack.orientation = .vertical; cardStack.spacing = 8; cardStack.alignment = .leading
         for row in [contextRow, composerScroll, toolRow] { row.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true }
         let field = Chip(fill: Theme.card, radius: 14, border: Theme.adaptive(0x3C3C43, 0xFFFFFF, lightAlpha: 0.18, darkAlpha: 0.12))
@@ -262,7 +276,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         NSLayoutConstraint.activate([rail.topAnchor.constraint(equalTo: topAnchor), rail.bottomAnchor.constraint(equalTo: bottomAnchor), rail.leadingAnchor.constraint(equalTo: leadingAnchor), rail.trailingAnchor.constraint(equalTo: trailingAnchor)])
         let expand = ActionButton("", symbol: "chevron.left.2") { [weak self] in self?.onFold?(false) }; expand.toolTip = "展开 Agent 面板  ⌘J"
         railStack.addArrangedSubview(expand); railStack.setCustomSpacing(10, after: expand)
-        for (name, symbol, title) in [("Codex", "chevron.left.forwardslash.chevron.right", "Codex"), ("Claude", "sparkle", "Claude"), ("Shell", "terminal", "Shell"), ("Output", "text.alignleft", "编译与 Git 输出")] {
+        for (name, symbol, title) in [("Agent", "bubble.left.and.text.bubble.right", "Codex 对话"), ("Codex", "chevron.left.forwardslash.chevron.right", "Codex 终端"), ("Claude", "sparkle", "Claude"), ("Shell", "terminal", "Shell"), ("Output", "text.alignleft", "编译与 Git 输出")] {
             let button = ActionButton("", symbol: symbol) { [weak self] in self?.onFold?(false); self?.select(name) }
             if let logo = AgentLogo.image(for: name, side: 20) { button.image = logo }
             button.toolTip = "展开并打开 \(title)"; button.setAccessibilityLabel(title); railButtons[name] = button; railStack.addArrangedSubview(button)
@@ -295,6 +309,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         let agentRunning = AgentProvider(rawValue: active) != nil && terminals[active] != nil
         let hidden = active == "Shell" || active == "Output"
         composerCard.isHidden = hidden || !rail.isHidden; updateRail()
+        sandboxButton.isHidden = active != "Agent"
         composerScroll.isHidden = agentRunning; composerTools.isHidden = agentRunning; compactAttach.isHidden = !agentRunning
         placeholder.isHidden = agentRunning || !composer.string.isEmpty
     }
@@ -305,9 +320,27 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         composerHeight.constant = min(max(22, layout.usedRect(for: container).height + 4), 112)
     }
     func configure(project: URL, tools: Toolchain) { self.project = project; self.tools = tools }
+    /// The conversation tab shows the start page until the first message.
+    private func showChatOrEmpty() {
+        if chat.isEmpty { showEmpty() }
+        else if chat.superview !== content { content.subviews.forEach { $0.removeFromSuperview() }; content.pin(chat) }
+    }
+    private func showSandboxMenu() {
+        let menu = NSMenu()
+        for mode in CodexSandbox.allCases {
+            let item = ClosureMenuItem(mode.title, checked: mode == sandbox) { [weak self] in
+                guard let self else { return }
+                self.sandbox = mode; UserDefaults.standard.set(mode.rawValue, forKey: "agent.codex.sandbox"); self.sandboxButton.setTitle(mode.title)
+            }
+            item.toolTip = mode.detail
+            if #available(macOS 14.4, *) { item.subtitle = mode.detail }
+            menu.addItem(item)
+        }
+        popUp(menu, from: sandboxButton)
+    }
     func showEmpty() {
         content.subviews.forEach { $0.removeFromSuperview() }; empty.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(empty)
-        switcher.selected = -1
+        switcher.selected = active == "Agent" ? 0 : -1
         NSLayoutConstraint.activate([empty.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), empty.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), empty.centerYAnchor.constraint(equalTo: content.centerYAnchor)])
         needsLayout = true
     }
@@ -315,6 +348,18 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     @objc private func sendPrompt() {
         let text = composer.string.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{1b}", with: "")
         guard !text.isEmpty else { return }
+        if active == "Agent" {
+            guard !chat.running else { hint.stringValue = "Codex 还在处理上一条 · 等它完成或先点停止"; return }
+            guard let project, let tools else { hint.stringValue = "请先打开一个项目"; return }
+            guard let codex = tools["codex"] else { onError?("未检测到 codex。请先安装并登录 Codex CLI，然后在「工作区」菜单重新检测工具。"); return }
+            var prompt = text
+            if includeContext, let file = contextFile {
+                if contextLines != nil, let excerpt = currentContext?() { prompt = "当前文件与选中的内容：\n" + excerpt.replacingOccurrences(of: "\u{1b}", with: "") + "\n\n" + text }
+                else { prompt = "当前文件：\(file)\n\n" + text }
+            }
+            chat.send(prompt: prompt, display: text, executable: codex, directory: project, environment: tools.environment, configuration: configurations[.codex] ?? AgentConfiguration(), sandbox: sandbox)
+            setComposer(""); return
+        }
         let name = AgentProvider(rawValue: active)?.rawValue ?? selectedProvider.rawValue
         var message = text
         if includeContext, let file = contextFile {
@@ -339,7 +384,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         if let provider = AgentProvider(rawValue: name) { selectedProvider = provider; updateModelButton() }
         switcher.selected = tabNames.firstIndex(of: name) ?? -1
         content.subviews.forEach { $0.removeFromSuperview() }
-        if name == "Agent" { showEmpty(); hint.stringValue = "↩ 发送 · ⇧↩ 换行 · 使用本机登录"; return }
+        if name == "Agent" { selectedProvider = .codex; updateModelButton(); showChatOrEmpty(); hint.stringValue = chat.running ? "Codex 正在工作 · 可在对话里点停止" : "↩ 发送给 Codex · ⇧↩ 换行 · 使用本机 codex 登录"; return }
         if name == "Output" { content.pin(logScroll); hint.stringValue = "编译与 Git 输出 · 双击错误定位"; return }
         guard let project, let tools else { showEmpty(); onError?("正在检测本机工具，请稍候。"); return }
         if let existing = terminals[name] { content.pin(existing, inset: 10); window?.makeFirstResponder(existing); hint.stringValue = "\(name) · \(project.lastPathComponent)"; return }
@@ -492,6 +537,20 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         newSession(provider: session.provider, resume: session)
     }
     private func newSession(provider: AgentProvider? = nil, resume: AgentSession? = nil) {
+        // In the conversation tab, "new" and Codex history act on the native conversation.
+        if active == "Agent", resume == nil || resume?.provider == .codex {
+            let apply = { [weak self] in
+                guard let self else { return }
+                if let resume { self.chat.resume(thread: resume.id, title: resume.title) } else { self.chat.reset() }
+                self.select("Agent")
+            }
+            if chat.running, let window {
+                let alert = NSAlert(); alert.messageText = "停止当前任务并\(resume == nil ? "新建对话" : "切换会话")？"; alert.informativeText = "Codex 正在处理上一条消息，继续的话会先把它停掉。"
+                alert.addButton(withTitle: "继续"); alert.addButton(withTitle: "取消")
+                alert.beginSheetModal(for: window) { if $0 == .alertFirstButtonReturn { apply() } }
+            } else { apply() }
+            return
+        }
         let name = provider?.rawValue ?? (active == "Shell" ? "Shell" : selectedProvider.rawValue)
         let launch = { [weak self] in
             guard let self else { return }
@@ -514,12 +573,12 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     }
     func stopActive() {
         guard let terminal = terminals.removeValue(forKey: active) else { return }
-        terminal.processDelegate = nil; terminal.terminate(); showEmpty(); active = "Agent"; updateComposerMode()
+        terminal.processDelegate = nil; terminal.terminate(); select("Agent")
         hint.stringValue = "会话已结束 · 点击标签重新启动"
     }
     func stopAll() {
         for terminal in terminals.values { terminal.processDelegate = nil; terminal.terminate() }
-        terminals.removeAll(); active = "Agent"; showEmpty(); logView.string = ""; updateComposerMode()
+        terminals.removeAll(); chat.reset(); logView.string = ""; select("Agent")
     }
     func append(_ text: String) {
         let storage = logView.textStorage!

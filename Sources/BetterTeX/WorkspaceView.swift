@@ -272,7 +272,7 @@ final class WorkspaceView: Surface {
         mainSplit.addSplitViewItem(explorerItem)
         let bodyItem = PaneItem(viewController: bodySplit); bodyItem.minimumThickness = 900; mainSplit.addSplitViewItem(bodyItem)
         docItem = PaneItem(viewController: documentSplit)
-        terminalItem = item(terminal, min: 340); terminalItem.canCollapse = true
+        terminalItem = item(terminal, min: 380); terminalItem.canCollapse = true
         editorItem = item(editor, min: 250); pdfItem = item(preview, min: 340); pdfItem.canCollapse = true
         applyDocking()
 
@@ -362,7 +362,7 @@ final class WorkspaceView: Surface {
     }
     private func applyAgentFold() {
         bodySplit.freezeSizes = agentFolded
-        terminalItem.minimumThickness = agentFolded ? TerminalPanel.railThickness : (agentDock == .bottom ? 240 : 340)
+        terminalItem.minimumThickness = agentFolded ? TerminalPanel.railThickness : (agentDock == .bottom ? 240 : 380)
         terminalItem.maximumThickness = agentFolded ? TerminalPanel.railThickness : (agentDock == .bottom ? 520 : 1000)
         terminal.setFolded(agentFolded, horizontal: agentDock == .bottom)
     }
@@ -468,7 +468,7 @@ final class WorkspaceView: Surface {
         resetPaneSizes()
     }
     private func resetPaneSizes() {
-        bodySplit.resetPreferredSizes(first: 344, last: agentDock == .bottom ? 300 : 344)
+        bodySplit.resetPreferredSizes(first: 344, last: agentDock == .bottom ? 300 : 400)
         documentSplit.resetPreferredSizes(ratio: 0.5)
     }
     func movePanel(_ panel: String, to position: DockPosition) {

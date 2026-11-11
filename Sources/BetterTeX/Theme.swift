@@ -268,17 +268,25 @@ final class SegmentedTabs: NSView {
         thumb.shadow = { let s = NSShadow(); s.shadowColor = NSColor.black.withAlphaComponent(0.16); s.shadowBlurRadius = 4; s.shadowOffset = NSSize(width: 0, height: -2); return s }()
         addSubview(thumb)
         for title in titles {
-            let label = Theme.label(title, size: 12.5, weight: .medium); label.alignment = .center
+            let label = Theme.label(title, size: 12, weight: .medium); label.alignment = .center; label.lineBreakMode = .byClipping
             labels.append(label); addSubview(label)
         }
         size(nil, 30); setAccessibilityRole(.tabGroup)
     }
     required init?(coder: NSCoder) { fatalError() }
     override var isFlipped: Bool { true }
-    private func frame(for index: Int) -> NSRect {
-        let width = (bounds.width - 4) / CGFloat(max(1, titles.count))
-        return NSRect(x: 2 + CGFloat(index) * width, y: 2, width: width, height: bounds.height - 4)
+    /// Segments share the width in proportion to their titles, so short titles leave room for long ones.
+    private var segmentFrames: [NSRect] {
+        let natural = labels.map { $0.intrinsicContentSize.width + 10 }
+        let total = max(1, natural.reduce(0, +)), available = bounds.width - 4
+        var x: CGFloat = 2
+        return natural.map { width in
+            let scaled = width / total * available
+            defer { x += scaled }
+            return NSRect(x: x, y: 2, width: scaled, height: bounds.height - 4)
+        }
     }
+    private func frame(for index: Int) -> NSRect { let frames = segmentFrames; return frames.indices.contains(index) ? frames[index] : .zero }
     override func layout() {
         super.layout()
         for (index, label) in labels.enumerated() {
@@ -291,7 +299,7 @@ final class SegmentedTabs: NSView {
         thumb.isHidden = selected < 0
         for (index, label) in labels.enumerated() {
             let on = index == selected
-            label.font = .systemFont(ofSize: 12.5, weight: on ? .semibold : .medium)
+            label.font = .systemFont(ofSize: 12, weight: on ? .semibold : .medium)
             label.textColor = on ? Theme.adaptive(0x1C1C1E, 0xFFFFFF) : Theme.text
         }
         guard selected >= 0 else { return }
@@ -306,7 +314,8 @@ final class SegmentedTabs: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        let index = min(titles.count - 1, max(0, Int((point.x - 2) / ((bounds.width - 4) / CGFloat(titles.count)))))
+        let frames = segmentFrames
+        let index = frames.firstIndex { point.x < $0.maxX } ?? (titles.count - 1)
         selected = index; onSelect?(index)
     }
 }

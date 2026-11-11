@@ -201,6 +201,43 @@ final class BuildProgressTests: XCTestCase {
     }
 }
 
+final class CommitMessageTests: XCTestCase {
+    func testPicksNewestLunaModelAndFallsBack() {
+        let models = [AgentModel(id: "gpt-6.1-sol", name: "", efforts: []), AgentModel(id: "gpt-6-luna", name: "", efforts: []), AgentModel(id: "gpt-5.6-luna", name: "", efforts: [])]
+        XCTAssertEqual(CommitMessageWriter.lunaModel(from: models), "gpt-6-luna")
+        XCTAssertEqual(CommitMessageWriter.lunaModel(from: []), CommitMessageWriter.fallbackModel)
+    }
+    func testCleansModelReplyToOneSubjectLine() {
+        XCTAssertEqual(CommitMessageWriter.clean("```\n\"Fix the tab switcher\"\n```\nBecause…"), "Fix the tab switcher")
+        XCTAssertEqual(CommitMessageWriter.clean("git commit -m \"完善方法章节\"\n"), "完善方法章节")
+        XCTAssertEqual(CommitMessageWriter.clean(" \n"), "")
+    }
+    func testReadsAgentMessageFromEventStream() {
+        XCTAssertEqual(CommitMessageWriter.agentMessage(jsonLine: #"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Fix tabs"}}"#), "Fix tabs")
+        XCTAssertNil(CommitMessageWriter.agentMessage(jsonLine: #"{"type":"item.completed","item":{"type":"reasoning","text":"hm"}}"#))
+        XCTAssertNil(CommitMessageWriter.agentMessage(jsonLine: "2026 ERROR not json"))
+    }
+    func testChangeSummaryCoversTrackedDiffAndNewFiles() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("bettertex-summary-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = ProcessRunner()
+        func git(_ args: [String]) throws { let result = try runner.run("/usr/bin/git", args, directory: directory); XCTAssertTrue(result.succeeded, result.output) }
+        try git(["init", "-b", "main"]); try git(["config", "user.email", "test@example.invalid"]); try git(["config", "user.name", "BetterTeX Tests"])
+        try "old line\n".write(to: directory.appendingPathComponent("main.tex"), atomically: true, encoding: .utf8)
+        try git(["add", "."]); try git(["commit", "-m", "Initial"])
+        try "new line\n".write(to: directory.appendingPathComponent("main.tex"), atomically: true, encoding: .utf8)
+        try "fresh notes\n".write(to: directory.appendingPathComponent("notes.tex"), atomically: true, encoding: .utf8)
+        let service = GitService(directory: directory, tools: Toolchain(environment: ProcessInfo.processInfo.environment, paths: ["git": "/usr/bin/git"]))
+        let summary = try service.changeSummary(try service.state().changes)
+        XCTAssertTrue(summary.contains("-old line") && summary.contains("+new line"), summary)
+        XCTAssertTrue(summary.contains("New file notes.tex") && summary.contains("fresh notes"), summary)
+        XCTAssertEqual(service.recentSubjects().trimmingCharacters(in: .newlines), "Initial")
+        XCTAssertThrowsError(try service.changeSummary([]))
+        XCTAssertTrue(try service.changeSummary(try service.state().changes, limit: 20).hasSuffix("(truncated)"))
+    }
+}
+
 final class GitLineChangeTests: XCTestCase {
     func testParsesHunkHeaders() {
         let diff = "diff --git a/m.tex b/m.tex\n--- a/m.tex\n+++ b/m.tex\n@@ -2 +2 @@ ctx\n-b\n+B\n@@ -4,0 +5,2 @@\n+x\n+y\n@@ -9,3 +11,0 @@\n-a\n@@ -1,2 +0,0 @@\n@@ -20 +30,3 @@\n"
@@ -245,5 +282,49 @@ final class WarningTests: XCTestCase {
         XCTAssertEqual(warnings.map(\.key), ["tang2025osd", "fig:a-very-long-label-name-that-wraps-in-the-log", "other"])
         XCTAssertTrue(warnings[0].message.contains("引用文献")); XCTAssertTrue(warnings[1].message.contains("交叉引用"))
         XCTAssertTrue(TeXWarning.parse("Output written on main.pdf").isEmpty)
+    }
+}
+
+final class CodexAgentTests: XCTestCase {
+    func testParsesExecEvents() {
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"thread.started","thread_id":"01a1ca5e-ca65-76c2-a7ab-ab8234bf6e2d"}"#), .threadStarted("01a1ca5e-ca65-76c2-a7ab-ab8234bf6e2d"))
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"turn.started"}"#), .turnStarted)
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"I’ll read note.txt.\n"}}"#),
+                       .item(CodexItem(id: "item_2", kind: .message, text: "I’ll read note.txt.\n")))
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"/bin/zsh -lc 'cat note.txt'","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#),
+                       .item(CodexItem(id: "item_3", kind: .command, text: "cat note.txt", status: .running)))
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"/bin/zsh -lc 'cat note.txt'","aggregated_output":"hello\n","exit_code":0,"status":"completed"}}"#),
+                       .item(CodexItem(id: "item_3", kind: .command, text: "cat note.txt", detail: "hello\n", status: .done, exitCode: 0)))
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.completed","item":{"id":"i","type":"command_execution","command":"bash -lc \"ls x\"","aggregated_output":"no","exit_code":2,"status":"completed"}}"#),
+                       .item(CodexItem(id: "i", kind: .command, text: "ls x", detail: "no", status: .failed, exitCode: 2)))
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.completed","item":{"id":"f","type":"file_change","changes":[{"path":"main.tex","kind":"update"},{"path":"a.tex","kind":"add"}],"status":"completed"}}"#),
+                       .item(CodexItem(id: "f", kind: .fileChange, text: "2 个文件", detail: "修改  main.tex\n新增  a.tex")))
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.updated","item":{"id":"t","type":"todo_list","items":[{"text":"read","completed":true},{"text":"edit","completed":false}]}}"#),
+                       .item(CodexItem(id: "t", kind: .todo, text: "计划", detail: "☑ read\n☐ edit", status: .running)))
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"config warning"}}"#), .item(CodexItem(id: "item_0", kind: .notice, text: "config warning")))
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"turn.completed","usage":{"input_tokens":42049,"cached_input_tokens":28032,"output_tokens":57}}"#), .turnCompleted(inputTokens: 42049, outputTokens: 57))
+        XCTAssertEqual(CodexEvent.parse(line: #"{"type":"turn.failed","error":{"message":"quota"}}"#), .turnFailed("quota"))
+        XCTAssertNil(CodexEvent.parse(line: "Reading additional input from stdin...")); XCTAssertNil(CodexEvent.parse(line: #"{"type":"something.new"}"#)); XCTAssertNil(CodexEvent.parse(line: "{broken"))
+    }
+    func testRequestArguments() throws {
+        let fresh = try CodexRequest(prompt: "--help; rm -rf /", configuration: AgentConfiguration(model: "gpt-5.5", effort: "high"), sandbox: .readOnly).arguments()
+        XCTAssertEqual(fresh, ["exec", "--json", "--skip-git-repo-check", "-c", "sandbox_mode=\"read-only\"", "--model", "gpt-5.5", "-c", "model_reasoning_effort=\"high\"", "--", "--help; rm -rf /"])
+        let resumed = try CodexRequest(prompt: "continue", thread: "01a1ca5e-ca65-76c2-a7ab-ab8234bf6e2d").arguments()
+        XCTAssertEqual(resumed, ["exec", "resume", "--json", "--skip-git-repo-check", "-c", "sandbox_mode=\"workspace-write\"", "--", "01a1ca5e-ca65-76c2-a7ab-ab8234bf6e2d", "continue"])
+        XCTAssertThrowsError(try CodexRequest(prompt: "  ").arguments()); XCTAssertThrowsError(try CodexRequest(prompt: "x", thread: "--last").arguments())
+        XCTAssertThrowsError(try CodexRequest(prompt: "x", configuration: AgentConfiguration(model: "bad model;")).arguments())
+    }
+    func testTurnStreamsEventsFromAProcess() throws {
+        // A stand-in executable that prints two events split across writes, plus noise on stderr.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("BetterTeX codex \(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = directory.appendingPathComponent("fake-codex")
+        try "#!/bin/sh\nprintf '{\"type\":\"thread.started\",'\nsleep 0.1\nprintf '\"thread_id\":\"abcdefgh-1\"}\\n'\necho 'noise line' >&2\nprintf '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}'\nexit 3\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        var events: [CodexEvent] = []
+        let result = try CodexTurn().run(CodexRequest(prompt: "hi"), executable: script.path, directory: directory, environment: ProcessInfo.processInfo.environment) { events.append($0) }
+        XCTAssertEqual(events, [.threadStarted("abcdefgh-1"), .turnCompleted(inputTokens: 3, outputTokens: 4)])
+        XCTAssertEqual(result.status, 3); XCTAssertEqual(result.stderr, "noise line")
     }
 }
