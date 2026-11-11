@@ -12,7 +12,9 @@ final class HeaderBar: Surface {
 final class LogoMark: NSView {
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        Theme.accent.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 6.5, yRadius: 6.5).fill()
+        // The mark is drawn on a 24-point grid and scaled to whatever size it is shown at.
+        let scale = NSAffineTransform(); scale.scale(by: bounds.width / 24); scale.concat()
+        Theme.accent.setFill(); NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: 24, height: 24), xRadius: 6.5, yRadius: 6.5).fill()
         NSColor.white.setStroke(); NSColor.white.setFill()
         let stroke = NSBezierPath(); stroke.lineWidth = 2.4; stroke.lineCapStyle = .round
         stroke.move(to: NSPoint(x: 6, y: 7.5)); stroke.line(to: NSPoint(x: 15, y: 7.5))
