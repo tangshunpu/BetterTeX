@@ -14,6 +14,21 @@ final class AdaptiveTerminal: LocalProcessTerminalView {
 }
 
 /// The multi-line prompt field: Return sends, Shift-Return inserts a line break.
+/// The real product icons, read at run time from the Codex and Claude apps installed on this
+/// Mac (nothing is bundled). Without the app, callers fall back to a generic symbol.
+enum AgentLogo {
+    private static let bundles = ["Codex": ["com.openai.codex", "com.openai.chat"], "Claude": ["com.anthropic.claudefordesktop"]]
+    private static var cache: [String: NSImage?] = [:]
+    static func image(for tab: String, side: CGFloat) -> NSImage? {
+        if cache[tab] == nil {
+            let app = (bundles[tab] ?? []).lazy.compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }.first
+            cache[tab] = .some(app.map { NSWorkspace.shared.icon(forFile: $0.path) })
+        }
+        guard let icon = cache[tab] ?? nil, let copy = icon.copy() as? NSImage else { return nil }
+        copy.size = NSSize(width: side, height: side); return copy
+    }
+}
+
 final class ComposerTextView: NSTextView {
     var onSubmit: (() -> Void)?
     override func keyDown(with event: NSEvent) {
@@ -61,6 +76,13 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private var history: [AgentSession] = []
     private var historyButton: ActionButton!
     let empty = NSStackView()
+    /// Folded, the panel is a slim rail of tab buttons; sessions keep running behind it.
+    var onFold: ((Bool) -> Void)?
+    private let rail = Surface()
+    private let railStack = NSStackView()
+    private var railButtons: [String: ActionButton] = [:]
+    private var railConstraints: [NSLayoutConstraint] = []
+    static let railThickness: CGFloat = 40
     private var hero: NSView!
     private var suggestions: NSView!
     override init(frame: NSRect) {
@@ -72,8 +94,12 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         switcher.setContentHuggingPriority(.init(1), for: .horizontal)
         header.setLeading(switcher)
         let new = ActionButton("", symbol: "square.and.pencil", style: .accentIcon) { [weak self] in self?.newSession() }; new.toolTip = "新建会话"
+        let fold = ActionButton("", symbol: "chevron.right.2") { [weak self] in self?.onFold?(true) }; fold.toolTip = "折叠 Agent 面板  ⌘J"
         historyButton = ActionButton("", symbol: "clock.arrow.circlepath") { [weak self] in self?.showHistory() }; historyButton.toolTip = "会话历史"
-        header.addControl(historyButton); header.addControl(new)
+        // One tight group keeps room for the tab titles in a narrow panel.
+        let controls = NSStackView(views: [historyButton, new, fold]); controls.spacing = 0; controls.alignment = .centerY
+        controls.setContentCompressionResistancePriority(.required, for: .horizontal)
+        header.addControl(controls)
         header.menuActions = [("结束当前会话", "stop.circle", { [weak self] in self?.stopActive() })]
 
         // Composer: context chip, growing text field, then pickers and send in one card.
@@ -121,6 +147,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             content.topAnchor.constraint(equalTo: header.bottomAnchor), content.leadingAnchor.constraint(equalTo: leadingAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor), content.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -8),
             footer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), footer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12), footer.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10)
         ])
+        buildRail()
         logView.isEditable = false; logView.isSelectable = true; logView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         logView.textContainerInset = NSSize(width: 12, height: 10); logView.autoresizingMask = [.width]
         logView.isVerticallyResizable = true; logView.textContainer?.widthTracksTextView = true
@@ -146,10 +173,15 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         card.pin(stack); return card
     }
     private func providerRow(_ name: String, detail: String, tile: NSColor, symbol: String, primary: Bool, tab: String) -> NSView {
-        let icon = Chip(fill: tile, radius: 7); icon.size(30, 30)
-        let glyph = NSImageView(image: Theme.symbol(symbol, size: 13, weight: .bold)!); glyph.contentTintColor = NSColor(hex: 0x1C1C1E)
-        glyph.translatesAutoresizingMaskIntoConstraints = false; icon.addSubview(glyph)
-        NSLayoutConstraint.activate([glyph.centerXAnchor.constraint(equalTo: icon.centerXAnchor), glyph.centerYAnchor.constraint(equalTo: icon.centerYAnchor)])
+        let icon: NSView
+        if let logo = AgentLogo.image(for: tab, side: 34) { let view = NSImageView(image: logo); view.size(34, 34); icon = view }
+        else {
+            let chip = Chip(fill: tile, radius: 7); chip.size(30, 30)
+            let glyph = NSImageView(image: Theme.symbol(symbol, size: 13, weight: .bold)!); glyph.contentTintColor = NSColor(hex: 0x1C1C1E)
+            glyph.translatesAutoresizingMaskIntoConstraints = false; chip.addSubview(glyph)
+            NSLayoutConstraint.activate([glyph.centerXAnchor.constraint(equalTo: chip.centerXAnchor), glyph.centerYAnchor.constraint(equalTo: chip.centerYAnchor)])
+            icon = chip
+        }
         let text = NSStackView(views: [Theme.label(name, size: 14, weight: .semibold), Theme.label(detail, size: 12, color: Theme.muted)]); text.orientation = .vertical; text.spacing = 1; text.alignment = .leading
         text.setHuggingPriority(.init(1), for: .horizontal)
         let launch = ActionButton("启动", style: primary ? .pill : .tinted) { [weak self] in self?.select(tab) }
@@ -225,12 +257,44 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     @objc private func toggleContext() { includeContext.toggle(); updateContextChip() }
     @objc private func focusComposer() { window?.makeFirstResponder(composer) }
     private func setComposer(_ text: String) { composer.string = text; textDidChange(Notification(name: NSText.didChangeNotification)) }
+    private func buildRail() {
+        rail.fill = Theme.base; rail.isHidden = true; rail.translatesAutoresizingMaskIntoConstraints = false; addSubview(rail)
+        NSLayoutConstraint.activate([rail.topAnchor.constraint(equalTo: topAnchor), rail.bottomAnchor.constraint(equalTo: bottomAnchor), rail.leadingAnchor.constraint(equalTo: leadingAnchor), rail.trailingAnchor.constraint(equalTo: trailingAnchor)])
+        let expand = ActionButton("", symbol: "chevron.left.2") { [weak self] in self?.onFold?(false) }; expand.toolTip = "展开 Agent 面板  ⌘J"
+        railStack.addArrangedSubview(expand); railStack.setCustomSpacing(10, after: expand)
+        for (name, symbol, title) in [("Codex", "chevron.left.forwardslash.chevron.right", "Codex"), ("Claude", "sparkle", "Claude"), ("Shell", "terminal", "Shell"), ("Output", "text.alignleft", "编译与 Git 输出")] {
+            let button = ActionButton("", symbol: symbol) { [weak self] in self?.onFold?(false); self?.select(name) }
+            if let logo = AgentLogo.image(for: name, side: 20) { button.image = logo }
+            button.toolTip = "展开并打开 \(title)"; button.setAccessibilityLabel(title); railButtons[name] = button; railStack.addArrangedSubview(button)
+        }
+        railStack.spacing = 4; railStack.translatesAutoresizingMaskIntoConstraints = false; rail.addSubview(railStack)
+    }
+    /// Shows the rail instead of the panel. `horizontal` lays the buttons in a row (bottom dock).
+    func setFolded(_ folded: Bool, horizontal: Bool) {
+        rail.isHidden = !folded
+        for view in subviews where view !== rail { view.isHidden = folded }
+        if !folded { updateComposerMode(); if let terminal = terminals[active] { window?.makeFirstResponder(terminal) }; return }
+        NSLayoutConstraint.deactivate(railConstraints)
+        railStack.orientation = horizontal ? .horizontal : .vertical
+        railConstraints = horizontal ? [railStack.leadingAnchor.constraint(equalTo: rail.leadingAnchor, constant: 8), railStack.centerYAnchor.constraint(equalTo: rail.centerYAnchor)]
+                                     : [railStack.topAnchor.constraint(equalTo: rail.topAnchor, constant: 8), railStack.centerXAnchor.constraint(equalTo: rail.centerXAnchor)]
+        NSLayoutConstraint.activate(railConstraints); updateRail()
+    }
+    /// Tabs with a live session are tinted so a folded panel still shows what is running.
+    private func updateRail() {
+        for (name, button) in railButtons {
+            let running = terminals[name] != nil
+            button.contentTintColor = running ? Theme.accent : Theme.muted
+            // Logos keep their own colours, so idle ones are dimmed instead of tinted.
+            if AgentLogo.image(for: name, side: 20) != nil { button.alphaValue = running ? 1 : 0.5 }
+        }
+    }
     /// The full composer starts sessions. Once an agent CLI is showing, its own prompt takes over
     /// and only the context row remains; the shell and the build output need neither.
     private func updateComposerMode() {
         let agentRunning = AgentProvider(rawValue: active) != nil && terminals[active] != nil
         let hidden = active == "Shell" || active == "Output"
-        composerCard.isHidden = hidden
+        composerCard.isHidden = hidden || !rail.isHidden; updateRail()
         composerScroll.isHidden = agentRunning; composerTools.isHidden = agentRunning; compactAttach.isHidden = !agentRunning
         placeholder.isHidden = agentRunning || !composer.string.isEmpty
     }

@@ -71,12 +71,15 @@ final class PaneSplitController: NSViewController, NSSplitViewDelegate {
     private var lastSize: CGFloat = 220
     private var fraction: CGFloat = 0.52
     private var adjusting = false
+    /// While a pane is folded to a rail its width is not remembered, so unfolding restores the old size.
+    var freezeSizes = false
 
     override func loadView() {
         view = splitView; splitView.delegate = self; splitView.dividerStyle = .thin
         splitView.onDividerPosition = { [weak self] position in
             guard let self else { return }
             let available = (self.splitView.isVertical ? self.splitView.bounds.width : self.splitView.bounds.height) - self.splitView.dividerThickness
+            guard !self.freezeSizes else { return }
             self.firstSize = position; self.lastSize = available - position; self.fraction = available > 0 ? position / available : 0.5
             self.resizePanes(); self.recordSizes()
         }
@@ -132,7 +135,7 @@ final class PaneSplitController: NSViewController, NSSplitViewDelegate {
         recordSizes()
     }
     private func recordSizes() {
-        guard !adjusting, items.count == 2, !items.contains(where: \.isCollapsed) else { return }
+        guard !adjusting, !freezeSizes, items.count == 2, !items.contains(where: \.isCollapsed) else { return }
         let first = items[0].viewController.view.frame; let last = items[1].viewController.view.frame
         guard first.width > 0, last.width > 0, first.height > 0, last.height > 0 else { return }
         firstSize = splitView.isVertical ? first.width : first.height
