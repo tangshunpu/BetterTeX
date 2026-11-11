@@ -35,12 +35,12 @@ final class UpdateController: NSObject {
         if UpdatePreferences.isDue() { check(userInitiated: false) }
     }
     @objc private func becameActive() {
-        if UpdatePreferences.automatic(), let available, task == nil, presentedVersion != available.tagName { present(available) }
+        if UpdatePreferences.automatic(), let available, task == nil, presentedVersion != available.tagName { present(available, userInitiated: false) }
     }
     func check(userInitiated: Bool = true) {
         if userInitiated {
-            manualCheck = true
             if pendingUpdate != nil { showReady(); return }
+            manualCheck = true
             if task != nil { showPanel(); return }
             showMessage(L10n.tr("正在检查更新…"), L10n.tr("当前版本：\(currentVersion)"), busy: true)
         }
@@ -53,7 +53,7 @@ final class UpdateController: NSObject {
                 try Task.checkCancellation()
                 task = nil; available = release
                 if let release {
-                    if manualCheck || (UpdatePreferences.automatic() && NSApp.isActive && presentedVersion != release.tagName) { present(release) }
+                    if manualCheck || (UpdatePreferences.automatic() && NSApp.isActive && presentedVersion != release.tagName) { present(release, userInitiated: manualCheck) }
                 } else if manualCheck {
                     showMessage(L10n.tr("已是最新版本"), L10n.tr("BetterTeX \(currentVersion) 已是当前更新通道的最新版本。"))
                 }
@@ -64,14 +64,14 @@ final class UpdateController: NSObject {
             manualCheck = false
         }
     }
-    private func present(_ release: AppRelease) {
+    func present(_ release: AppRelease, userInitiated: Bool) {
         presentedVersion = release.tagName
         let version = release.version?.description ?? release.tagName
         let installable = release.asset().flatMap { release.signatureAsset(for: $0) } != nil
         let detail = installable
             ? L10n.tr("当前版本：\(currentVersion)。安装前会保存文件，并重新打开 BetterTeX。")
             : L10n.tr("此版本暂未提供适合当前 Mac 的自动更新安装包，请前往 Release 页面下载。")
-        showPanel().configure(title: L10n.tr("发现新版本 \(version)"), detail: detail, notes: release.body ?? "",
+        showPanel(userInitiated: userInitiated).configure(title: L10n.tr("发现新版本 \(version)"), detail: detail, notes: release.body ?? "",
                               primary: installable ? L10n.tr("下载并安装") : L10n.tr("打开下载页面"),
                               action: { [weak self] in
             if installable { self?.download(release) } else { NSWorkspace.shared.open(release.pageURL) }
@@ -87,7 +87,7 @@ final class UpdateController: NSObject {
         task = Task { [weak self] in
             guard let self else { return }
             let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("BetterTeX-update-\(UUID().uuidString)", isDirectory: true)
-            defer { try? FileManager.default.removeItem(at: temporary); task = nil }
+            defer { try? FileManager.default.removeItem(at: temporary); task = nil; manualCheck = false }
             do {
                 try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
                 let archive = temporary.appendingPathComponent("update.zip")
@@ -105,7 +105,7 @@ final class UpdateController: NSObject {
                 requestInstallation()
             } catch {
                 if error is CancellationError || (error as? URLError)?.code == .cancelled {
-                    present(release)
+                    present(release, userInitiated: true)
                 } else { showError(error) }
             }
         }
@@ -138,9 +138,11 @@ final class UpdateController: NSObject {
     private func showMessage(_ title: String, _ detail: String, busy: Bool = false) {
         showPanel().configure(title: title, detail: detail, busy: busy, secondary: L10n.tr("关闭"), secondaryAction: { [weak self] in self?.panel?.close() })
     }
-    @discardableResult private func showPanel() -> UpdateWindowController {
+    @discardableResult private func showPanel(userInitiated: Bool = true) -> UpdateWindowController {
         if panel == nil { panel = UpdateWindowController() }
-        panel!.showWindow(nil); panel!.window?.makeKeyAndOrderFront(nil)
+        // showWindow can make its window key, so automatic notices must bypass it.
+        if userInitiated { panel!.window?.makeKeyAndOrderFront(nil) }
+        else { panel!.window?.orderFront(nil) }
         return panel!
     }
 }
@@ -174,7 +176,8 @@ private final class UpdateWindowController: NSWindowController {
         scroll.heightAnchor.constraint(equalToConstant: 210).isActive = true
         for button in [primary, secondary, release] { button.bezelStyle = .rounded; button.target = self }
         primary.action = #selector(primaryClicked); secondary.action = #selector(secondaryClicked); release.action = #selector(releaseClicked)
-        primary.keyEquivalent = "\r"; secondary.keyEquivalent = "\u{1b}"
+        // Installing/restarting must not consume Return typed for the editor.
+        secondary.keyEquivalent = "\u{1b}"
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let buttons = NSStackView(views: [release, spacer, secondary, primary]); buttons.spacing = 8
         let titleRow = NSStackView(views: [spinner, heading]); titleRow.spacing = 10

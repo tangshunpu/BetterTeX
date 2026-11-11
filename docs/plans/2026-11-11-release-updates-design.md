@@ -35,3 +35,11 @@ Staging directories carry an application path, creation date and owner PID; the 
 Automatic-check and prerelease controls persist their own values independently, preserving the prerelease channel’s inferred default unless it is explicitly changed.
 
 Second follow-up validation: 86 tests executed (85 passed, 1 opt-in live Overleaf skip). New tests cover normal quit, cancelled and failed restart requests, one-shot installation, conservative staging collection, helper timeout before swapping, independent update preferences, command/template conflicts, and commented label hints. The release build and app launch passed, the generated ZIP signature verified against the pinned public key, and DMG staging and mounted app validation passed.
+
+## Third review follow-up
+
+Automatic update notices use `orderFront` without making the update window key; manual checks can bring the same window into focus. Install/restart actions have no default Return binding. This preserves editor input when a release is discovered and requires deliberate button activation. The controller carries the user-initiated flag through both immediate and deferred automatic presentation paths.
+
+The exit lifecycle, staging cleanup and publisher-authentication concerns repeated in this review were already addressed in the previous follow-ups. Both READMEs now explicitly describe publisher signatures, and the guide documents focus and keyboard behavior alongside the existing cancellation rules.
+
+Third follow-up validation: 88 tests executed (86 passed, 2 skipped: the opt-in live Overleaf test and focus verification requiring an active macOS GUI test host). The AppKit Return-event test passed and confirmed explicit clicks still work; temporarily restoring the old Return binding made that regression test fail. The focus test is included but was not validated in this environment: test windows could not activate and the native UI inspection tool timed out. The release build, launch/process check, resource/code-signature validation and detached ZIP signature verification passed.

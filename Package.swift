@@ -10,6 +10,7 @@ let package = Package(
     targets: [
         .target(name: "BetterTeXCore", resources: [.process("Resources")]),
         .executableTarget(name: "BetterTeX", dependencies: ["BetterTeXCore", .product(name: "SwiftTerm", package: "SwiftTerm")]),
-        .testTarget(name: "BetterTeXCoreTests", dependencies: ["BetterTeXCore"])
+        .testTarget(name: "BetterTeXCoreTests", dependencies: ["BetterTeXCore"]),
+        .testTarget(name: "BetterTeXAppTests", dependencies: ["BetterTeX"])
     ]
 )
