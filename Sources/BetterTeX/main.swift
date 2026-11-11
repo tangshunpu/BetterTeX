@@ -1,9 +1,11 @@
 import AppKit
 import BetterTeXCore
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var workspace: WorkspaceController!
     private var settings: SettingsWindowController?
+    private let updates = UpdateController()
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         #if DEBUG
@@ -24,14 +26,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         #endif
         NSApp.activate(ignoringOtherApps: true)
+        updates.start()
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let workspace else { return .terminateNow }
-        return workspace.window.isVisible && !workspace.windowShouldClose(workspace.window) ? .terminateCancel : .terminateNow
+        guard !workspace.window.isVisible || workspace.prepareToClose() else { return .terminateCancel }
+        return updates.installIfReady() ? .terminateNow : .terminateCancel
     }
-    func applicationWillTerminate(_ notification: Notification) { workspace?.shutdown() }
+    func applicationWillTerminate(_ notification: Notification) { updates.stop(); workspace?.shutdown() }
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
         guard let first = filenames.first, let workspace else { sender.reply(toOpenOrPrint: .failure); return }
         let url = URL(fileURLWithPath: first); var isDirectory: ObjCBool = false
@@ -49,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let app = submenu("BetterTeX")
         add(app, L10n.tr("设置…"), #selector(showSettings), ","); app.addItem(.separator())
+        add(app, L10n.tr("检查更新…"), #selector(checkForUpdates))
         add(app, L10n.tr("关于 BetterTeX"), #selector(about)); app.addItem(.separator()); add(app, L10n.tr("隐藏 BetterTeX"), #selector(NSApplication.hide(_:)), "h"); app.addItem(.separator()); add(app, L10n.tr("退出 BetterTeX"), #selector(NSApplication.terminate(_:)), "q")
         let file = submenu(L10n.tr("文件"))
         let create = NSMenu(title: L10n.tr("新建项目")); let createItem = NSMenuItem(title: L10n.tr("新建项目"), action: nil, keyEquivalent: ""); createItem.submenu = create; file.addItem(createItem)
@@ -73,9 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = menu
     }
     @objc func showSettings() {
-        if settings == nil { settings = SettingsWindowController() }
+        if settings == nil { settings = SettingsWindowController(onCheckForUpdates: { [weak self] in self?.updates.check() }) }
         settings?.showWindow(nil); settings?.window?.makeKeyAndOrderFront(nil)
     }
+    @objc func checkForUpdates() { updates.check() }
     @objc func open() { workspace.openFolder() }
     @objc func newFile() { workspace.newFile() }
     @objc func closeProject() { workspace.closeProject() }
@@ -97,10 +103,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showTools() { workspace.showTools() }
     @objc func detectTools() { workspace.detectTools() }
     @objc func find() { let item = NSMenuItem(); item.tag = NSTextFinder.Action.showFindInterface.rawValue; workspace.window.makeFirstResponder(workspace.ui.editor.textView); workspace.ui.editor.textView.performFindPanelAction(item) }
-    @objc func about() { NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "BetterTeX", .applicationVersion: "0.1.0", .credits: NSAttributedString(string: "A quiet workspace for your next idea.\nNative LaTeX editor · PDFKit · SwiftTerm")]) }
+    @objc func about() { NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "BetterTeX", .applicationVersion: ReleaseVersion.installed(), .credits: NSAttributedString(string: "A quiet workspace for your next idea.\nNative LaTeX editor · PDFKit · SwiftTerm")]) }
 }
 
-let application = NSApplication.shared
-let delegate = AppDelegate()
-application.delegate = delegate
-application.run()
+MainActor.assumeIsolated {
+    let application = NSApplication.shared
+    let delegate = AppDelegate()
+    application.delegate = delegate
+    withExtendedLifetime(delegate) { application.run() }
+}

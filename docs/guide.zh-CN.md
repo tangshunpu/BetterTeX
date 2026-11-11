@@ -12,6 +12,25 @@
 
 选择会自动保存，重新打开 BetterTeX 后生效。切换语言不会立即重建编辑器或停止终端。菜单、项目页、编辑器工具栏、PDF、Agent、Overleaf 提示与日期显示都会使用所选语言；已有项目内容、Agent 回复和外部工具输出保持原样。
 
+## 应用更新
+
+启动时会检查 GitHub Release，自动检查间隔至少 24 小时；也可随时点击 **BetterTeX → 检查更新…**，或 **设置 → 软件更新 → 检查更新…**。发现新版本后显示发行说明，点击 **下载并安装** 会下载 ZIP、校验文件、保存文档，然后安装并重新打开 BetterTeX。下载中可以取消；若退出时取消终端会话确认，更新会保持就绪，之后可点击 **安装并重启**。替换或启动失败会尝试恢复上一版本。
+
+设置里可关闭自动检查，或选择是否接收 alpha / beta 预发布版本。Alpha 构建默认接收预发布版本，正式构建默认只接收正式版。版本比较支持 `alpha.2`、`alpha.10` 与正式版之间的顺序，不会降级。
+
+应用需要位于可写的位置，推荐「应用程序」文件夹；从 DMG 或 App Translocation 中运行时，请先移动应用。自动安装要求 Release 附带匹配处理器架构的 ZIP 和 GitHub 的 SHA-256 校验值；缺少兼容包时，提示会提供下载页面。安装还会检查包内版本、应用标识、macOS 要求及代码签名。旧版未内置更新器，需要手动安装一次包含此功能的版本。
+
+### 发布更新包
+
+版本默认来自仓库根目录的 `VERSION`。发布时先更新该文件，或设置 `BETTERTEX_VERSION`；Release 的标签必须是同一版本（可加 `v` 前缀）。例如：
+
+```sh
+BETTERTEX_VERSION=0.1.0-alpha.3 CONFIGURATION=release ./script/build_and_run.sh --build-only
+./script/make_dmg.sh
+```
+
+将 `dist/BetterTeX-0.1.0-alpha.3-macOS-arm64.zip`（Intel 构建为 `x86_64`）和 DMG 一起上传到对应 GitHub Release。GitHub 上传后提供资产的 `sha256:` digest，更新器会验证它。打包会把完整版本写入 `BetterTeXReleaseVersion`；`CFBundleShortVersionString` 保留三段数字，`CFBundleVersion` 默认使用 Git 提交计数，也可通过 `BETTERTEX_BUILD_NUMBER` 覆盖。当前包采用 ad-hoc 签名，信任来源为此仓库的 HTTPS Release 和资产校验值；将来若使用 Developer ID 签名，更新必须保持同一签名团队。
+
 ## 运行
 
 发布版本请到 [Releases](https://github.com/tangshunpu/BetterTeX/releases) 下载 `.dmg`，打开后把应用拖到「Applications」（同时提供内容相同的 `.zip`）。自行构建的应用位于 `dist/BetterTeX.app`；推荐解压 `dist/BetterTeX.zip` 后拖到「应用程序」，或用 `./script/make_dmg.sh` 生成 `dist/BetterTeX.dmg`。本地开发构建采用 ad-hoc 签名，尚未经过 Apple 公证。当前构建架构取决于本机（开发验证为 Apple Silicon）。打包脚本会额外生成 ZIP，避免 iCloud / FileProvider 给源码目录中的应用附加 FinderInfo，影响严格签名校验。

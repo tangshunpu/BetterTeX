@@ -4,9 +4,13 @@ import BetterTeXCore
 final class SettingsWindowController: NSWindowController {
     private let languagePicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let restartHint = NSTextField(wrappingLabelWithString: "")
+    private let automatic = NSButton(checkboxWithTitle: L10n.tr("自动检查更新"), target: nil, action: nil)
+    private let prereleases = NSButton(checkboxWithTitle: L10n.tr("接收预发布版本（alpha / beta）"), target: nil, action: nil)
+    private let onCheckForUpdates: @MainActor () -> Void
 
-    init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 230),
+    init(onCheckForUpdates: @escaping @MainActor () -> Void) {
+        self.onCheckForUpdates = onCheckForUpdates
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 510, height: 410),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init(window: window)
         window.title = L10n.tr("设置")
@@ -25,7 +29,15 @@ final class SettingsWindowController: NSWindowController {
         restartHint.font = .systemFont(ofSize: 12)
         restartHint.textColor = .secondaryLabelColor
         restartHint.stringValue = L10n.tr("更改语言后，重新打开 BetterTeX 即可生效。")
-        let content = NSStackView(views: [heading, row, restartHint])
+        let updateHeading = Theme.label(L10n.tr("软件更新"), size: 20, weight: .bold)
+        let version = Theme.label(L10n.tr("当前版本：\(ReleaseVersion.installed())"), size: 12)
+        automatic.state = UpdatePreferences.automatic() ? .on : .off
+        automatic.target = self; automatic.action = #selector(updatePreferencesChanged)
+        prereleases.state = UpdatePreferences.includesPrereleases(current: ReleaseVersion.installed()) ? .on : .off
+        prereleases.target = self; prereleases.action = #selector(updatePreferencesChanged)
+        let check = NSButton(title: L10n.tr("检查更新…"), target: self, action: #selector(checkForUpdates)); check.bezelStyle = .rounded
+        let updateRow = NSStackView(views: [version, check]); updateRow.spacing = 20
+        let content = NSStackView(views: [heading, row, restartHint, updateHeading, automatic, prereleases, updateRow])
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 20
         content.translatesAutoresizingMaskIntoConstraints = false
         let root = NSView(); window.contentView = root; root.addSubview(content)
@@ -38,6 +50,12 @@ final class SettingsWindowController: NSWindowController {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func checkForUpdates() { onCheckForUpdates() }
+    @objc private func updatePreferencesChanged() {
+        UserDefaults.standard.set(automatic.state == .on, forKey: UpdatePreferences.automaticKey)
+        UserDefaults.standard.set(prereleases.state == .on, forKey: UpdatePreferences.prereleasesKey)
+    }
 
     @objc private func languageChanged() {
         let index = languagePicker.indexOfSelectedItem

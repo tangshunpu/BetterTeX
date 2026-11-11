@@ -5,6 +5,11 @@ MODE="${1:-run}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="BetterTeX"
 CONFIGURATION="${CONFIGURATION:-debug}"
+APP_VERSION="${BETTERTEX_VERSION:-$(cat "$ROOT_DIR/VERSION")}"
+BUILD_NUMBER="${BETTERTEX_BUILD_NUMBER:-$(git -C "$ROOT_DIR" rev-list --count HEAD)}"
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ || ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "Invalid BETTERTEX_VERSION or BETTERTEX_BUILD_NUMBER." >&2; exit 1
+fi
 BUILD_CACHE="${BETTERTEX_BUILD_CACHE:-$HOME/Library/Caches/BetterTeX/Build}"
 APP_BUNDLE="$BUILD_CACHE/Staging/$APP_NAME.app"
 DELIVERY_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
@@ -61,6 +66,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeName</key><string>LaTeX document</string><key>CFBundleTypeExtensions</key><array><string>tex</string><string>bib</string><string>sty</string><string>cls</string></array><key>CFBundleTypeRole</key><string>Editor</string></dict></array>
 </dict></plist>
 PLIST
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${APP_VERSION%%[-+]*}" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :BetterTeXReleaseVersion string $APP_VERSION" "$APP_BUNDLE/Contents/Info.plist"
 xattr -cr "$APP_BUNDLE"
 codesign --force --sign - "$APP_BUNDLE" >/dev/null
 mkdir -p "$ROOT_DIR/dist"
@@ -69,6 +77,7 @@ ditto --norsrc "$APP_BUNDLE" "$DELIVERY_BUNDLE"
 xattr -cr "$DELIVERY_BUNDLE"
 # Keep a clean portable archive even when Documents is managed by iCloud.
 ditto -c -k --norsrc --noextattr --keepParent "$APP_BUNDLE" "$ROOT_DIR/dist/BetterTeX.zip"
+cp "$ROOT_DIR/dist/BetterTeX.zip" "$ROOT_DIR/dist/BetterTeX-$APP_VERSION-macOS-$(uname -m).zip"
 codesign --verify --deep --strict "$APP_BUNDLE"
 APP_BUNDLE="$DELIVERY_BUNDLE"
 

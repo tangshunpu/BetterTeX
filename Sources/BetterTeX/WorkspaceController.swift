@@ -643,12 +643,16 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         else { ui.terminal.append("\n" + message + "\n") }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard prepareToClose() else { return false }
+        shutdown(); return true
+    }
+    func prepareToClose() -> Bool {
         guard saveAll() else { return false }
         if !ui.terminal.terminals.isEmpty {
             let alert = NSAlert(); alert.messageText = L10n.tr("关闭工作区并结束终端会话？"); alert.informativeText = L10n.tr("运行中的 Codex、Claude 和 Shell 会话将停止。文件修改已经保存。"); alert.addButton(withTitle: L10n.tr("关闭")); alert.addButton(withTitle: L10n.tr("取消"))
             if alert.runModal() != .alertFirstButtonReturn { return false }
         }
-        overleaf.shutdown(); compiler.runner.cancel(); ui.terminal.stopAll(); watcher.stop(); return true
+        return true
     }
     func shutdown() { overleaf.shutdown(); saveJob?.cancel(); compileJob?.cancel(); compiler.runner.cancel(); ui.terminal.stopAll(); watcher.stop() }
 }
