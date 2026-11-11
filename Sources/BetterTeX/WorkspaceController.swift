@@ -13,6 +13,9 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     var buildPending = false
     /// Fingerprint of the inputs of the last build, so automatic triggers never repeat it.
     var lastBuildSignature: String?
+    /// Problems of the most recent build, shown in the editor of whichever file they belong to.
+    var buildErrors: [TeXDiagnostic] = []
+    var buildWarnings: [TeXWarning] = []
     var gitBusy = false
     var compiledPDF: URL?
     var compiledRoot: URL?
@@ -100,7 +103,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     func windowDidEnterFullScreen(_ notification: Notification) { window.toolbar?.isVisible = false; positionTrafficLights() }
     func windowWillExitFullScreen(_ notification: Notification) { window.toolbar?.isVisible = true }
     func windowDidExitFullScreen(_ notification: Notification) { window.toolbar?.isVisible = true; positionTrafficLights() }
-    func windowDidBecomeKey(_ notification: Notification) { positionTrafficLights() }
+    func windowDidBecomeKey(_ notification: Notification) { positionTrafficLights(); refreshGitMarkers() }
     // MARK: Images
     func pickImage() {
         guard active != nil else { return }
@@ -179,7 +182,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         generation = UUID(); saveJob?.cancel(); compileJob?.cancel(); compiler.runner.cancel(); compiler = TeXCompiler()
         building = false; buildPending = false; gitBusy = false; ui.setBuilding(false); ui.activity = .idle
         watcher.stop(); ui.terminal.stopAll(); buffers.removeAll(); active = nil; conflicts.removeAll()
-        project = url.standardizedFileURL; compiledPDF = nil; compiledRoot = nil; lastBuildSignature = nil; ui.preview.clear()
+        project = url.standardizedFileURL; compiledPDF = nil; compiledRoot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; ui.preview.clear()
         window.title = url.lastPathComponent; ui.setTitle(project: url.lastPathComponent, file: nil); ui.projectURL = url.standardizedFileURL; ui.setBranch(""); ui.terminal.contextFile = nil
         ui.explorer.load(url); ui.editor.clear(); ui.editor.textView.isEditable = false; refreshTabs()
         if let tools { ui.terminal.configure(project: url, tools: tools) }
@@ -222,7 +225,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             ui.setTitle(project: root.lastPathComponent, file: url.lastPathComponent)
             ui.terminal.contextFile = url.path.replacingOccurrences(of: root.path + "/", with: "")
             if let line { ui.editor.goTo(line: line, column: column) }
-            overleaf.attachActiveDoc()
+            overleaf.attachActiveDoc(); ui.editor.setGitChanges([]); refreshGitMarkers(); refreshProblems()
         } catch { self.error(error.localizedDescription) }
     }
     func closeTab(_ url: URL) {
@@ -321,6 +324,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                 switch result {
                 case .success(let build):
                     self.compiledRoot = build.root
+                    self.buildErrors = build.succeeded ? [] : build.diagnostics; self.buildWarnings = TeXWarning.parse(build.log); self.refreshProblems()
                     let warnings = build.log.components(separatedBy: .newlines).filter { $0.contains("Warning:") }.count
                     self.ui.setDiagnostics(errors: build.succeeded ? 0 : max(1, build.diagnostics.count), warnings: warnings)
                     if build.succeeded {
@@ -369,7 +373,27 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             catch { self?.error(error.localizedDescription) }
         }
     }
+    /// Shows the last build's errors and undefined references that fall in the active file.
+    func refreshProblems() {
+        guard let active else { ui.editor.setProblems(errors: [], warnings: []); return }
+        let base = (compiledRoot ?? active.url).deletingLastPathComponent()
+        let errors = buildErrors.filter { URL(fileURLWithPath: $0.file, relativeTo: base).standardizedFileURL.path == active.url.standardizedFileURL.path }.map(\.line)
+        // The log gives a warning's line but not its file: it belongs here if that line mentions the key.
+        let lines = active.text.components(separatedBy: "\n")
+        let warnings = buildWarnings.filter { lines.indices.contains($0.line - 1) && lines[$0.line - 1].contains($0.key) }.map(\.line)
+        ui.editor.setProblems(errors: Set(errors), warnings: Set(warnings))
+    }
+    /// Recomputes the change strip in the editor gutter for the active file (as saved on disk).
+    func refreshGitMarkers() {
+        guard let project, let tools, let file = active?.url else { ui.editor.setGitChanges([]); return }
+        let token = generation
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let changes = GitService(directory: project, tools: tools).lineChanges(file: file)
+            DispatchQueue.main.async { guard let self, self.generation == token, self.active?.url == file else { return }; self.ui.editor.setGitChanges(changes) }
+        }
+    }
     func refreshGit() {
+        refreshGitMarkers()
         guard let project, let tools else { return }; let token = generation
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let service = GitService(directory: project, tools: tools)

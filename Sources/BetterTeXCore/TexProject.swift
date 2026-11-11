@@ -63,6 +63,26 @@ public struct DiskSnapshot: Equatable {
     public func isCurrent(at url: URL) -> Bool { (try? Data(contentsOf: url)) == data }
 }
 
+/// An undefined reference or citation reported by LaTeX. The log names only the line, so the
+/// key is kept to find out which source file the warning belongs to.
+public struct TeXWarning: Equatable {
+    public let line: Int
+    public let key: String
+    public let message: String
+    public static func parse(_ log: String) -> [TeXWarning] {
+        // The log wraps at 79 columns; join the pieces before matching.
+        let joined = log.replacingOccurrences(of: "\n", with: "")
+        let regex = try! NSRegularExpression(pattern: "(?:LaTeX|Package \\w+) Warning: (Reference|Citation) [`']([^']+)' (?:on page \\d+ )?undefined on input line (\\d+)")
+        let ns = joined as NSString; var seen = Set<String>(); var result: [TeXWarning] = []
+        for match in regex.matches(in: joined, range: NSRange(location: 0, length: ns.length)) {
+            guard let line = Int(ns.substring(with: match.range(at: 3))) else { continue }
+            let key = ns.substring(with: match.range(at: 2)), citation = ns.substring(with: match.range(at: 1)) == "Citation"
+            if seen.insert("\(line)|\(key)").inserted { result.append(TeXWarning(line: line, key: key, message: (citation ? "未定义的引用文献：" : "未定义的交叉引用：") + key)) }
+        }
+        return result
+    }
+}
+
 public struct TeXDiagnostic {
     public let file: String
     public let line: Int

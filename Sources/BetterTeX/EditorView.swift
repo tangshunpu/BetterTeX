@@ -176,6 +176,19 @@ final class CodeTextView: NSTextView {
 
 final class LineRuler: NSRulerView {
     weak var text: CodeTextView?
+    /// Lines changed since the last commit, drawn as a coloured strip beside the line numbers.
+    var changes: [LineChange] = [] {
+        didSet {
+            kinds.removeAll()
+            for change in changes { for line in change.lines { if kinds[line] == nil || change.kind != .deleted { kinds[line] = change.kind } } }
+            deletions = Set(changes.filter { $0.kind == .deleted }.map { $0.lines.lowerBound })
+            needsDisplay = true
+        }
+    }
+    /// Lines with a build error (red) or warning (orange); their numbers take that colour.
+    var problems: [Int: NSColor] = [:] { didSet { needsDisplay = true } }
+    private var kinds: [Int: LineChange.Kind] = [:]
+    private var deletions = Set<Int>()
     init(scroll: NSScrollView, text: CodeTextView) {
         self.text = text; super.init(scrollView: scroll, orientation: .verticalRuler)
         clientView = text; ruleThickness = 50
@@ -196,11 +209,21 @@ final class LineRuler: NSRulerView {
             var effective = NSRange()
             let lineRect = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &effective)
             let char = layout.characterIndexForGlyph(at: glyph)
+            let top = lineRect.minY + text.textContainerInset.height - visible.minY
+            if let kind = kinds[line], kind != .deleted {
+                (kind == .added ? Theme.green : Theme.accent).setFill()
+                NSRect(x: ruleThickness - 7, y: top, width: 3, height: lineRect.height).fill()
+            }
             if char == 0 || string.character(at: char - 1) == 10 {
+                if deletions.contains(line) {
+                    // Removed text leaves a small red wedge at the line it used to precede.
+                    let wedge = NSBezierPath(); wedge.move(to: NSPoint(x: ruleThickness - 8, y: top - 4)); wedge.line(to: NSPoint(x: ruleThickness - 2, y: top)); wedge.line(to: NSPoint(x: ruleThickness - 8, y: top + 4)); wedge.close()
+                    Theme.red.setFill(); wedge.fill()
+                }
                 let y = lineRect.minY + text.textContainerInset.height
                 let active = current.map { y >= $0.minY - 0.5 && y < $0.maxY - 0.5 } ?? false
                 let label = "\(line)" as NSString
-                let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .regular), .foregroundColor: active ? Theme.text : Theme.lineNumber]
+                let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .regular), .foregroundColor: problems[line] ?? (active ? Theme.text : Theme.lineNumber)]
                 let size = label.size(withAttributes: attrs)
                 label.draw(at: NSPoint(x: ruleThickness - size.width - 16, y: y - visible.minY + (lineRect.height - size.height) / 2 - 2), withAttributes: attrs)
             }
@@ -259,6 +282,64 @@ final class TabChip: NSView {
     override func mouseExited(with event: NSEvent) { hovering = false }
     override func mouseDown(with event: NSEvent) { onSelect() }
     override func otherMouseDown(with event: NSEvent) { onClose() }
+}
+
+/// A whole-file map along the editor's right edge: Git changes on the left half, build
+/// problems on the right, and a soft block for the part currently on screen. Clicking jumps there.
+final class OverviewRuler: NSView {
+    struct Mark { let line: Int; let color: NSColor; let problem: Bool }
+    weak var text: CodeTextView?
+    var marks: [Mark] = [] { didSet { reposition() } }
+    var onJump: ((CGFloat) -> Void)?
+    private var positions: [(fraction: CGFloat, mark: Mark)] = []
+    override var isFlipped: Bool { true }
+    /// Places each mark where its line sits in the laid-out text, so it lines up with the scroller.
+    func reposition() {
+        positions = []
+        defer { needsDisplay = true }
+        guard let text, let layout = text.layoutManager, !marks.isEmpty else { return }
+        let string = text.string as NSString; let height = max(1, text.bounds.height)
+        var starts: [Int: Int] = [:]; let wanted = Set(marks.map(\.line))
+        var line = 1, index = 0
+        if wanted.contains(1) { starts[1] = 0 }
+        while index < string.length, starts.count < wanted.count {
+            let newline = string.range(of: "\n", range: NSRange(location: index, length: string.length - index))
+            if newline.location == NSNotFound { break }
+            index = NSMaxRange(newline); line += 1
+            if wanted.contains(line) { starts[line] = index }
+        }
+        let lineCount = CGFloat(max(1, line))
+        for mark in marks {
+            guard let start = starts[mark.line] else { continue }
+            var fraction = CGFloat(mark.line - 1) / lineCount
+            if start < string.length, layout.numberOfGlyphs > 0 {
+                let glyph = layout.glyphIndexForCharacter(at: start)
+                fraction = (layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY + text.textContainerInset.height) / height
+            } else if start >= string.length { fraction = 1 }
+            positions.append((min(1, max(0, fraction)), mark))
+        }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        Theme.canvas.setFill(); bounds.fill()
+        Theme.hairline.setFill(); NSRect(x: 0, y: 0, width: 1, height: bounds.height).fill()
+        if let text, text.bounds.height > 0 {
+            let visible = text.visibleRect
+            let top = visible.minY / text.bounds.height * bounds.height, size = max(12, visible.height / text.bounds.height * bounds.height)
+            if visible.height < text.bounds.height { Theme.fill.setFill(); NSRect(x: 1, y: min(top, bounds.height - size), width: bounds.width - 1, height: size).fill() }
+        }
+        let half = (bounds.width - 3) / 2
+        for (fraction, mark) in positions {
+            let y = min(bounds.height - 3, max(0, fraction * bounds.height - 1))
+            mark.color.setFill()
+            NSBezierPath(roundedRect: NSRect(x: mark.problem ? 2 + half : 2, y: y, width: half - 1, height: mark.problem ? 4 : 3), xRadius: 1, yRadius: 1).fill()
+        }
+    }
+    override func mouseDown(with event: NSEvent) { jump(event) }
+    override func mouseDragged(with event: NSEvent) { jump(event) }
+    private func jump(_ event: NSEvent) {
+        guard bounds.height > 0 else { return }
+        onJump?(min(1, max(0, convert(event.locationInWindow, from: nil).y / bounds.height)))
+    }
 }
 
 /// The quick-insert row. Buttons that do not fit move into a trailing "more" menu instead
@@ -320,6 +401,10 @@ final class EditorPane: Surface, NSTextViewDelegate {
     var onOutline: (([OutlineItem]) -> Void)?
     var onInsertImage: (() -> Void)?
     private let insertBar = Surface()
+    private let overview = OverviewRuler()
+    private var gitChanges: [LineChange] = []
+    private var problemLines: [(line: Int, error: Bool)] = []
+    private var overviewJob: DispatchWorkItem?
     var lineColumn: (Int, Int) {
         let ns = textView.string as NSString; let position = min(textView.selectedRange().location, ns.length)
         let prefix = ns.substring(to: position)
@@ -347,6 +432,13 @@ final class EditorPane: Surface, NSTextViewDelegate {
         }) { [weak self] in self?.insert($0) }
         insertBar.pin(tools); insertBar.translatesAutoresizingMaskIntoConstraints = false; addSubview(insertBar)
         scroll.translatesAutoresizingMaskIntoConstraints = false; addSubview(scroll)
+        overview.text = textView; overview.translatesAutoresizingMaskIntoConstraints = false; addSubview(overview)
+        overview.toolTip = "全文概览：蓝 / 绿 / 红为 Git 改动，右侧红 / 橙为编译错误与警告；点按跳转"
+        overview.onJump = { [weak self] fraction in
+            guard let self else { return }
+            let height = self.textView.bounds.height, visible = self.scroll.contentView.bounds.height
+            self.scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, min(height - visible, fraction * height - visible / 2)))); self.scroll.reflectScrolledClipView(self.scroll.contentView)
+        }
         scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.borderType = .noBorder
         scroll.drawsBackground = false
         textView.minSize = NSSize(width: 0, height: 0); textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -375,7 +467,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
             tabStack.leadingAnchor.constraint(equalTo: tabs.leadingAnchor, constant: 10), tabStack.centerYAnchor.constraint(equalTo: tabs.centerYAnchor), tabStack.trailingAnchor.constraint(lessThanOrEqualTo: crumbs.leadingAnchor, constant: -12),
             crumbs.trailingAnchor.constraint(equalTo: tabs.trailingAnchor, constant: -14), crumbs.centerYAnchor.constraint(equalTo: tabs.centerYAnchor), crumbs.widthAnchor.constraint(lessThanOrEqualToConstant: 220),
             insertBar.topAnchor.constraint(equalTo: tabs.bottomAnchor), insertBar.leadingAnchor.constraint(equalTo: leadingAnchor), insertBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), insertBar.heightAnchor.constraint(equalToConstant: 40),
-            scroll.topAnchor.constraint(equalTo: insertBar.bottomAnchor), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), scroll.bottomAnchor.constraint(equalTo: bottomAnchor)
+            scroll.topAnchor.constraint(equalTo: insertBar.bottomAnchor), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: overview.leadingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            overview.topAnchor.constraint(equalTo: insertBar.bottomAnchor), overview.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), overview.bottomAnchor.constraint(equalTo: bottomAnchor), overview.widthAnchor.constraint(equalToConstant: 14)
         ])
         setBreadcrumb(file: "", section: nil)
         updateColors()
@@ -425,7 +518,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         loading = true; textView.string = buffer.text; applyParagraphStyle(); textView.undoManager?.removeAllActions()
         textView.setSelectedRange(NSRange(location: min(buffer.selection.location, (buffer.text as NSString).length), length: 0))
         setBreadcrumb(file: buffer.url.lastPathComponent, section: nil)
-        loading = false; highlight(); scroll.verticalRulerView?.needsDisplay = true
+        loading = false; highlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview()
         onOutline?(OutlineItem.parse(buffer.text))
     }
     /// Replaces only the changed span so the caret, scroll position and undo history survive
@@ -443,8 +536,33 @@ final class EditorPane: Surface, NSTextViewDelegate {
         let start = OverleafText.shift(selection.location, by: ops), end = OverleafText.shift(NSMaxRange(selection), by: ops)
         textView.setSelectedRange(NSRange(location: start, length: max(0, end - start)))
     }
+    /// Marks lines that differ from the last Git commit.
+    func setGitChanges(_ changes: [LineChange]) { (scroll.verticalRulerView as? LineRuler)?.changes = changes; gitChanges = changes; updateOverview() }
+    /// Marks lines the last build complained about, in the gutter and in the overview.
+    func setProblems(errors: Set<Int>, warnings: Set<Int>) {
+        problemLines = warnings.subtracting(errors).map { ($0, false) } + errors.map { ($0, true) }
+        var colors: [Int: NSColor] = [:]
+        for line in warnings { colors[line] = Theme.orange }
+        for line in errors { colors[line] = Theme.red }
+        (scroll.verticalRulerView as? LineRuler)?.problems = colors; updateOverview()
+    }
+    private func updateOverview() {
+        var marks: [OverviewRuler.Mark] = []
+        for change in gitChanges {
+            let color = change.kind == .added ? Theme.green : change.kind == .modified ? Theme.accent : Theme.red
+            // Long runs are sampled so one big change does not turn into thousands of marks.
+            for line in stride(from: change.lines.lowerBound, through: change.lines.upperBound, by: max(1, change.lines.count / 40)) { marks.append(.init(line: line, color: color, problem: false)) }
+        }
+        for problem in problemLines { marks.append(.init(line: problem.line, color: problem.error ? Theme.red : Theme.orange, problem: true)) }
+        overview.marks = marks
+    }
+    private func scheduleOverview() {
+        overviewJob?.cancel(); let job = DispatchWorkItem { [weak self] in self?.overview.reposition() }; overviewJob = job
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: job)
+    }
+    override func layout() { super.layout(); scheduleOverview() }
     func clear() {
-        textView.remoteCursors = []; textView.commentRanges = []
+        textView.remoteCursors = []; textView.commentRanges = []; setGitChanges([]); setProblems(errors: [], warnings: [])
         loading = true; textView.string = ""; loading = false
         setBreadcrumb(file: "", section: nil); onOutline?([])
     }
@@ -458,12 +576,12 @@ final class EditorPane: Surface, NSTextViewDelegate {
     }
     func textDidChange(_ notification: Notification) {
         guard !loading else { return }
-        onChange?(textView.string); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true
+        onChange?(textView.string); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview()
         outlining?.cancel(); let job = DispatchWorkItem { [weak self] in guard let self else { return }; self.onOutline?(OutlineItem.parse(self.textView.string)) }
         outlining = job; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: job)
     }
     func textViewDidChangeSelection(_ notification: Notification) { guard !loading else { return }; let (line, col) = lineColumn; onSelection?(line, col) }
-    @objc func scrolled() { scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true }
+    @objc func scrolled() { scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true }
     func scheduleHighlight() {
         highlighting?.cancel(); let job = DispatchWorkItem { [weak self] in self?.highlight() }; highlighting = job
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: job)

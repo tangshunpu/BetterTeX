@@ -200,3 +200,50 @@ final class BuildProgressTests: XCTestCase {
         XCTAssertNotEqual(first, BuildSignature.compute(project: directory, root: main.path, engine: "Auto"))
     }
 }
+
+final class GitLineChangeTests: XCTestCase {
+    func testParsesHunkHeaders() {
+        let diff = "diff --git a/m.tex b/m.tex\n--- a/m.tex\n+++ b/m.tex\n@@ -2 +2 @@ ctx\n-b\n+B\n@@ -4,0 +5,2 @@\n+x\n+y\n@@ -9,3 +11,0 @@\n-a\n@@ -1,2 +0,0 @@\n@@ -20 +30,3 @@\n"
+        XCTAssertEqual(LineChange.parse(diff: diff), [LineChange(.modified, 2...2), LineChange(.added, 5...6), LineChange(.deleted, 12...12), LineChange(.deleted, 1...1), LineChange(.modified, 30...30), LineChange(.added, 31...32)])
+        XCTAssertTrue(LineChange.parse(diff: "").isEmpty)
+    }
+    func testLineChangesAgainstRealRepository() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("BetterTeX gutter \(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tools = Toolchain(environment: ProcessInfo.processInfo.environment, paths: ["git": "/usr/bin/git"])
+        let service = GitService(directory: directory, tools: tools)
+        let file = directory.appendingPathComponent("my paper.tex")
+        try "one\ntwo\nthree\nfour\n".write(to: file, atomically: true, encoding: .utf8)
+        XCTAssertTrue(service.lineChanges(file: file).isEmpty, "no repository yet")
+        func git(_ args: [String]) throws { XCTAssertTrue(try ProcessRunner().run("/usr/bin/git", args, directory: directory).succeeded) }
+        try git(["init", "-b", "main"]); try git(["config", "user.email", "test@example.invalid"]); try git(["config", "user.name", "BetterTeX Tests"])
+        try git(["add", "."]); try git(["commit", "-m", "Initial"])
+        XCTAssertTrue(service.lineChanges(file: file).isEmpty)
+        try "one\nTWO\nthree\nnew\nnewer\n".write(to: file, atomically: true, encoding: .utf8)
+        XCTAssertEqual(service.lineChanges(file: file), [LineChange(.modified, 2...2), LineChange(.modified, 4...4), LineChange(.added, 5...5)])
+        try "two\nthree\nfour\n".write(to: file, atomically: true, encoding: .utf8)
+        XCTAssertEqual(service.lineChanges(file: file), [LineChange(.deleted, 1...1)])
+        let fresh = directory.appendingPathComponent("fresh.tex"); try "a\nb\n".write(to: fresh, atomically: true, encoding: .utf8)
+        XCTAssertEqual(service.lineChanges(file: fresh), [LineChange(.added, 1...2)])
+    }
+}
+
+final class WarningTests: XCTestCase {
+    func testUndefinedReferencesAndCitationsAcrossWrappedLogLines() {
+        let log = """
+        LaTeX Warning: Citation `tang2025osd' on page 3 undefined on input line 173.
+
+        LaTeX Warning: Reference `fig:a-very-long-label-name-that-wraps-in-the-log' on page 1 undefined on inpu
+        t line 42.
+        Package natbib Warning: Citation `other' on page 2 undefined on input line 9.
+        LaTeX Warning: Citation `tang2025osd' on page 3 undefined on input line 173.
+        Overfull \\hbox (3.0pt too wide) in paragraph at lines 5--6
+        """
+        let warnings = TeXWarning.parse(log)
+        XCTAssertEqual(warnings.map(\.line), [173, 42, 9])
+        XCTAssertEqual(warnings.map(\.key), ["tang2025osd", "fig:a-very-long-label-name-that-wraps-in-the-log", "other"])
+        XCTAssertTrue(warnings[0].message.contains("引用文献")); XCTAssertTrue(warnings[1].message.contains("交叉引用"))
+        XCTAssertTrue(TeXWarning.parse("Output written on main.pdf").isEmpty)
+    }
+}

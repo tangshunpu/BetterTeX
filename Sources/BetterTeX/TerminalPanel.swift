@@ -35,6 +35,9 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private let placeholder = Theme.label("让 Agent 修改或解释…", size: 13.5, color: Theme.muted)
     private var composerHeight: NSLayoutConstraint!
     private let composerScroll = NSScrollView()
+    private var composerCard: NSView!
+    private var composerTools: NSView!
+    private var compactAttach: ActionButton!
     private var effortButton: ActionButton!
     private var includeContext = true
     private let contextChip = Chip(fill: Theme.fill, radius: -1)
@@ -77,7 +80,10 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         contextChip.size(nil, 22); contextChip.pinRow(contextLabel, leading: 8, trailing: 8)
         contextChip.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(toggleContext)))
         contextChip.setAccessibilityElement(true); contextChip.setAccessibilityRole(.checkBox)
-        let contextRow = NSStackView(views: [contextChip, NSView()]); contextRow.spacing = 6; contextRow.alignment = .centerY
+        // While a CLI session is on screen it has its own prompt, so the card shrinks to this row.
+        compactAttach = ActionButton("加入 CLI 输入", symbol: "plus", style: .tinted) { [weak self] in self?.attachContext() }
+        compactAttach.toolTip = "把当前文件 / 选区加入 CLI 的输入行"; compactAttach.isHidden = true
+        let contextRow = NSStackView(views: [contextChip, NSView(), compactAttach]); contextRow.spacing = 6; contextRow.alignment = .centerY
         composer.isRichText = false; composer.drawsBackground = false; composer.font = .systemFont(ofSize: 13.5); composer.textColor = Theme.text
         composer.insertionPointColor = Theme.accent; composer.textContainerInset = NSSize(width: 0, height: 2); composer.textContainer?.lineFragmentPadding = 0
         composer.isVerticallyResizable = true; composer.isHorizontallyResizable = false; composer.autoresizingMask = [.width]
@@ -97,6 +103,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         let cardStack = NSStackView(views: [contextRow, composerScroll, toolRow]); cardStack.orientation = .vertical; cardStack.spacing = 8; cardStack.alignment = .leading
         for row in [contextRow, composerScroll, toolRow] { row.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true }
         let field = Chip(fill: Theme.card, radius: 14, border: Theme.adaptive(0x3C3C43, 0xFFFFFF, lightAlpha: 0.18, darkAlpha: 0.12))
+        composerCard = field; composerTools = toolRow
         cardStack.translatesAutoresizingMaskIntoConstraints = false; field.addSubview(cardStack)
         NSLayoutConstraint.activate([cardStack.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 12), cardStack.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: -8), cardStack.topAnchor.constraint(equalTo: field.topAnchor, constant: 10), cardStack.bottomAnchor.constraint(equalTo: field.bottomAnchor, constant: -6)])
         // The placeholder sits over the text view but outside the scroll view, which would otherwise tile it.
@@ -218,8 +225,17 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     @objc private func toggleContext() { includeContext.toggle(); updateContextChip() }
     @objc private func focusComposer() { window?.makeFirstResponder(composer) }
     private func setComposer(_ text: String) { composer.string = text; textDidChange(Notification(name: NSText.didChangeNotification)) }
+    /// The full composer starts sessions. Once an agent CLI is showing, its own prompt takes over
+    /// and only the context row remains; the shell and the build output need neither.
+    private func updateComposerMode() {
+        let agentRunning = AgentProvider(rawValue: active) != nil && terminals[active] != nil
+        let hidden = active == "Shell" || active == "Output"
+        composerCard.isHidden = hidden
+        composerScroll.isHidden = agentRunning; composerTools.isHidden = agentRunning; compactAttach.isHidden = !agentRunning
+        placeholder.isHidden = agentRunning || !composer.string.isEmpty
+    }
     func textDidChange(_ notification: Notification) {
-        placeholder.isHidden = !composer.string.isEmpty
+        placeholder.isHidden = composerScroll.isHidden || !composer.string.isEmpty
         guard let layout = composer.layoutManager, let container = composer.textContainer else { return }
         layout.ensureLayout(for: container)
         composerHeight.constant = min(max(22, layout.usedRect(for: container).height + 4), 112)
@@ -251,10 +267,11 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             pendingPrompt = message; select(name); pendingPrompt = nil
             guard terminals[name] != nil else { return }
         }
-        setComposer(""); hint.stringValue = "已发送给 \(name)"
+        setComposer(""); hint.stringValue = "已发送给 \(name)"; updateComposerMode()
     }
     func select(_ name: String) {
         active = name
+        defer { updateComposerMode() }
         if let provider = AgentProvider(rawValue: name) { selectedProvider = provider; updateModelButton() }
         switcher.selected = tabNames.firstIndex(of: name) ?? -1
         content.subviews.forEach { $0.removeFromSuperview() }
@@ -433,12 +450,12 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     }
     func stopActive() {
         guard let terminal = terminals.removeValue(forKey: active) else { return }
-        terminal.processDelegate = nil; terminal.terminate(); showEmpty(); active = "Agent"
+        terminal.processDelegate = nil; terminal.terminate(); showEmpty(); active = "Agent"; updateComposerMode()
         hint.stringValue = "会话已结束 · 点击标签重新启动"
     }
     func stopAll() {
         for terminal in terminals.values { terminal.processDelegate = nil; terminal.terminate() }
-        terminals.removeAll(); active = "Agent"; showEmpty(); logView.string = ""
+        terminals.removeAll(); active = "Agent"; showEmpty(); logView.string = ""; updateComposerMode()
     }
     func append(_ text: String) {
         let storage = logView.textStorage!
@@ -458,7 +475,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         DispatchQueue.main.async { [weak self] in
             guard let self, let entry = self.terminals.first(where: { $0.value === source }) else { return }
-            self.terminals.removeValue(forKey: entry.key)
+            self.terminals.removeValue(forKey: entry.key); self.updateComposerMode()
             if self.active == entry.key { self.hint.stringValue = "\(entry.key) 已退出（\(exitCode ?? -1)）· 点击标签重启" }
         }
     }
