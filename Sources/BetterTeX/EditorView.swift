@@ -54,6 +54,14 @@ final class CodeTextView: NSTextView {
     var onSync: (() -> Void)?
     var onDropImages: (([URL]) -> Void)?
     var onPasteImage: ((Data) -> Void)?
+    /// Offered every key press first; returns true when the completion list consumed it.
+    var onCompletionKey: ((NSEvent) -> Bool)?
+    var onResign: (() -> Void)?
+    override func keyDown(with event: NSEvent) {
+        if !hasMarkedText(), onCompletionKey?(event) == true { return }
+        super.keyDown(with: event)
+    }
+    override func resignFirstResponder() -> Bool { onResign?(); return super.resignFirstResponder() }
     private func imageURLs(on pasteboard: NSPasteboard) -> [URL] {
         ((pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []).filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) }
     }
@@ -402,6 +410,13 @@ final class EditorPane: Surface, NSTextViewDelegate {
     var onInsertImage: (() -> Void)?
     private let insertBar = Surface()
     private let overview = OverviewRuler()
+    /// Supplies candidates for what is being typed; nil turns completion off.
+    var completions: ((CompletionRequest) -> [CompletionItem])?
+    private let popup = CompletionPopup()
+    private var completionRequest: CompletionRequest?
+    private var completionCursor = -1
+    private var completionPaused = false
+    private var completionPending = false
     private var gitChanges: [LineChange] = []
     private var problemLines: [(line: Int, error: Bool)] = []
     private var overviewJob: DispatchWorkItem?
@@ -432,6 +447,18 @@ final class EditorPane: Surface, NSTextViewDelegate {
         }) { [weak self] in self?.insert($0) }
         insertBar.pin(tools); insertBar.translatesAutoresizingMaskIntoConstraints = false; addSubview(insertBar)
         scroll.translatesAutoresizingMaskIntoConstraints = false; addSubview(scroll)
+        popup.onAccept = { [weak self] in self?.acceptCompletion($0) }
+        textView.onResign = { [weak self] in self?.popup.dismiss() }
+        textView.onCompletionKey = { [weak self] event in
+            guard let self, self.popup.isVisible else { return false }
+            switch event.keyCode {
+            case 125: self.popup.move(1); return true
+            case 126: self.popup.move(-1); return true
+            case 36, 76, 48: if let item = self.popup.selected { self.acceptCompletion(item); return true }; return false
+            case 53: self.popup.dismiss(); return true
+            default: return false
+            }
+        }
         overview.text = textView; overview.translatesAutoresizingMaskIntoConstraints = false; addSubview(overview)
         overview.toolTip = "全文概览：蓝 / 绿 / 红为 Git 改动，右侧红 / 橙为编译错误与警告；点按跳转"
         overview.onJump = { [weak self] fraction in
@@ -515,12 +542,35 @@ final class EditorPane: Surface, NSTextViewDelegate {
         storage.addAttributes([.paragraphStyle: paragraph, .baselineOffset: 3], range: NSRange(location: 0, length: storage.length))
     }
     func load(_ buffer: EditorBuffer, project: URL) {
+        popup.dismiss()
         loading = true; textView.string = buffer.text; applyParagraphStyle(); textView.undoManager?.removeAllActions()
         textView.setSelectedRange(NSRange(location: min(buffer.selection.location, (buffer.text as NSString).length), length: 0))
         setBreadcrumb(file: buffer.url.lastPathComponent, section: nil)
         loading = false; highlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview()
         onOutline?(OutlineItem.parse(buffer.text))
     }
+    // MARK: Completion
+    private func updateCompletion() {
+        let selection = textView.selectedRange()
+        guard !completionPaused, let completions, let window, window.firstResponder === textView, !textView.hasMarkedText(), selection.length == 0,
+              let request = CompletionRequest.detect(in: textView.string, cursor: selection.location) else { popup.dismiss(); return }
+        let items = completions(request)
+        guard !items.isEmpty else { popup.dismiss(); return }
+        completionRequest = request; completionCursor = selection.location
+        popup.show(items, at: textView.firstRect(forCharacterRange: NSRange(location: request.range.location, length: 0), actualRange: nil), in: window)
+    }
+    private func acceptCompletion(_ item: CompletionItem) {
+        guard let request = completionRequest else { return }
+        popup.dismiss()
+        let edit = Completer.apply(item, to: request, in: textView.string)
+        completionPaused = true
+        textView.insertText(edit.replacement, replacementRange: edit.range)
+        textView.setSelectedRange(NSRange(location: edit.caret, length: 0))
+        completionPaused = false; completionCursor = edit.caret
+        // A snippet that leaves the caret inside braces may have more to offer (\cite{ → keys).
+        if request.kind == .command, item.caret != nil { updateCompletion() }
+    }
+
     /// Replaces only the changed span so the caret, scroll position and undo history survive
     /// edits arriving from collaborators.
     func applyRemote(_ text: String) {
@@ -531,6 +581,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         let selection = textView.selectedRange()
         guard textView.isEditable else { loading = true; textView.string = text; loading = false; highlight(); onChange?(text); return }
         let origin = scroll.contentView.bounds.origin
+        completionPaused = true; defer { completionPaused = false }
         textView.insertText(inserted, replacementRange: NSRange(location: first.position, length: removed))
         scroll.contentView.scroll(to: origin); scroll.reflectScrolledClipView(scroll.contentView)
         let start = OverleafText.shift(selection.location, by: ops), end = OverleafText.shift(NSMaxRange(selection), by: ops)
@@ -577,11 +628,18 @@ final class EditorPane: Surface, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         guard !loading else { return }
         onChange?(textView.string); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview()
+        // Run after the caret has settled too: typing moves it before this call, other input paths after.
+        completionPending = true
+        DispatchQueue.main.async { [weak self] in self?.completionPending = false; self?.updateCompletion() }
         outlining?.cancel(); let job = DispatchWorkItem { [weak self] in guard let self else { return }; self.onOutline?(OutlineItem.parse(self.textView.string)) }
         outlining = job; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: job)
     }
-    func textViewDidChangeSelection(_ notification: Notification) { guard !loading else { return }; let (line, col) = lineColumn; onSelection?(line, col) }
-    @objc func scrolled() { scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true }
+    func textViewDidChangeSelection(_ notification: Notification) {
+        guard !loading else { return }; let (line, col) = lineColumn; onSelection?(line, col)
+        // Moving the caret without typing closes the list; typing updates `completionCursor` first.
+        if popup.isVisible { DispatchQueue.main.async { [weak self] in if let self, !self.completionPending, self.textView.selectedRange().location != self.completionCursor { self.popup.dismiss() } } }
+    }
+    @objc func scrolled() { popup.dismiss(); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true }
     func scheduleHighlight() {
         highlighting?.cancel(); let job = DispatchWorkItem { [weak self] in self?.highlight() }; highlighting = job
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: job)

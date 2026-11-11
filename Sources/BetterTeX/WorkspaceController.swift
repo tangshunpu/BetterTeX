@@ -15,6 +15,9 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     var lastBuildSignature: String?
     /// Problems of the most recent build, shown in the editor of whichever file they belong to.
     var buildErrors: [TeXDiagnostic] = []
+    /// Labels, citation keys, macros and paths offered by the editor's completion list.
+    var completionIndex = ProjectIndex()
+    private var indexJob: DispatchWorkItem?
     var buildWarnings: [TeXWarning] = []
     var gitBusy = false
     var compiledPDF: URL?
@@ -49,6 +52,16 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         ui.explorer.onOpen = { [weak self] in self?.openFile($0) }
         ui.explorer.onNew = { [weak self] in self?.newFile() }
         ui.explorer.onCloseProject = { [weak self] in self?.closeProject() }
+        ui.editor.completions = { [weak self] request in
+            guard let self else { return [] }
+            var index = self.completionIndex
+            // Labels typed since the last save come straight from the editor.
+            if request.kind == .reference, let active = self.active {
+                let name = active.url.lastPathComponent
+                index.labels = index.labels.filter { $0.detail != name } + ProjectIndex.labels(in: active.text, file: name)
+            }
+            return Completer.items(for: request, index: index)
+        }
         ui.welcome.onOpen = { [weak self] in self?.openFolder() }
         ui.welcome.onClone = { [weak self] in self?.cloneRepository() }
         ui.welcome.onImport = { [weak self] in self?.overleaf.importProject() }
@@ -231,7 +244,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         if let main = files.first(where: { $0.lastPathComponent == "main.tex" }) ?? files.first { openFile(main) }
         watcher.start(url); refreshGit()
         if tools != nil, ui.autoBuildEnabled { scheduleBuild() }
-        overleaf.projectChanged()
+        overleaf.projectChanged(); completionIndex = ProjectIndex(); refreshCompletionIndex()
     }
     /// Asks before replacing a workspace that still has terminal sessions running.
     func confirmSwitch() -> Bool {
@@ -308,7 +321,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                 } catch { setStatus("文件已移动或无法读取：\(buffer.url.lastPathComponent)") }
             }
         }
-        refreshTabs(); refreshGit(); overleaf.localEdited(); overleaf.localFilesChanged()
+        refreshTabs(); refreshGit(); overleaf.localEdited(); overleaf.localFilesChanged(); refreshCompletionIndex(after: 1.5)
         if ui.autoBuildEnabled, conflicts.isEmpty { scheduleBuild() }
     }
     func resolveConflict(_ buffer: EditorBuffer) -> Bool {
@@ -412,6 +425,20 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             do { guard !FileManager.default.fileExists(atPath: url.path) else { throw BetterTeXError.message("文件已存在，请使用其他名称。") }; try "".write(to: url, atomically: true, encoding: .utf8); self?.openFile(url); self?.ui.explorer.refresh() }
             catch { self?.error(error.localizedDescription) }
         }
+    }
+    /// Rescans the project for completion candidates, off the main thread.
+    func refreshCompletionIndex(after delay: TimeInterval = 0) {
+        indexJob?.cancel()
+        let job = DispatchWorkItem { [weak self] in
+            guard let self, let project = self.project else { return }
+            let token = self.generation
+            let base = self.active.flatMap { try? TeXProject.root(active: $0.url, project: project) }?.deletingLastPathComponent() ?? project
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let index = ProjectIndex.scan(project: project, base: base)
+                DispatchQueue.main.async { if let self, self.generation == token { self.completionIndex = index } }
+            }
+        }
+        indexJob = job; DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: job)
     }
     /// Shows the last build's errors and undefined references that fall in the active file.
     func refreshProblems() {

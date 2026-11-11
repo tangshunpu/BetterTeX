@@ -23,6 +23,7 @@ Swift 6.4 优化器在 PDFKit 高亮桥接函数上存在编译崩溃；`PDFPane
 - 自绘标题栏包含边栏开关、搜索（⌘K，搜索文件与当前文档章节）、引擎选择、编译、标注为 GitHub 的拉取 / 推送组（远端不是 GitHub 时显示 Git）、Agent 面板开关和布局菜单。「自动预览」开关在 PDF 标题栏。
 - 编辑器上方的快速插入栏（也在「插入」菜单）提供图片、列表、编号、公式、表格、章节、粗体、斜体、引用和交叉引用；有选区时包裹选区，否则选中占位文字。图片可通过按钮（⇧⌘I）、拖入编辑器或粘贴（含截图）插入：项目外的文件会拷贝到 `figures/`，自动生成 figure 环境，并在主文档缺少时加入 `\usepackage{graphicx}`。在 `\item` 行末按回车自动续写下一条，在空 `\item` 上按回车结束列表。
 - 拖动 PDF 或 Agent 的标题栏可停靠到左侧、右侧或底部；右键标题栏或标题栏「布局」菜单也提供停靠在左侧 / 右侧 / 底部。Agent 相对整个编辑区移动，PDF 相对源码移动。位置和分栏尺寸会记住，移动与收起面板保留终端会话。「布局 → 恢复默认布局」恢复 PDF 在中间、Agent 在右的排列。
+- 自动补全：输入 `\` 加字母补全命令（含项目里用 `\newcommand` 等定义的宏，带参数的命令会补上花括号）；`\cite{` 列出 `.bib` 和 `\bibitem` 里的文献（可按作者、年份、标题筛选）；`\ref{` 等列出全项目的 `\label`；`\begin{` 补全环境并自动配上 `\end`；`\includegraphics{`、`\input{`、`\bibliography{`、`\usepackage{` 补全路径和宏包名。↑↓ 选择，↩ 或 ⇥ 确认，esc 关闭。
 - UTF-8 文本、LaTeX 语法着色、行号、撤销、原生查找、自动缩进与中文输入法。为控制内存，单文件上限为 12 MB。
 - 停止输入约 0.9 秒自动保存，再等待约 0.6 秒启动编译；取消「自动编译」后仍然自动保存。编译工作在后台执行，持续编辑时合并后续编译请求。自动编译只在源文件、主文档或引擎确实变化时才运行，保存、文件监控和 Overleaf 同步不会各触发一遍。编译时 PDF 标题栏下方显示进度条，状态标签显示当前步骤（如「第 2 步 · 整理参考文献」）；带参考文献的文档首次编译依次是排版、BibTeX / Biber、再排版两遍，属于同一次编译。0.3 秒内结束的编译不显示忙碌状态，PDF 内容未变时不重新载入。
 - 外部修改通过 FSEvents 检测。干净缓冲区自动重载；未保存内容与磁盘冲突时提供明确选择，暂停自动保存与编译。
@@ -105,6 +106,6 @@ Agent 标题栏的时钟按钮列出当前项目最近的 Codex 与 Claude 会�
 - `Tests/BetterTeXCoreTests/`：核心与集成测试。Git 测试只使用临时本地仓库；没有安装 TeX 时对应测试明确跳过。
 - `script/`：构建、图标和测试脚本。
 
-内存随 PDF 页数、打开文件和终端数量变化，Agent 与 TeX 子进程占用单独计算。当前版本未提供 LSP、补全、扩展市场、多窗口工作区或完整的 PDF 注释编辑。
+内存随 PDF 页数、打开文件和终端数量变化，Agent 与 TeX 子进程占用单独计算。当前版本未提供 LSP、扩展市场、多窗口工作区或完整的 PDF 注释编辑。
 
 UI 参考：[Overleaf 编辑器设计](https://docs.overleaf.com/getting-started/how-do-i-use-overleaf/redesigned-overleaf-editor)、[编辑器与 PDF 布局](https://docs.overleaf.com/navigating-in-the-editor/working-with-the-pdf-viewer/editor-and-pdf-layout-and-sizing)。未复制 Overleaf 源码或品牌资源。
