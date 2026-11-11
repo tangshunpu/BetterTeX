@@ -32,9 +32,9 @@ final class SettingsWindowController: NSWindowController {
         let updateHeading = Theme.label(L10n.tr("软件更新"), size: 20, weight: .bold)
         let version = Theme.label(L10n.tr("当前版本：\(ReleaseVersion.installed())"), size: 12)
         automatic.state = UpdatePreferences.automatic() ? .on : .off
-        automatic.target = self; automatic.action = #selector(updatePreferencesChanged)
+        automatic.target = self; automatic.action = #selector(automaticChanged)
         prereleases.state = UpdatePreferences.includesPrereleases(current: ReleaseVersion.installed()) ? .on : .off
-        prereleases.target = self; prereleases.action = #selector(updatePreferencesChanged)
+        prereleases.target = self; prereleases.action = #selector(prereleasesChanged)
         let check = NSButton(title: L10n.tr("检查更新…"), target: self, action: #selector(checkForUpdates)); check.bezelStyle = .rounded
         let updateRow = NSStackView(views: [version, check]); updateRow.spacing = 20
         let content = NSStackView(views: [heading, row, restartHint, updateHeading, automatic, prereleases, updateRow])
@@ -52,10 +52,8 @@ final class SettingsWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError() }
 
     @objc private func checkForUpdates() { onCheckForUpdates() }
-    @objc private func updatePreferencesChanged() {
-        UserDefaults.standard.set(automatic.state == .on, forKey: UpdatePreferences.automaticKey)
-        UserDefaults.standard.set(prereleases.state == .on, forKey: UpdatePreferences.prereleasesKey)
-    }
+    @objc private func automaticChanged() { UpdatePreferences.setAutomatic(automatic.state == .on) }
+    @objc private func prereleasesChanged() { UpdatePreferences.setIncludesPrereleases(prereleases.state == .on) }
 
     @objc private func languageChanged() {
         let index = languagePicker.indexOfSelectedItem

@@ -34,9 +34,10 @@ public enum UpdateInstaller {
         try UpdateSignature.verify(archive: archive, signature: Data(contentsOf: signature), publicKey: publicKey)
         try checkDestination(destination)
         let fm = FileManager.default
-        let directory = destination.deletingLastPathComponent().appendingPathComponent(".BetterTeX-update-\(UUID().uuidString)", isDirectory: true)
+        let directory = destination.deletingLastPathComponent().appendingPathComponent(UpdateStaging.prefix + UUID().uuidString, isDirectory: true)
         try fm.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         do {
+            try UpdateStaging.record(directory, destination: destination)
             let listing = try command("/usr/bin/unzip", ["-Z1", archive.path])
             let entries = listing.split(separator: "\n").map(String.init)
             guard !entries.isEmpty, entries.allSatisfy({ path in
@@ -95,18 +96,20 @@ public enum UpdateInstaller {
         try checkDestination(update.destination)
         let script = update.directory.appendingPathComponent("install.sh")
         try Data(contentsOf: scriptURL()).write(to: script, options: .atomic)
+        // Refresh the lease before spawning, covering the gap before the helper records its PID.
+        try UpdateStaging.record(update.directory, destination: update.destination)
         try FileManager.default.createDirectory(at: result.deletingLastPathComponent(), withIntermediateDirectories: true)
         let process = try installerProcess(update, script: script, parentPID: parentPID, result: result)
         try process.run()
         return process
     }
     static func installerProcess(_ update: PreparedAppUpdate, script: URL? = nil, parentPID: Int32,
-                                 result: URL, opener: String = "/usr/bin/open") throws -> Process {
+                                 result: URL, opener: String = "/usr/bin/open", waitAttempts: Int = 1500) throws -> Process {
         let script = try script ?? scriptURL()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [script.path, String(parentPID), update.destination.path, update.application.path,
-                             update.directory.path, result.path, opener]
+                             update.directory.path, result.path, opener, String(max(1, waitAttempts))]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice

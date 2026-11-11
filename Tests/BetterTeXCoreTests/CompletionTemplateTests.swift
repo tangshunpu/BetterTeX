@@ -20,7 +20,7 @@ final class CompletionTemplateTests: XCTestCase {
       \centering
       \includegraphics[width=\linewidth]{|}
       \caption{}
-      \label{fig:}
+      % \label{fig:}
     \end{figure}
     """#
 
@@ -28,8 +28,7 @@ final class CompletionTemplateTests: XCTestCase {
         XCTAssertEqual(try complete(#"\begin{fig|"#, "figure"), figure)
         XCTAssertEqual(try complete(#"\begin{fig|}"#, "figure"), figure)
         XCTAssertEqual(try complete(#"\begin figure|"#, "figure"), figure)
-        XCTAssertEqual(try complete(#"\fig|"#, #"\figure"#), figure)
-        XCTAssertEqual(try complete(#"\figure|"#, #"\figure"#), figure)
+        XCTAssertEqual(try complete(#"\fig|"#, #"\fig"#), figure)
         XCTAssertEqual(try complete(#"\begin{figure}|"#, "figure"), figure)
         XCTAssertEqual(try complete(#"\begin{fig|ure}"#, "figure"), figure)
         XCTAssertEqual(try complete(#"\begin{figure*|}"#, "figure*"), figure.replacingOccurrences(of: "{figure}", with: "{figure*}"))
@@ -48,8 +47,8 @@ final class CompletionTemplateTests: XCTestCase {
     }
 
     func testTableAndRequiredArguments() throws {
-        let table = try complete(#"\tab|"#, #"\table"#)
-        XCTAssertTrue(table.hasPrefix("\\begin{table}[htbp]\n  \\centering\n  \\caption{|}\n  \\label{tab:}"), table)
+        let table = try complete(#"\tbl|"#, #"\tbl"#)
+        XCTAssertTrue(table.hasPrefix("\\begin{table}[htbp]\n  \\centering\n  \\caption{|}\n  % \\label{tab:}"), table)
         XCTAssertTrue(table.contains("\\begin{tabular}{ll}\n    \\hline\n     &  \\\\\n"), table)
         XCTAssertTrue(table.hasSuffix("  \\end{tabular}\n\\end{table}"), table)
         XCTAssertTrue(try complete(#"\begin{tabular|}"#, "tabular").hasPrefix(#"\begin{tabular}{|}"#))
@@ -106,10 +105,35 @@ final class CompletionTemplateTests: XCTestCase {
     func testCustomEnvironmentsAndCommandsKeepPriority() throws {
         var index = ProjectIndex(); index.environments = ["claim"]; index.commands = ["figure"]
         XCTAssertEqual(try complete(#"\begin{claim|}"#, "claim", index: index), "\\begin{claim}\n  |\n\\end{claim}")
-        XCTAssertEqual(try complete(#"\claim|"#, #"\claim"#, index: index), "\\begin{claim}\n  |\n\\end{claim}")
         XCTAssertEqual(try complete(#"\fig|"#, #"\figure"#, index: index), #"\figure|"#)
         XCTAssertEqual(try complete(#"\end item|"#, "itemize"), #"\end{itemize}|"#)
         XCTAssertEqual(try complete(#"\end{fig|ure}"#, "figure"), #"\end{figure}|"#)
+    }
+
+    func testOnlyExplicitShortcutsExpandEnvironments() throws {
+        for name in ["frame", "matrix", "column", "table", "center", "quote", "figure", "claim"] {
+            let source = "\\" + name
+            let request = try XCTUnwrap(CompletionRequest.detect(in: source, cursor: source.utf16.count))
+            var index = ProjectIndex(); index.environments = ["claim"]
+            XCTAssertFalse(Completer.items(for: request, index: index).contains { $0.environment == name }, name)
+            XCTAssertEqual(try complete("\\begin{\(name)|}", name, index: index).contains("\\end{\(name)}"), true)
+        }
+        var index = ProjectIndex(); index.commands = ["fig"]
+        XCTAssertEqual(try complete(#"\fi|"#, #"\fig"#, index: index), #"\fig|"#)
+    }
+
+    func testRepeatedTemplatesDoNotDefinePlaceholderLabels() throws {
+        let figures = try complete(#"\fig|"#, #"\fig"#) + "\n" + complete(#"\fig|"#, #"\fig"#)
+        let tables = try complete(#"\tbl|"#, #"\tbl"#) + "\n" + complete(#"\tbl|"#, #"\tbl"#)
+        XCTAssertTrue(ProjectIndex.labels(in: figures + tables, file: "main.tex").isEmpty)
+        XCTAssertTrue(figures.contains(#"% \label{fig:}"#))
+        XCTAssertTrue(tables.contains(#"% \label{tab:}"#))
+        let labels = ProjectIndex.labels(in: #"""
+        % \label{comment}
+        \label{active} % \label{after-comment}
+        50\% \label{after-escaped-percent}
+        """#, file: "main.tex")
+        XCTAssertEqual(labels.map(\.label), ["active", "after-escaped-percent"])
     }
 
     func testCommandsUseTheCorrectNumberOfArguments() throws {

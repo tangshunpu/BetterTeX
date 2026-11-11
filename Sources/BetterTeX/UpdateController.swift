@@ -9,12 +9,13 @@ final class UpdateController: NSObject {
     private var timer: Timer?
     private var panel: UpdateWindowController?
     private var available: AppRelease?
-    private var prepared: PreparedAppUpdate?
-    private var installer: Process?
+    private var pendingUpdate: PendingAppUpdate?
     private var presentedVersion: String?
     private var manualCheck = false
 
     func start() {
+        let destination = Bundle.main.bundleURL
+        DispatchQueue.global(qos: .utility).async { UpdateStaging.cleanup(for: destination) }
         if let result = try? String(contentsOf: UpdateInstaller.resultURL, encoding: .utf8) {
             try? FileManager.default.removeItem(at: UpdateInstaller.resultURL)
             let lines = result.components(separatedBy: "\n")
@@ -39,7 +40,7 @@ final class UpdateController: NSObject {
     func check(userInitiated: Bool = true) {
         if userInitiated {
             manualCheck = true
-            if let prepared { showReady(prepared); return }
+            if pendingUpdate != nil { showReady(); return }
             if task != nil { showPanel(); return }
             showMessage(L10n.tr("正在检查更新…"), L10n.tr("当前版本：\(currentVersion)"), busy: true)
         }
@@ -99,9 +100,9 @@ final class UpdateController: NSObject {
                 let destination = Bundle.main.bundleURL
                 let update = try await Task.detached { try UpdateInstaller.prepare(archive: archive, signature: signature, release: release, destination: destination) }.value
                 if Task.isCancelled { update.discard(); throw CancellationError() }
-                prepared = update
-                showReady(update)
-                NSApp.terminate(nil)
+                pendingUpdate = PendingAppUpdate(update)
+                showReady()
+                requestInstallation()
             } catch {
                 if error is CancellationError || (error as? URLError)?.code == .cancelled {
                     present(release)
@@ -109,20 +110,24 @@ final class UpdateController: NSObject {
             }
         }
     }
-    private func showReady(_ update: PreparedAppUpdate) {
-        showPanel().configure(title: L10n.tr("更新已就绪"), detail: L10n.tr("保存文件后即可安装并重启；取消退出会保留已下载的更新。"),
-                              primary: L10n.tr("安装并重启"), action: { NSApp.terminate(nil) },
-                              secondary: L10n.tr("稍后"), secondaryAction: { [weak self] in self?.panel?.close() })
+    private func showReady() {
+        showPanel().configure(title: L10n.tr("更新已就绪"), detail: L10n.tr("点击「安装并重启」以更新。选择「稍后」后，正常退出不会安装或重新打开应用。"),
+                              primary: L10n.tr("安装并重启"), action: { [weak self] in self?.requestInstallation() },
+                              secondary: L10n.tr("稍后"), secondaryAction: { [weak self] in self?.cancelInstallationRequest(); self?.panel?.close() })
     }
+    private func requestInstallation() {
+        guard let pendingUpdate else { return }
+        pendingUpdate.requestRestart(); NSApp.terminate(nil)
+    }
+    func cancelInstallationRequest() { pendingUpdate?.cancelRestart() }
     /// Called only after the application's save/session checks allow termination.
-    func installIfReady() -> Bool {
-        guard let prepared else { return true }
-        do { installer = try UpdateInstaller.launch(prepared); return true }
+    func installIfRequested() -> Bool {
+        do { try pendingUpdate?.startIfRequested(); return true }
         catch { showError(error); return false }
     }
     func stop() {
         task?.cancel(); timer?.invalidate()
-        if installer == nil { prepared?.discard() }
+        pendingUpdate?.discardIfNotInstalling()
     }
     private func showError(_ error: Error) {
         showPanel().configure(title: L10n.tr("更新失败"), detail: error.localizedDescription,

@@ -25,3 +25,13 @@ Validate semantic ordering, release filtering, HTTP failures, digest mismatch, b
 - Keep the existing restart-language hint and remove forced version unwraps during release ordering.
 
 Follow-up validation: 78 tests executed (77 passed, 1 opt-in live Overleaf skip). Tests cover signed archive preparation, tampering/wrong-key rejection before extraction, signing-tool interoperability and private-file permissions, failed rollback without a second launch, and absent resources. The release build generated a detached signature verified against the pinned public key; app launch and English localization were inspected. DMG staging and mounted app resource/signature checks passed. Removing the installer from an isolated app copy correctly failed packaging. Resource bundles are replaced and signed individually so incremental builds cannot retain obsolete signatures; FileProvider metadata cleanup has bounded retries and still fails closed on a bad bundle.
+
+## Second review follow-up
+
+Installation requires a one-shot explicit restart request. Cancelling save/session termination clears it; Later and ordinary quitting never launch the installer. Normal quit discards the uninstalled download. A typed pending-update lifecycle owns this transition and is covered by effect-based tests.
+
+Staging directories carry an application path, creation date and owner PID; the installer records its PID. Startup collection only removes recorded, idle copies older than 24 hours for this exact installation. Unknown directories, symlinks and any recovery backup are preserved. The staging lease is refreshed before launching the helper, and timeout before any swap removes only the unused staged copy.
+
+Automatic-check and prerelease controls persist their own values independently, preserving the prerelease channel’s inferred default unless it is explicitly changed.
+
+Second follow-up validation: 86 tests executed (85 passed, 1 opt-in live Overleaf skip). New tests cover normal quit, cancelled and failed restart requests, one-shot installation, conservative staging collection, helper timeout before swapping, independent update preferences, command/template conflicts, and commented label hints. The release build and app launch passed, the generated ZIP signature verified against the pinned public key, and DMG staging and mounted app validation passed.

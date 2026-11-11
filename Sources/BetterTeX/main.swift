@@ -32,8 +32,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let workspace else { return .terminateNow }
-        guard !workspace.window.isVisible || workspace.prepareToClose() else { return .terminateCancel }
-        return updates.installIfReady() ? .terminateNow : .terminateCancel
+        guard !workspace.window.isVisible || workspace.prepareToClose() else {
+            updates.cancelInstallationRequest(); return .terminateCancel
+        }
+        return updates.installIfRequested() ? .terminateNow : .terminateCancel
     }
     func applicationWillTerminate(_ notification: Notification) { updates.stop(); workspace?.shutdown() }
     func application(_ sender: NSApplication, openFiles filenames: [String]) {

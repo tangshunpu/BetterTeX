@@ -93,6 +93,8 @@ public struct UpdatePreferences {
     public static let automaticKey = "updates.automatic"
     public static let prereleasesKey = "updates.prereleases"
     public static let lastCheckKey = "updates.lastCheck"
+    public static func setAutomatic(_ value: Bool, in defaults: UserDefaults = .standard) { defaults.set(value, forKey: automaticKey) }
+    public static func setIncludesPrereleases(_ value: Bool, in defaults: UserDefaults = .standard) { defaults.set(value, forKey: prereleasesKey) }
     public static func automatic(in defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: automaticKey) as? Bool ?? true
     }

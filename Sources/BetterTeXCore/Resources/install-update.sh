@@ -8,15 +8,21 @@ replacement="$3"
 staging="$4"
 result="$5"
 opener="$6"
+wait_attempts="${7:-1500}"
 backup="$staging/previous.app"
 old_moved=0
 new_moved=0
+printf '%s\n' "$$" > "$staging/installer.pid" || exit 1
 
 # A cancelled or stalled quit must never replace an application that is still running.
 attempt=0
 while kill -0 "$parent_pid" 2>/dev/null; do
     attempt=$((attempt + 1))
-    if [ "$attempt" -ge 1500 ]; then exit 1; fi
+    if [ "$attempt" -ge "$wait_attempts" ]; then
+        # No swap has started, so only the unused staged copy is being removed.
+        if [ ! -e "$backup" ]; then /bin/rm -rf "$staging"; fi
+        exit 1
+    fi
     /bin/sleep 0.2
 done
 

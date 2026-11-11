@@ -145,7 +145,13 @@ public struct ProjectIndex {
     }
 
     /// Labels defined in one document, e.g. the unsaved text in the editor.
-    public static func labels(in text: String, file: String) -> [CompletionItem] { captures(label, text).map { CompletionItem(label: $0, detail: file) } }
+    public static func labels(in text: String, file: String) -> [CompletionItem] {
+        let ns = text as NSString
+        return label.matches(in: text, range: NSRange(location: 0, length: ns.length)).filter {
+            CompletionEnvironmentContext.isUnescaped(at: $0.range.location, in: ns)
+                && !CompletionEnvironmentContext.isComment(at: $0.range.location, in: ns)
+        }.map { CompletionItem(label: ns.substring(with: $0.range(at: 1)), detail: file) }
+    }
 
     /// Citation keys of a `.bib` file with "Author Year · Title" as detail.
     public static func citations(inBib text: String) -> [CompletionItem] {
@@ -259,8 +265,11 @@ public enum Completer {
                 list.append(CompletionItem(label: "\\item[]", detail: L10n.tr("带标签的列表项"), insert: "\\item[] ", caret: 6))
             }
             for name in plain where seen.insert(name).inserted { list.append(CompletionItem(label: "\\" + name)) }
-            for name in unique(index.environments + environments) where seen.insert(name).inserted {
-                list.append(CompletionItem(label: "\\" + name, detail: EnvironmentTemplate.detail(for: name), environment: name))
+            // Only explicit shortcuts may replace a command; \frame, \matrix, etc. have real package meanings.
+            let shortcuts = [("fig", "figure"), ("tbl", "table"), ("subfig", "subfigure"),
+                             ("itemize", "itemize"), ("enumerate", "enumerate"), ("description", "description")]
+            for (shortcut, name) in shortcuts where seen.insert(shortcut).inserted {
+                list.append(CompletionItem(label: "\\" + shortcut, detail: L10n.tr("快捷模板") + " · " + EnvironmentTemplate.detail(for: name), environment: name))
             }
             candidates = list
         }

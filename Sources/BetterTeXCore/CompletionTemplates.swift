@@ -20,9 +20,9 @@ enum EnvironmentTemplate {
         switch name {
         case "figure", "figure*", "subfigure":
             return (name == "subfigure" ? "[b]{0.48\\textwidth}" : "[htbp]",
-                    "  \\centering\n  \\includegraphics[width=\\linewidth]{\(cursor)}\n  \\caption{}\n  \\label{fig:}")
+                    "  \\centering\n  \\includegraphics[width=\\linewidth]{\(cursor)}\n  \\caption{}\n  % \\label{fig:}")
         case "table", "table*":
-            return ("[htbp]", "  \\centering\n  \\caption{\(cursor)}\n  \\label{tab:}\n  \\begin{tabular}{ll}\n    \\hline\n     &  \\\\\n    \\hline\n     &  \\\\\n    \\hline\n  \\end{tabular}")
+            return ("[htbp]", "  \\centering\n  \\caption{\(cursor)}\n  % \\label{tab:}\n  \\begin{tabular}{ll}\n    \\hline\n     &  \\\\\n    \\hline\n     &  \\\\\n    \\hline\n  \\end{tabular}")
         case "tabular": return ("{\(cursor)}", "   &  \\\\")
         case "tabularx": return ("{\\linewidth}{\(cursor)}", "   &  \\\\")
         case "array": return ("{\(cursor)}", "   &  \\\\")
@@ -33,7 +33,7 @@ enum EnvironmentTemplate {
         case "frame": return ("{\(cursor)}", "  ")
         case "columns": return ("", "  \\begin{column}{0.48\\textwidth}\n    \(cursor)\n  \\end{column}\n  \\begin{column}{0.48\\textwidth}\n    \n  \\end{column}")
         case "column": return ("{0.48\\textwidth}", "  \(cursor)")
-        case "algorithm": return ("", "  \\caption{\(cursor)}\n  \\label{alg:}")
+        case "algorithm": return ("", "  \\caption{\(cursor)}\n  % \\label{alg:}")
         default: return ("", "  \(cursor)")
         }
     }
