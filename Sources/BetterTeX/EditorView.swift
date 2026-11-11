@@ -568,7 +568,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         textView.setSelectedRange(NSRange(location: edit.caret, length: 0))
         completionPaused = false; completionCursor = edit.caret
         // A snippet that leaves the caret inside braces may have more to offer (\cite{ → keys).
-        if request.kind == .command, item.caret != nil { updateCompletion() }
+        if item.environment != nil || request.kind == .command && item.caret != nil { updateCompletion() }
     }
 
     /// Replaces only the changed span so the caret, scroll position and undo history survive

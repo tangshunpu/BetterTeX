@@ -23,7 +23,7 @@ Write, compile and preview in one window — with Overleaf sync and your coding 
 
 | | |
 | --- | --- |
-| ✍️ **Editor** | Syntax colouring, outline, and completion for commands, citations, labels and paths |
+| ✍️ **Editor** | Syntax colouring, outline, command / citation / path completion, and full figure, table and list templates with matching `\end` |
 | ⚡ **Live preview** | Auto-compile with latexmk, pdfLaTeX, XeLaTeX or LuaLaTeX; SyncTeX in both directions |
 | 🗂️ **Project home** | Local and Overleaf projects in one searchable list — click to open |
 | 🍃 **Overleaf sync** | Real-time or interval sync, collaborator cursors, comments |

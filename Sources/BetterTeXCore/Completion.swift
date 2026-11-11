@@ -8,8 +8,10 @@ public struct CompletionItem: Equatable {
     public let insert: String
     /// Caret position inside `insert` after accepting; nil puts it at the end.
     public let caret: Int?
-    public init(label: String, detail: String = "", insert: String? = nil, caret: Int? = nil) {
-        self.label = label; self.detail = detail; self.insert = insert ?? label; self.caret = caret
+    /// Expands an environment when accepted, using the document's indentation and line endings.
+    public let environment: String?
+    public init(label: String, detail: String = "", insert: String? = nil, caret: Int? = nil, environment: String? = nil) {
+        self.label = label; self.detail = detail; self.insert = insert ?? label; self.caret = caret; self.environment = environment
     }
 }
 
@@ -23,6 +25,8 @@ public struct CompletionRequest: Equatable {
     public let prefix: String
     /// UTF-16 range of `prefix` in the document.
     public let range: NSRange
+    /// Also accepts shorthand such as \begin figure, replacing the space with an opening brace.
+    public var needsOpeningBrace = false
 
     /// Looks at the current line up to the caret. Returns nil when nothing can be completed there.
     public static func detect(in text: String, cursor: Int) -> CompletionRequest? {
@@ -32,10 +36,11 @@ public struct CompletionRequest: Equatable {
         let before = ns.substring(with: NSRange(location: lineStart, length: cursor - lineStart))
         let line = before as NSString
         // Nothing is completed inside a comment.
-        if let comment = try? NSRegularExpression(pattern: "(?<!\\\\)%"), comment.firstMatch(in: before, range: NSRange(location: 0, length: line.length)) != nil { return nil }
+        if CompletionEnvironmentContext.isComment(at: cursor, in: ns) { return nil }
 
         // An argument being typed: \cite[p. 3]{a,b|   \begin{ali|
-        if let match = argument.firstMatch(in: before, range: NSRange(location: 0, length: line.length)) {
+        if let match = argument.firstMatch(in: before, range: NSRange(location: 0, length: line.length)),
+           CompletionEnvironmentContext.isUnescaped(at: match.range.location, in: line) {
             let command = line.substring(with: match.range(at: 1)), content = match.range(at: 2)
             if let kind = kind(of: command) {
                 var start = content.location
@@ -45,6 +50,22 @@ public struct CompletionRequest: Equatable {
                 }
                 while start < line.length, line.character(at: start) == 32 { start += 1 }
                 return CompletionRequest(kind: kind, command: command, prefix: line.substring(from: start), range: NSRange(location: lineStart + start, length: line.length - start))
+            }
+        }
+        if let match = environmentShorthand.firstMatch(in: before, range: NSRange(location: 0, length: line.length)),
+           CompletionEnvironmentContext.isUnescaped(at: match.range.location, in: line) {
+            let start = NSMaxRange(match.range(at: 1))
+            return CompletionRequest(kind: .environment, command: line.substring(with: match.range(at: 1)),
+                                     prefix: line.substring(with: match.range(at: 2)),
+                                     range: NSRange(location: lineStart + start, length: line.length - start), needsOpeningBrace: true)
+        }
+        // Keep offering a block after the closing brace was typed by hand: \begin{figure}|.
+        if let match = completedBegin.firstMatch(in: before, range: NSRange(location: 0, length: line.length)),
+           CompletionEnvironmentContext.isUnescaped(at: match.range.location, in: line) {
+            let name = line.substring(with: match.range(at: 1))
+            if !CompletionEnvironmentContext.hasClosing(name, after: cursor, in: text) {
+                return CompletionRequest(kind: .environment, command: "begin", prefix: name,
+                                         range: NSRange(location: lineStart + match.range(at: 1).location, length: match.range(at: 1).length))
             }
         }
         // A command being typed: \alp|  (but not after a line break "\\").
@@ -59,6 +80,8 @@ public struct CompletionRequest: Equatable {
     }
     private static let argument = try! NSRegularExpression(pattern: "\\\\([a-zA-Z@]+)\\*?(?:\\[[^\\]]*\\])*\\{([^{}]*)$")
     private static let commandStart = try! NSRegularExpression(pattern: "\\\\([a-zA-Z@]*)$")
+    private static let environmentShorthand = try! NSRegularExpression(pattern: #"\\(begin|end)[ \t]+([\p{L}\p{N}*@:_-]*)$"#)
+    private static let completedBegin = try! NSRegularExpression(pattern: #"\\begin\{([\p{L}\p{N}*@:_-]+)\}$"#)
     private static func kind(of command: String) -> CompletionKind? {
         let lower = command.lowercased()
         if lower == "begin" || lower == "end" { return .environment }
@@ -188,8 +211,9 @@ public enum Completer {
         "label", "ref", "eqref", "pageref", "autoref", "cref", "Cref", "cite", "citep", "citet", "parencite", "textcite", "autocite", "nocite", "footnote", "caption", "includegraphics",
         "input", "include", "usepackage", "documentclass", "begin", "end", "title", "author", "date", "bibliography", "bibliographystyle", "addbibresource", "url", "text", "mathbb", "mathcal",
         "mathbf", "mathrm", "mathit", "mathsf", "mathfrak", "boldsymbol", "bm", "operatorname", "sqrt", "hat", "bar", "tilde", "vec", "dot", "ddot", "overline", "underbrace", "overbrace",
-        "hspace", "vspace", "textcolor", "color", "pagestyle", "thispagestyle", "item", "mbox", "thanks", "keywords", "subfile", "graphicspath", "captionof", "subcaption"]
-    static let twoArguments = ["frac", "dfrac", "tfrac", "binom", "href", "newcommand", "renewcommand", "setlength", "setcounter", "addtocounter", "stackrel", "overset", "underset", "multirow"]
+        "hspace", "vspace", "color", "pagestyle", "thispagestyle", "mbox", "thanks", "keywords", "subfile", "graphicspath", "subcaption", "bibitem", "boxed", "phantom", "vphantom", "hphantom", "ensuremath", "substack"]
+    static let twoArguments = ["frac", "dfrac", "tfrac", "binom", "href", "newcommand", "renewcommand", "setlength", "setcounter", "addtocounter", "stackrel", "overset", "underset", "textcolor", "captionof", "colorbox", "raisebox", "rule", "newtheorem"]
+    static let threeArguments = ["multicolumn", "multirow", "definecolor", "fcolorbox", "resizebox", "newenvironment", "renewenvironment"]
     static let plain = ["alpha", "beta", "gamma", "delta", "epsilon", "varepsilon", "zeta", "eta", "theta", "vartheta", "iota", "kappa", "lambda", "mu", "nu", "xi", "pi", "rho", "sigma", "tau",
         "upsilon", "phi", "varphi", "chi", "psi", "omega", "Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi", "Sigma", "Phi", "Psi", "Omega", "sum", "prod", "int", "iint", "oint", "lim", "inf", "sup",
         "max", "min", "arg", "log", "ln", "exp", "sin", "cos", "tan", "det", "infty", "partial", "nabla", "forall", "exists", "in", "notin", "subset", "subseteq", "supset", "cup", "cap", "setminus",
@@ -201,7 +225,7 @@ public enum Completer {
         "textstyle", "scriptstyle", "small", "footnotesize", "scriptsize", "tiny", "large", "Large", "LARGE", "huge", "Huge", "normalsize", "bfseries", "itshape", "ttfamily", "item"]
     static let environments = ["document", "abstract", "figure", "figure*", "table", "table*", "tabular", "tabularx", "equation", "equation*", "align", "align*", "aligned", "gather", "gather*",
         "multline", "split", "cases", "matrix", "pmatrix", "bmatrix", "vmatrix", "array", "itemize", "enumerate", "description", "center", "flushleft", "flushright", "quote", "verbatim",
-        "minipage", "subfigure", "theorem", "lemma", "proposition", "corollary", "definition", "remark", "proof", "algorithm", "algorithmic", "tikzpicture", "frame", "columns", "lstlisting",
+        "minipage", "subfigure", "theorem", "lemma", "proposition", "corollary", "definition", "remark", "proof", "algorithm", "algorithmic", "tikzpicture", "frame", "columns", "column", "lstlisting",
         "thebibliography", "appendices", "IEEEkeywords", "IEEEproof", "IEEEbiography"]
     static let packages = ["amsmath", "amssymb", "amsthm", "amsfonts", "mathtools", "bm", "graphicx", "xcolor", "hyperref", "cleveref", "geometry", "booktabs", "multirow", "array", "tabularx",
         "caption", "subcaption", "float", "enumitem", "listings", "algorithm", "algorithmic", "algpseudocode", "tikz", "pgfplots", "siunitx", "natbib", "biblatex", "cite", "url", "inputenc",
@@ -217,15 +241,27 @@ public enum Completer {
         case .input: candidates = index.inputs.map { CompletionItem(label: $0) }
         case .bibliography: candidates = index.bibliographies.map { CompletionItem(label: request.command.lowercased() == "bibliography" && $0.hasSuffix(".bib") ? String($0.dropLast(4)) : $0) }
         case .package: candidates = packages.map { CompletionItem(label: $0) }
-        case .environment: candidates = unique(index.environments + environments).map { CompletionItem(label: $0, detail: index.environments.contains($0) ? L10n.tr("项目定义") : "") }
+        case .environment:
+            candidates = unique(index.environments + environments).map {
+                CompletionItem(label: $0, detail: index.environments.contains($0) ? L10n.tr("项目定义") : request.command == "begin" ? EnvironmentTemplate.detail(for: $0) : "",
+                               environment: request.command == "begin" ? $0 : nil)
+            }
         case .command:
             var seen = Set<String>(); var list: [CompletionItem] = []
             for name in index.commands where seen.insert(name).inserted { list.append(CompletionItem(label: "\\" + name, detail: L10n.tr("项目定义"))) }
+            for name in threeArguments where seen.insert(name).inserted { list.append(CompletionItem(label: "\\" + name, insert: "\\\(name){}{}{}", caret: name.utf16.count + 2)) }
             for name in twoArguments where seen.insert(name).inserted { list.append(CompletionItem(label: "\\" + name, insert: "\\\(name){}{}", caret: name.utf16.count + 2)) }
             for name in oneArgument where seen.insert(name).inserted {
-                list.append(name == "item" ? CompletionItem(label: "\\item", insert: "\\item ") : CompletionItem(label: "\\" + name, insert: "\\\(name){}", caret: name.utf16.count + 2))
+                list.append(CompletionItem(label: "\\" + name, insert: "\\\(name){}", caret: name.utf16.count + 2))
+            }
+            if seen.insert("item").inserted {
+                list.append(CompletionItem(label: "\\item", insert: "\\item "))
+                list.append(CompletionItem(label: "\\item[]", detail: L10n.tr("带标签的列表项"), insert: "\\item[] ", caret: 6))
             }
             for name in plain where seen.insert(name).inserted { list.append(CompletionItem(label: "\\" + name)) }
+            for name in unique(index.environments + environments) where seen.insert(name).inserted {
+                list.append(CompletionItem(label: "\\" + name, detail: EnvironmentTemplate.detail(for: name), environment: name))
+            }
             candidates = list
         }
         let needle = (request.kind == .command ? "\\" + request.prefix : request.prefix).lowercased()
@@ -238,10 +274,10 @@ public enum Completer {
             else if request.kind == .citation, item.detail.lowercased().contains(needle) { described.append(item) }
         }
         // Shorter names first among prefix matches, so \in is not buried under \infty, \int…
-        starts.sort { $0.label.count < $1.label.count }
+        starts.sort { $0.label.count == $1.label.count ? $0.label < $1.label : $0.label.count < $1.label.count }
         let result = Array((starts + contains + described).prefix(limit))
         // Typing a complete name that needs no expansion leaves nothing to offer.
-        if result.count == 1, result[0].insert.lowercased() == needle { return [] }
+        if request.kind == .command, result.count == 1, result[0].environment == nil, result[0].insert.lowercased() == needle { return [] }
         return result
     }
     private static func unique(_ values: [String]) -> [String] { var seen = Set<String>(); return values.filter { seen.insert($0).inserted } }
@@ -249,24 +285,35 @@ public enum Completer {
     /// The edit that accepting `item` makes: the range to replace, its new text and the caret afterwards.
     public static func apply(_ item: CompletionItem, to request: CompletionRequest, in text: String) -> (range: NSRange, replacement: String, caret: Int) {
         let ns = text as NSString; var range = request.range; var replacement = item.insert
-        guard request.kind != .command else { return (range, replacement, range.location + (item.caret ?? (replacement as NSString).length)) }
-        let end = NSMaxRange(range)
-        let closed = end < ns.length && ns.character(at: end) == 125
-        if !closed { replacement += "}" } else { range.length += 1; replacement += "}" }
+        if request.kind == .command {
+            guard let environment = item.environment else { return (range, replacement, range.location + (item.caret ?? (replacement as NSString).length)) }
+            replacement = "\\begin{\(environment)}"
+        } else {
+            if request.kind == .environment {
+                // When editing inside a name, replace its remaining letters as well.
+                let remaining = NSRange(location: NSMaxRange(range), length: ns.length - NSMaxRange(range))
+                if let suffix = environmentNameTail.firstMatch(in: text, options: [.anchored], range: remaining) { range.length += suffix.range.length }
+            }
+            let end = NSMaxRange(range)
+            if end < ns.length, ns.character(at: end) == 125 { range.length += 1 }
+            replacement = (request.needsOpeningBrace ? "{" : "") + item.insert + "}"
+        }
         var caret = range.location + (replacement as NSString).length
-        if request.command == "begin" {
-            // Add the body and the matching \end unless the line already continues after the brace.
-            let after = NSMaxRange(range), lineEnd = NSMaxRange(ns.lineRange(for: NSRange(location: min(after, ns.length), length: 0)))
-            let rest = after <= ns.length ? ns.substring(with: NSRange(location: after, length: max(0, min(lineEnd, ns.length) - after))) : ""
-            if rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let lineStart = ns.lineRange(for: NSRange(location: request.range.location, length: 0)).location
-                let indent = String(ns.substring(with: NSRange(location: lineStart, length: request.range.location - lineStart)).prefix { $0 == " " || $0 == "\t" })
-                let body = ["itemize", "enumerate", "description"].contains(item.insert) ? "\\item " : ""
-                replacement += "\n\(indent)  \(body)"
-                caret = range.location + (replacement as NSString).length
-                replacement += "\n\(indent)\\end{\(item.insert)}"
+        if let environment = item.environment {
+            let line = ns.lineRange(for: NSRange(location: request.range.location, length: 0))
+            var contentEnd = NSMaxRange(line)
+            while contentEnd > line.location, [10, 13].contains(ns.character(at: contentEnd - 1)) { contentEnd -= 1 }
+            let after = NSMaxRange(range)
+            let rest = ns.substring(with: NSRange(location: after, length: max(0, contentEnd - after)))
+            if CompletionEnvironmentContext.isHeaderSuffix(rest), !CompletionEnvironmentContext.hasClosing(environment, after: after, in: text) {
+                let indent = String(ns.substring(with: NSRange(location: line.location, length: request.range.location - line.location)).prefix { $0 == " " || $0 == "\t" })
+                let expanded = EnvironmentTemplate.expansion(name: environment, opening: replacement, indent: indent,
+                                                             newline: text.contains("\r\n") ? "\r\n" : "\n", suffix: rest.trimmingCharacters(in: .whitespaces))
+                range.length += rest.utf16.count
+                replacement = expanded.text; caret = range.location + expanded.caret
             }
         }
         return (range, replacement, caret)
     }
+    private static let environmentNameTail = try! NSRegularExpression(pattern: #"[\p{L}\p{N}*@:_-]+"#)
 }

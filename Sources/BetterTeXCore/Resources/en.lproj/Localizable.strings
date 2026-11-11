@@ -544,3 +544,12 @@
 "（你）" = " (you)";
 "（等待接受）" = " (pending)";
 "：%1$@" = ": %1$@";
+
+/* Completion templates */
+"图片模板 · graphicx" = "Figure template · graphicx";
+"子图模板 · subcaption" = "Subfigure template · subcaption";
+"表格模板" = "Table template";
+"自适应表格 · tabularx" = "Flexible table · tabularx";
+"列表模板 · 含 item" = "List template · includes item";
+"环境模板 · 配对 end" = "Environment template · paired end";
+"带标签的列表项" = "List item with a label";
