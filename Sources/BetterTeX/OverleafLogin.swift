@@ -31,7 +31,7 @@ final class OverleafLogin: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
 
     /// Shows the sign-in window and returns the session cookies once the dashboard is reached.
     @MainActor static func present(host: URL) async throws -> [HTTPCookie] {
-        if let current { current.window.makeKeyAndOrderFront(nil); throw OverleafError.message("请先在已打开的窗口中完成 Overleaf 登录。") }
+        if let current { current.window.makeKeyAndOrderFront(nil); throw OverleafError.message(L10n.tr("请先在已打开的窗口中完成 Overleaf 登录。")) }
         let login = OverleafLogin(host: host); current = login
         defer { current = nil }
         return try await withCheckedThrowingContinuation { continuation in login.start(continuation) }
@@ -43,7 +43,7 @@ final class OverleafLogin: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 720), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init()
         webView.customUserAgent = OverleafClient.userAgent; webView.navigationDelegate = self; webView.uiDelegate = self
-        window.title = "登录 Overleaf · \(host.host ?? "")"; window.contentView = webView; window.isReleasedWhenClosed = false; window.delegate = self; window.center()
+        window.title = L10n.tr("登录 Overleaf · \(host.host ?? "")"); window.contentView = webView; window.isReleasedWhenClosed = false; window.delegate = self; window.center()
     }
     private func start(_ continuation: CheckedContinuation<[HTTPCookie], Error>) {
         self.continuation = continuation
@@ -69,5 +69,5 @@ final class OverleafLogin: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
         if navigationAction.targetFrame == nil { webView.load(navigationAction.request) }
         return nil
     }
-    func windowWillClose(_ notification: Notification) { finish(.failure(OverleafError.message("已取消 Overleaf 登录。"))) }
+    func windowWillClose(_ notification: Notification) { finish(.failure(OverleafError.message(L10n.tr("已取消 Overleaf 登录。")))) }
 }

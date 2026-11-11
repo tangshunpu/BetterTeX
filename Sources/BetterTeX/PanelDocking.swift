@@ -1,8 +1,9 @@
 import AppKit
+import BetterTeXCore
 
 enum DockPosition: String, CaseIterable {
     case left, right, bottom
-    var title: String { switch self { case .left: return "停靠在左侧"; case .right: return "停靠在右侧"; case .bottom: return "停靠在底部" } }
+    var title: String { switch self { case .left: return L10n.tr("停靠在左侧"); case .right: return L10n.tr("停靠在右侧"); case .bottom: return L10n.tr("停靠在底部") } }
     var symbol: String { switch self { case .left: return "sidebar.left"; case .right: return "sidebar.right"; case .bottom: return "rectangle.bottomthird.inset.filled" } }
 }
 
@@ -67,7 +68,7 @@ final class PanelHeader: Surface {
             item.image = NSImage(systemSymbolName: value.symbol, accessibilityDescription: nil); menu.addItem(item)
         }
         menu.addItem(.separator())
-        let hide = NSMenuItem(title: "隐藏面板", action: #selector(hideSelected), keyEquivalent: ""); hide.target = self
+        let hide = NSMenuItem(title: L10n.tr("隐藏面板"), action: #selector(hideSelected), keyEquivalent: ""); hide.target = self
         hide.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: nil); menu.addItem(hide)
         return menu
     }

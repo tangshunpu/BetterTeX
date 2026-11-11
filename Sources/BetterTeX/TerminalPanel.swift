@@ -43,21 +43,21 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     // "Agent" is the Codex tab and "Claude" the Claude tab: both are native conversations driven by
     // the CLI's non-interactive mode. Shell is a terminal session, Output is the build log.
     private let tabNames = ["Agent", "Claude", "Shell", "Output"]
-    private let switcher = SegmentedTabs(["Codex", "Claude", "Shell", "输出"])
+    private let switcher = SegmentedTabs(["Codex", "Claude", "Shell", L10n.tr("输出")])
     let chat = AgentChatView(provider: .codex)
     let claudeChat = AgentChatView(provider: .claude)
     /// The conversation behind the active tab, if it is an agent tab.
     private var activeChat: AgentChatView? { active == "Agent" ? chat : active == "Claude" ? claudeChat : nil }
-    private func idleHint(_ provider: AgentProvider) -> String { "↩ 发送给 \(provider.rawValue) · ⇧↩ 换行 · 使用本机 \(provider.rawValue.lowercased()) 登录" }
+    private func idleHint(_ provider: AgentProvider) -> String { L10n.tr("↩ 发送给 \(provider.rawValue) · ⇧↩ 换行 · 使用本机 \(provider.rawValue.lowercased()) 登录") }
     var onOpenFile: ((URL) -> Void)?
     private var sandboxButton: ActionButton!
     private var sandbox = CodexSandbox(rawValue: UserDefaults.standard.string(forKey: "agent.codex.sandbox") ?? "") ?? .workspaceWrite
     let content = Surface()
     let logView = NSTextView()
     let logScroll = NSScrollView()
-    let hint = Theme.label("↩ 发送 · ⇧↩ 换行 · 使用本机登录", size: 11, color: Theme.muted)
+    let hint = Theme.label(L10n.tr("↩ 发送 · ⇧↩ 换行 · 使用本机登录"), size: 11, color: Theme.muted)
     private let composer = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 22))
-    private let placeholder = Theme.label("让 Agent 修改或解释…", size: 13.5, color: Theme.muted)
+    private let placeholder = Theme.label(L10n.tr("让 Agent 修改或解释…"), size: 13.5, color: Theme.muted)
     private var composerHeight: NSLayoutConstraint!
     private let composerScroll = NSScrollView()
     private var composerCard: NSView!
@@ -107,39 +107,39 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         switcher.onSelect = { [weak self] index in guard let self else { return }; self.select(self.tabNames[index]) }
         switcher.setContentHuggingPriority(.init(1), for: .horizontal)
         header.setLeading(switcher)
-        let new = ActionButton("", symbol: "square.and.pencil", style: .accentIcon) { [weak self] in self?.newSession() }; new.toolTip = "新建会话"
-        let fold = ActionButton("", symbol: "chevron.right.2") { [weak self] in self?.onFold?(true) }; fold.toolTip = "折叠 Agent 面板  ⌘J"
-        historyButton = ActionButton("", symbol: "clock.arrow.circlepath") { [weak self] in self?.showHistory() }; historyButton.toolTip = "会话历史"
+        let new = ActionButton("", symbol: "square.and.pencil", style: .accentIcon) { [weak self] in self?.newSession() }; new.toolTip = L10n.tr("新建会话")
+        let fold = ActionButton("", symbol: "chevron.right.2") { [weak self] in self?.onFold?(true) }; fold.toolTip = L10n.tr("折叠 Agent 面板  ⌘J")
+        historyButton = ActionButton("", symbol: "clock.arrow.circlepath") { [weak self] in self?.showHistory() }; historyButton.toolTip = L10n.tr("会话历史")
         // One tight group keeps room for the tab titles in a narrow panel.
         let controls = NSStackView(views: [historyButton, new, fold]); controls.spacing = 0; controls.alignment = .centerY
         controls.setContentCompressionResistancePriority(.required, for: .horizontal)
         header.addControl(controls)
-        header.menuActions = [("结束当前会话", "stop.circle", { [weak self] in self?.stopActive() })]
+        header.menuActions = [(L10n.tr("结束当前会话"), "stop.circle", { [weak self] in self?.stopActive() })]
 
         // Composer: context chip, growing text field, then pickers and send in one card.
         contextChip.size(nil, 22); contextChip.pinRow(contextLabel, leading: 8, trailing: 8)
         contextChip.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(toggleContext)))
         contextChip.setAccessibilityElement(true); contextChip.setAccessibilityRole(.checkBox)
         // While a CLI session is on screen it has its own prompt, so the card shrinks to this row.
-        compactAttach = ActionButton("加入 CLI 输入", symbol: "plus", style: .tinted) { [weak self] in self?.attachContext() }
-        compactAttach.toolTip = "把当前文件 / 选区加入 CLI 的输入行"; compactAttach.isHidden = true
+        compactAttach = ActionButton(L10n.tr("加入 CLI 输入"), symbol: "plus", style: .tinted) { [weak self] in self?.attachContext() }
+        compactAttach.toolTip = L10n.tr("把当前文件 / 选区加入 CLI 的输入行"); compactAttach.isHidden = true
         let contextRow = NSStackView(views: [contextChip, NSView(), compactAttach]); contextRow.spacing = 6; contextRow.alignment = .centerY
         composer.isRichText = false; composer.drawsBackground = false; composer.font = .systemFont(ofSize: 13.5); composer.textColor = Theme.text
         composer.insertionPointColor = Theme.accent; composer.textContainerInset = NSSize(width: 0, height: 2); composer.textContainer?.lineFragmentPadding = 0
         composer.isVerticallyResizable = true; composer.isHorizontallyResizable = false; composer.autoresizingMask = [.width]
         composer.textContainer?.widthTracksTextView = true; composer.minSize = NSSize(width: 0, height: 22); composer.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         composer.isAutomaticQuoteSubstitutionEnabled = false; composer.isAutomaticDashSubstitutionEnabled = false; composer.allowsUndo = true
-        composer.delegate = self; composer.onSubmit = { [weak self] in self?.sendPrompt() }; composer.setAccessibilityLabel("给 Agent 的消息")
+        composer.delegate = self; composer.onSubmit = { [weak self] in self?.sendPrompt() }; composer.setAccessibilityLabel(L10n.tr("给 Agent 的消息"))
         composerScroll.drawsBackground = false; composerScroll.borderType = .noBorder
         composerScroll.hasVerticalScroller = true; composerScroll.autohidesScrollers = true; composerScroll.documentView = composer
         composerHeight = composerScroll.heightAnchor.constraint(equalToConstant: 22); composerHeight.isActive = true
-        let attach = ActionButton("", symbol: "plus") { [weak self] in self?.attachContext() }; attach.toolTip = "将当前文件 / 选区加入 CLI 输入"
-        modelButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showModelMenu() }; modelButton.toolTip = "选择模型"
-        effortButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showEffortMenu() }; effortButton.toolTip = "选择思考强度"
+        let attach = ActionButton("", symbol: "plus") { [weak self] in self?.attachContext() }; attach.toolTip = L10n.tr("将当前文件 / 选区加入 CLI 输入")
+        modelButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showModelMenu() }; modelButton.toolTip = L10n.tr("选择模型")
+        effortButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showEffortMenu() }; effortButton.toolTip = L10n.tr("选择思考强度")
         for button in [modelButton!, effortButton!] { button.cell?.lineBreakMode = .byTruncatingTail; button.setContentCompressionResistancePriority(.init(200), for: .horizontal) }
-        let send = ActionButton("", symbol: "arrow.up", style: .send) { [weak self] in self?.sendPrompt() }; send.toolTip = "发送  ↩"
+        let send = ActionButton("", symbol: "arrow.up", style: .send) { [weak self] in self?.sendPrompt() }; send.toolTip = L10n.tr("发送  ↩")
         let toolSpacer = NSView(); toolSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        sandboxButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showSandboxMenu() }; sandboxButton.toolTip = "Agent 可以做什么"
+        sandboxButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showSandboxMenu() }; sandboxButton.toolTip = L10n.tr("Agent 可以做什么")
         sandboxButton.setContentCompressionResistancePriority(.init(600), for: .horizontal); sandboxButton.setTitle(sandbox.title)
         for view in [chat, claudeChat] {
             let name = view.provider.rawValue
@@ -148,7 +148,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             view.onChange = { [weak self, weak view] in
                 guard let self, let view, self.activeChat === view else { self?.updateRail(); return }
                 self.showChatOrEmpty(); self.updateRail()
-                self.hint.stringValue = view.running ? "\(name) 正在工作 · 可在对话里点停止" : self.idleHint(view.provider)
+                self.hint.stringValue = view.running ? L10n.tr("\(name) 正在工作 · 可在对话里点停止") : self.idleHint(view.provider)
             }
         }
         let toolRow = NSStackView(views: [attach, modelButton, effortButton, sandboxButton, toolSpacer, send]); toolRow.spacing = 2; toolRow.alignment = .centerY
@@ -206,7 +206,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         emptyDescription.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
         let heroStack = NSStackView(views: [emptyTile, emptyTitle, emptyDescription]); heroStack.orientation = .vertical; heroStack.spacing = 8; heroStack.alignment = .centerX
         heroStack.setCustomSpacing(14, after: emptyTile); hero = heroStack
-        let prompts = ["润色摘要，让它更简洁", "检查公式与引用编号", "修复编译警告"].map { prompt -> NSView in
+        let prompts = [L10n.tr("润色摘要，让它更简洁"), L10n.tr("检查公式与引用编号"), L10n.tr("修复编译警告")].map { prompt -> NSView in
             let row = RowButton(height: 44) { [weak self] in
                 guard let self else { return }
                 self.setComposer(prompt); self.window?.makeFirstResponder(self.composer)
@@ -218,7 +218,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             let content = NSStackView(views: [label, chevron]); content.spacing = 10; content.alignment = .centerY
             row.pinRow(content, leading: 12, trailing: 12); return row
         }
-        let caption = Theme.label("试试这样问", size: 12, color: Theme.muted)
+        let caption = Theme.label(L10n.tr("试试这样问"), size: 12, color: Theme.muted)
         let captionHolder = NSView(); captionHolder.pinRow(caption, leading: 12, trailing: 12); captionHolder.heightAnchor.constraint(equalToConstant: 18).isActive = true
         let suggestionStack = NSStackView(views: [captionHolder, card(prompts, separatorInset: 12)]); suggestionStack.orientation = .vertical; suggestionStack.spacing = 6; suggestionStack.alignment = .leading
         for view in suggestionStack.arrangedSubviews { view.widthAnchor.constraint(equalTo: suggestionStack.widthAnchor).isActive = true }
@@ -254,9 +254,9 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             text.append(NSAttributedString(string: range, attributes: [.foregroundColor: Theme.muted, .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)].merging(off) { $1 }))
         }
         contextLabel.attributedStringValue = text
-        let what = contextLines == nil ? "当前文件" : "所选的 \(contextLines!.count) 行源码"
-        contextChip.toolTip = includeContext ? "发送时附带\(what) · 点按以取消" : "发送时不附带上下文 · 点按以附带\(what)"
-        contextChip.setAccessibilityLabel("附带上下文 \(name)"); contextChip.setAccessibilityValue(includeContext)
+        let what = contextLines == nil ? L10n.tr("当前文件") : L10n.tr("所选的 \(contextLines!.count) 行源码")
+        contextChip.toolTip = includeContext ? L10n.tr("发送时附带\(what) · 点按以取消") : L10n.tr("发送时不附带上下文 · 点按以附带\(what)")
+        contextChip.setAccessibilityLabel(L10n.tr("附带上下文 \(name)")); contextChip.setAccessibilityValue(includeContext)
     }
     @objc private func toggleContext() { includeContext.toggle(); updateContextChip() }
     @objc private func focusComposer() { window?.makeFirstResponder(composer) }
@@ -264,12 +264,12 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private func buildRail() {
         rail.fill = Theme.base; rail.isHidden = true; rail.translatesAutoresizingMaskIntoConstraints = false; addSubview(rail)
         NSLayoutConstraint.activate([rail.topAnchor.constraint(equalTo: topAnchor), rail.bottomAnchor.constraint(equalTo: bottomAnchor), rail.leadingAnchor.constraint(equalTo: leadingAnchor), rail.trailingAnchor.constraint(equalTo: trailingAnchor)])
-        let expand = ActionButton("", symbol: "chevron.left.2") { [weak self] in self?.onFold?(false) }; expand.toolTip = "展开 Agent 面板  ⌘J"
+        let expand = ActionButton("", symbol: "chevron.left.2") { [weak self] in self?.onFold?(false) }; expand.toolTip = L10n.tr("展开 Agent 面板  ⌘J")
         railStack.addArrangedSubview(expand); railStack.setCustomSpacing(10, after: expand)
-        for (name, symbol, title) in [("Agent", "bubble.left.and.text.bubble.right", "Codex"), ("Claude", "sparkle", "Claude"), ("Shell", "terminal", "Shell"), ("Output", "text.alignleft", "编译与 Git 输出")] {
+        for (name, symbol, title) in [("Agent", "bubble.left.and.text.bubble.right", "Codex"), ("Claude", "sparkle", "Claude"), ("Shell", "terminal", "Shell"), ("Output", "text.alignleft", L10n.tr("编译与 Git 输出"))] {
             let button = ActionButton("", symbol: symbol) { [weak self] in self?.onFold?(false); self?.select(name) }
             if let logo = AgentLogo.image(for: name, side: 20) { button.image = logo }
-            button.toolTip = "展开并打开 \(title)"; button.setAccessibilityLabel(title); railButtons[name] = button; railStack.addArrangedSubview(button)
+            button.toolTip = L10n.tr("展开并打开 \(title)"); button.setAccessibilityLabel(title); railButtons[name] = button; railStack.addArrangedSubview(button)
         }
         railStack.spacing = 4; railStack.translatesAutoresizingMaskIntoConstraints = false; rail.addSubview(railStack)
     }
@@ -337,8 +337,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         let agent = active == "Claude" ? "Claude" : "Codex"
         if let logo = AgentLogo.image(for: active, side: 56) { emptyIcon.image = logo; emptyIcon.contentTintColor = nil; emptyTile.fill = nil }
         else { emptyIcon.image = Theme.symbol(codex ? "sparkles" : "terminal", size: 24, weight: .semibold); emptyIcon.contentTintColor = Theme.accent; emptyTile.fill = Theme.accent.withAlphaComponent(0.18) }
-        emptyTitle.stringValue = codex ? "和 \(agent) 一起写作" : "\(active) 未就绪"
-        emptyDescription.stringValue = codex ? "在下方输入要做的事，\(agent) 会在当前项目里阅读、修改文件并运行命令。" : "请先在本机安装并登录对应的命令行工具，然后在「工作区」菜单重新检测工具。"
+        emptyTitle.stringValue = codex ? L10n.tr("和 \(agent) 一起写作") : L10n.tr("\(active) 未就绪")
+        emptyDescription.stringValue = codex ? L10n.tr("在下方输入要做的事，\(agent) 会在当前项目里阅读、修改文件并运行命令。") : L10n.tr("请先在本机安装并登录对应的命令行工具，然后在「工作区」菜单重新检测工具。")
         suggestions?.isHidden = !codex
         content.subviews.forEach { $0.removeFromSuperview() }; empty.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(empty)
         switcher.selected = tabNames.firstIndex(of: active) ?? -1
@@ -353,13 +353,13 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         if active != "Agent", active != "Claude" { select(selectedProvider == .claude ? "Claude" : "Agent") }
         if let chat = activeChat {
             let provider = chat.provider, agent = provider.rawValue
-            guard !chat.running else { hint.stringValue = "\(agent) 还在处理上一条 · 等它完成或先点停止"; return }
-            guard let project, let tools else { hint.stringValue = "请先打开一个项目"; return }
-            guard let codex = tools[agent.lowercased()] else { onError?("未检测到 \(agent.lowercased())。请先安装并登录 \(agent) CLI，然后在「工作区」菜单重新检测工具。"); return }
+            guard !chat.running else { hint.stringValue = L10n.tr("\(agent) 还在处理上一条 · 等它完成或先点停止"); return }
+            guard let project, let tools else { hint.stringValue = L10n.tr("请先打开一个项目"); return }
+            guard let codex = tools[agent.lowercased()] else { onError?(L10n.tr("未检测到 \(agent.lowercased())。请先安装并登录 \(agent) CLI，然后在「工作区」菜单重新检测工具。")); return }
             var prompt = text
             if includeContext, let file = contextFile {
-                if contextLines != nil, let excerpt = currentContext?() { prompt = "当前文件与选中的内容：\n" + excerpt.replacingOccurrences(of: "\u{1b}", with: "") + "\n\n" + text }
-                else { prompt = "当前文件：\(file)\n\n" + text }
+                if contextLines != nil, let excerpt = currentContext?() { prompt = L10n.tr("当前文件与选中的内容：\n") + excerpt.replacingOccurrences(of: "\u{1b}", with: "") + "\n\n" + text }
+                else { prompt = L10n.tr("当前文件：\(file)\n\n") + text }
             }
             chat.send(prompt: prompt, display: text, executable: codex, directory: project, environment: tools.environment, configuration: configurations[provider] ?? AgentConfiguration(), sandbox: sandbox)
             setComposer(""); return
@@ -372,7 +372,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             else { message = "@\(file) " + text }
         }
         if let terminal = terminals[name] {
-            guard terminal.getTerminal().bracketedPasteMode else { hint.stringValue = "等待 CLI 进入输入界面后再发送"; return }
+            guard terminal.getTerminal().bracketedPasteMode else { hint.stringValue = L10n.tr("等待 CLI 进入输入界面后再发送"); return }
             if active != name { select(name) }
             terminal.send(txt: "\u{1b}[200~" + message + "\u{1b}[201~")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak terminal] in terminal?.send(txt: "\r") }
@@ -380,7 +380,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             pendingPrompt = message; select(name); pendingPrompt = nil
             guard terminals[name] != nil else { return }
         }
-        setComposer(""); hint.stringValue = "已发送给 \(name)"; updateComposerMode()
+        setComposer(""); hint.stringValue = L10n.tr("已发送给 \(name)"); updateComposerMode()
     }
     func select(_ requested: String) {
         // "Codex" is the conversation tab; there is no separate Codex terminal.
@@ -392,13 +392,13 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         content.subviews.forEach { $0.removeFromSuperview() }
         if let view = activeChat {
             selectedProvider = view.provider; updateModelButton(); showChatOrEmpty()
-            hint.stringValue = view.running ? "\(view.provider.rawValue) 正在工作 · 可在对话里点停止" : idleHint(view.provider); return
+            hint.stringValue = view.running ? L10n.tr("\(view.provider.rawValue) 正在工作 · 可在对话里点停止") : idleHint(view.provider); return
         }
-        if name == "Output" { content.pin(logScroll); hint.stringValue = "编译与 Git 输出 · 双击错误定位"; return }
-        guard let project, let tools else { showEmpty(); onError?("正在检测本机工具，请稍候。"); return }
+        if name == "Output" { content.pin(logScroll); hint.stringValue = L10n.tr("编译与 Git 输出 · 双击错误定位"); return }
+        guard let project, let tools else { showEmpty(); onError?(L10n.tr("正在检测本机工具，请稍候。")); return }
         if let existing = terminals[name] { content.pin(existing, inset: 10); window?.makeFirstResponder(existing); hint.stringValue = "\(name) · \(project.lastPathComponent)"; return }
         let binary = name == "Shell" ? (tools.environment["SHELL"] ?? "/bin/zsh") : tools[name.lowercased()]
-        guard let binary else { showEmpty(); onError?("未检测到 \(name)。请先在本机安装对应 CLI，然后在“工作区”菜单重新检测工具。"); return }
+        guard let binary else { showEmpty(); onError?(L10n.tr("未检测到 \(name)。请先在本机安装对应 CLI，然后在“工作区”菜单重新检测工具。")); return }
         var options = TerminalOptions.default; options.scrollback = 2000
         let args: [String]
         do {
@@ -415,7 +415,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         window?.makeFirstResponder(terminal); hint.stringValue = "\(name) · \(project.lastPathComponent)"
     }
     private static func effortTitle(_ value: String) -> String {
-        ["": "CLI 默认", "none": "无 · none", "minimal": "最少 · minimal", "low": "低 · low", "medium": "中 · medium", "high": "高 · high", "xhigh": "极高 · xhigh", "max": "最大 · max", "ultra": "超高 · ultra"][value] ?? value
+        ["": L10n.tr("CLI 默认"), "none": L10n.tr("无 · none"), "minimal": L10n.tr("最少 · minimal"), "low": L10n.tr("低 · low"), "medium": L10n.tr("中 · medium"), "high": L10n.tr("高 · high"), "xhigh": L10n.tr("极高 · xhigh"), "max": L10n.tr("最大 · max"), "ultra": L10n.tr("超高 · ultra")][value] ?? value
     }
     private func availableModels(for provider: AgentProvider) -> [AgentModel] {
         if provider == .codex {
@@ -431,8 +431,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private func updateModelButton() {
         let config = configurations[selectedProvider] ?? AgentConfiguration()
         let name = availableModels(for: selectedProvider).first { $0.id == config.model }?.name ?? config.model
-        modelButton.setTitle(config.model.isEmpty ? "\(selectedProvider.rawValue) 默认" : name)
-        effortButton.setTitle(config.effort.isEmpty ? "默认强度" : config.effort)
+        modelButton.setTitle(config.model.isEmpty ? L10n.tr("\(selectedProvider.rawValue) 默认") : name)
+        effortButton.setTitle(config.effort.isEmpty ? L10n.tr("默认强度") : config.effort)
     }
     /// Pops a picker upward from a composer button without pre-highlighting any row.
     private func popUp(_ menu: NSMenu, from button: NSButton) {
@@ -445,22 +445,22 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private func showModelMenu() {
         let provider = selectedProvider; let current = configurations[provider]?.model ?? ""
         let models = availableModels(for: provider)
-        let menu = NSMenu(); menu.autoenablesItems = false; menu.addItem(menuHeader("\(provider.rawValue) 模型"))
+        let menu = NSMenu(); menu.autoenablesItems = false; menu.addItem(menuHeader(L10n.tr("\(provider.rawValue) 模型")))
         func add(_ title: String, _ id: String) {
             let item = NSMenuItem(title: title, action: #selector(modelPicked(_:)), keyEquivalent: ""); item.target = self
             item.representedObject = id; item.state = id == current ? .on : .off; menu.addItem(item)
         }
-        add("CLI 默认", "")
+        add(L10n.tr("CLI 默认"), "")
         for model in models { add(model.name, model.id) }
         if !current.isEmpty, !models.contains(where: { $0.id == current }) { add(current, current) }
         menu.addItem(.separator())
-        let custom = NSMenuItem(title: "自定义模型 ID…", action: #selector(customModel), keyEquivalent: ""); custom.target = self; menu.addItem(custom)
+        let custom = NSMenuItem(title: L10n.tr("自定义模型 ID…"), action: #selector(customModel), keyEquivalent: ""); custom.target = self; menu.addItem(custom)
         addRestartItem(to: menu, provider: provider)
         popUp(menu, from: modelButton)
     }
     private func showEffortMenu() {
         let provider = selectedProvider; let config = configurations[provider] ?? AgentConfiguration()
-        let menu = NSMenu(); menu.autoenablesItems = false; menu.addItem(menuHeader("思考强度"))
+        let menu = NSMenu(); menu.autoenablesItems = false; menu.addItem(menuHeader(L10n.tr("思考强度")))
         for level in [""] + efforts(for: provider, model: config.model) {
             let item = NSMenuItem(title: Self.effortTitle(level), action: #selector(effortPicked(_:)), keyEquivalent: ""); item.target = self
             item.representedObject = level; item.state = level == config.effort ? .on : .off; menu.addItem(item)
@@ -471,7 +471,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private func addRestartItem(to menu: NSMenu, provider: AgentProvider) {
         guard terminals[provider.rawValue] != nil else { return }
         menu.addItem(.separator())
-        let restart = NSMenuItem(title: "用当前配置新建会话", action: #selector(restartSession), keyEquivalent: ""); restart.target = self; menu.addItem(restart)
+        let restart = NSMenuItem(title: L10n.tr("用当前配置新建会话"), action: #selector(restartSession), keyEquivalent: ""); restart.target = self; menu.addItem(restart)
     }
     @objc private func modelPicked(_ item: NSMenuItem) {
         var config = configurations[selectedProvider] ?? AgentConfiguration()
@@ -486,9 +486,9 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     }
     @objc private func customModel() {
         guard let window else { return }
-        let alert = NSAlert(); alert.messageText = "自定义 \(selectedProvider.rawValue) 模型"; alert.informativeText = "输入 CLI 支持的模型 ID。"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24)); field.stringValue = configurations[selectedProvider]?.model ?? ""; field.placeholderString = "模型 ID"
-        alert.accessoryView = field; alert.addButton(withTitle: "使用"); alert.addButton(withTitle: "取消"); alert.window.initialFirstResponder = field
+        let alert = NSAlert(); alert.messageText = L10n.tr("自定义 \(selectedProvider.rawValue) 模型"); alert.informativeText = L10n.tr("输入 CLI 支持的模型 ID。")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24)); field.stringValue = configurations[selectedProvider]?.model ?? ""; field.placeholderString = L10n.tr("模型 ID")
+        alert.accessoryView = field; alert.addButton(withTitle: L10n.tr("使用")); alert.addButton(withTitle: L10n.tr("取消")); alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             var config = self.configurations[self.selectedProvider] ?? AgentConfiguration()
@@ -502,27 +502,27 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         configurations[provider] = config
         UserDefaults.standard.set(config.model, forKey: "agent.\(provider.rawValue).model"); UserDefaults.standard.set(config.effort, forKey: "agent.\(provider.rawValue).effort")
         updateModelButton()
-        hint.stringValue = "配置已更新 · 下一条消息生效"
+        hint.stringValue = L10n.tr("配置已更新 · 下一条消息生效")
     }
     // MARK: History
     /// Lists this project's past Codex and Claude conversations, newest first, to resume one.
     private func showHistory() {
-        guard let project else { hint.stringValue = "正在检测本机工具，请稍候"; return }
+        guard let project else { hint.stringValue = L10n.tr("正在检测本机工具，请稍候"); return }
         let codexHome = tools?.environment["CODEX_HOME"]
-        hint.stringValue = "正在读取会话历史…"
+        hint.stringValue = L10n.tr("正在读取会话历史…")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let groups = AgentProvider.allCases.map { ($0, AgentHistory.sessions(for: $0, project: project, codexHome: codexHome)) }
             DispatchQueue.main.async {
                 guard let self, self.project == project else { return }
                 let menu = NSMenu(); menu.autoenablesItems = false
-                let formatter = RelativeDateTimeFormatter(); formatter.unitsStyle = .short; formatter.locale = Locale(identifier: "zh_CN")
+                let formatter = RelativeDateTimeFormatter(); formatter.unitsStyle = .short; formatter.locale = L10n.locale
                 self.history = groups.flatMap(\.1)
                 var index = 0
                 for (provider, sessions) in groups {
                     if menu.numberOfItems > 0 { menu.addItem(.separator()) }
-                    menu.addItem(self.menuHeader("\(provider.rawValue) · 此项目"))
+                    menu.addItem(self.menuHeader(L10n.tr("\(provider.rawValue) · 此项目")))
                     if sessions.isEmpty {
-                        let none = NSMenuItem(title: "还没有会话记录", action: nil, keyEquivalent: ""); none.isEnabled = false; menu.addItem(none)
+                        let none = NSMenuItem(title: L10n.tr("还没有会话记录"), action: nil, keyEquivalent: ""); none.isEnabled = false; menu.addItem(none)
                     }
                     for session in sessions {
                         let when = formatter.localizedString(for: session.date, relativeTo: Date())
@@ -534,7 +534,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
                     }
                 }
                 let count = self.history.count
-                self.hint.stringValue = count == 0 ? "此项目还没有会话记录" : "共 \(count) 个最近会话 · 选择以恢复"
+                self.hint.stringValue = count == 0 ? L10n.tr("此项目还没有会话记录") : L10n.tr("共 \(count) 个最近会话 · 选择以恢复")
                 menu.popUp(positioning: nil, at: NSPoint(x: self.historyButton.bounds.width - menu.size.width, y: self.historyButton.bounds.height + 6), in: self.historyButton)
             }
         }
@@ -556,8 +556,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
                 self.select(tab)
             }
             if chat.running, let window {
-                let alert = NSAlert(); alert.messageText = "停止当前任务并\(resume == nil ? "新建对话" : "切换会话")？"; alert.informativeText = "\(target.rawValue) 正在处理上一条消息，继续的话会先把它停掉。"
-                alert.addButton(withTitle: "继续"); alert.addButton(withTitle: "取消")
+                let alert = NSAlert(); alert.messageText = L10n.tr("停止当前任务并\(resume == nil ? L10n.tr("新建对话") : L10n.tr("切换会话"))？"); alert.informativeText = L10n.tr("\(target.rawValue) 正在处理上一条消息，继续的话会先把它停掉。")
+                alert.addButton(withTitle: L10n.tr("继续")); alert.addButton(withTitle: L10n.tr("取消"))
                 alert.beginSheetModal(for: window) { if $0 == .alertFirstButtonReturn { apply() } }
             } else { apply() }
             return
@@ -567,25 +567,25 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             guard let self else { return }
             if let old = self.terminals.removeValue(forKey: name) { old.processDelegate = nil; old.terminate() }
             self.pendingResume = resume; self.select(name); self.pendingResume = nil
-            if let resume, self.terminals[name] != nil { self.hint.stringValue = "已恢复：\(resume.title)" }
+            if let resume, self.terminals[name] != nil { self.hint.stringValue = L10n.tr("已恢复：\(resume.title)") }
         }
         if terminals[name] != nil, let window {
-            let alert = NSAlert(); alert.messageText = resume == nil ? "结束当前 \(name) 会话并新建？" : "结束当前 \(name) 会话并恢复历史会话？"
-            alert.informativeText = resume == nil ? "当前任务会停止。新会话使用刚才选择的模型和思考强度。" : "当前任务会停止，然后恢复“\(resume!.title)”。"
-            alert.addButton(withTitle: resume == nil ? "新建会话" : "恢复会话"); alert.addButton(withTitle: "取消")
+            let alert = NSAlert(); alert.messageText = resume == nil ? L10n.tr("结束当前 \(name) 会话并新建？") : L10n.tr("结束当前 \(name) 会话并恢复历史会话？")
+            alert.informativeText = resume == nil ? L10n.tr("当前任务会停止。新会话使用刚才选择的模型和思考强度。") : L10n.tr("当前任务会停止，然后恢复“\(resume!.title)”。")
+            alert.addButton(withTitle: resume == nil ? L10n.tr("新建会话") : L10n.tr("恢复会话")); alert.addButton(withTitle: L10n.tr("取消"))
             alert.beginSheetModal(for: window) { if $0 == .alertFirstButtonReturn { launch() } }
         } else { launch() }
     }
     private func attachContext() {
-        guard AgentProvider(rawValue: active) != nil, let terminal = terminals[active], let text = currentContext?() else { hint.stringValue = "先启动 Agent，再选择要附加的源码"; return }
-        guard terminal.getTerminal().bracketedPasteMode else { hint.stringValue = "等待 CLI 进入输入界面后再附加上下文"; return }
+        guard AgentProvider(rawValue: active) != nil, let terminal = terminals[active], let text = currentContext?() else { hint.stringValue = L10n.tr("先启动 Agent，再选择要附加的源码"); return }
+        guard terminal.getTerminal().bracketedPasteMode else { hint.stringValue = L10n.tr("等待 CLI 进入输入界面后再附加上下文"); return }
         terminal.send(txt: "\u{1b}[200~" + text.replacingOccurrences(of: "\u{1b}", with: "") + "\u{1b}[201~")
-        window?.makeFirstResponder(terminal); hint.stringValue = "上下文已加入输入 · 在 CLI 中确认发送"
+        window?.makeFirstResponder(terminal); hint.stringValue = L10n.tr("上下文已加入输入 · 在 CLI 中确认发送")
     }
     func stopActive() {
         guard let terminal = terminals.removeValue(forKey: active) else { return }
         terminal.processDelegate = nil; terminal.terminate(); select("Agent")
-        hint.stringValue = "会话已结束 · 点击标签重新启动"
+        hint.stringValue = L10n.tr("会话已结束 · 点击标签重新启动")
     }
     func stopAll() {
         for terminal in terminals.values { terminal.processDelegate = nil; terminal.terminate() }
@@ -610,7 +610,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         DispatchQueue.main.async { [weak self] in
             guard let self, let entry = self.terminals.first(where: { $0.value === source }) else { return }
             self.terminals.removeValue(forKey: entry.key); self.updateComposerMode()
-            if self.active == entry.key { self.hint.stringValue = "\(entry.key) 已退出（\(exitCode ?? -1)）· 点击标签重启" }
+            if self.active == entry.key { self.hint.stringValue = L10n.tr("\(entry.key) 已退出（\(exitCode ?? -1)）· 点击标签重启") }
         }
     }
 }

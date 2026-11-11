@@ -31,6 +31,7 @@ Write, compile and preview in one window — with Overleaf sync and your coding 
 | 🔀 **Git** | Pull, commit and push without leaving the window |
 | 🖼️ **Quick insert** | Drop or paste an image and get a ready-made `figure` |
 | 🪶 **Native** | Swift + AppKit + PDFKit. No Electron |
+| 🌐 **Languages** | English and Simplified Chinese; choose System Default or a language in **BetterTeX → Settings…** (`⌘,`), then reopen the app |
 
 ## Project home & sign-in
 

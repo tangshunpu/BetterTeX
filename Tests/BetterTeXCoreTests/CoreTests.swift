@@ -83,7 +83,7 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(done, [.item(CodexItem(id: "t1", kind: .command, text: "echo hi", detail: "hi", status: .done))])
         // Edits list the file; a denied tool is marked failed with the reason.
         let edit = stream.parse(line: #"{"type":"assistant","message":{"id":"m2","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"/p/main.tex"}}]}}"#)
-        XCTAssertEqual(edit, [.item(CodexItem(id: "t2", kind: .fileChange, text: "1 个文件", detail: "修改  /p/main.tex", status: .running))])
+        XCTAssertEqual(edit, [.item(CodexItem(id: "t2", kind: .fileChange, text: L10n.tr("1 个文件"), detail: L10n.tr("修改  \("/p/main.tex")"), status: .running))])
         // An edit previews old / new text, then shows the applied patch with context.
         guard case .item(let preview)? = stream.parse(line: #"{"type":"assistant","message":{"id":"m6","content":[{"type":"tool_use","id":"t6","name":"Edit","input":{"file_path":"/p/a.tex","old_string":"beta","new_string":"BETA"}}]}}"#).first else { return XCTFail() }
         XCTAssertEqual(preview.diff, "-beta\n+BETA")
@@ -102,7 +102,7 @@ final class CoreTests: XCTestCase {
         // Other tools show their name and main argument, with project paths made relative.
         let read = ClaudeStream(root: "/p").parse(line: #"{"type":"assistant","message":{"id":"m5","content":[{"type":"tool_use","id":"t5","name":"Read","input":{"file_path":"/p/sections/intro.tex"}}]}}"#)
         XCTAssertEqual(read, [.item(CodexItem(id: "t5", kind: .toolCall, text: "Read · sections/intro.tex", status: .running))])
-        XCTAssertEqual(ClaudeStream.summary(["file": ["numLines": 4]], output: "x"), "4 行")
+        XCTAssertEqual(ClaudeStream.summary(["file": ["numLines": 4]], output: "x"), L10n.tr("\(4) 行"))
         // Two text blocks of one message stay separate entries; sub-agent messages are dropped.
         let first = stream.parse(line: #"{"type":"assistant","message":{"id":"m3","content":[{"type":"text","text":"A"}]}}"#)
         let second = stream.parse(line: #"{"type":"assistant","message":{"id":"m3","content":[{"type":"text","text":"B"}]}}"#)
@@ -214,7 +214,7 @@ final class BuildProgressTests: XCTestCase {
         stages += tracker.consume("Running 'pdflatex  -recorder \"m.tex\"'\nRunning '/Library/TeX/texbin/pdflatex -x'\nNot Running 'x'\n")
         XCTAssertEqual(stages.map(\.tool), ["pdflatex", "bibtex", "pdflatex", "pdflatex"])
         XCTAssertEqual(stages.map(\.pass), [1, 1, 2, 3]); XCTAssertEqual(stages.map(\.step), [1, 2, 3, 4])
-        XCTAssertEqual(stages[1].title, "整理参考文献"); XCTAssertEqual(stages[3].title, "排版 · 第 3 遍")
+        XCTAssertEqual(stages[1].title, L10n.tr("整理参考文献")); XCTAssertEqual(stages[3].title, L10n.tr("排版 · 第 \(3) 遍"))
         XCTAssertEqual(tracker.begin("/usr/bin/biber").step, 5)
     }
     /// Runs latexmk on a document with a bibliography and checks the reported programme sequence.
@@ -333,7 +333,7 @@ final class WarningTests: XCTestCase {
         let warnings = TeXWarning.parse(log)
         XCTAssertEqual(warnings.map(\.line), [173, 42, 9])
         XCTAssertEqual(warnings.map(\.key), ["tang2025osd", "fig:a-very-long-label-name-that-wraps-in-the-log", "other"])
-        XCTAssertTrue(warnings[0].message.contains("引用文献")); XCTAssertTrue(warnings[1].message.contains("交叉引用"))
+        XCTAssertEqual(warnings[0].message, L10n.tr("未定义的引用文献：") + "tang2025osd"); XCTAssertEqual(warnings[1].message, L10n.tr("未定义的交叉引用：") + warnings[1].key)
         XCTAssertTrue(TeXWarning.parse("Output written on main.pdf").isEmpty)
     }
 }
@@ -351,9 +351,9 @@ final class CodexAgentTests: XCTestCase {
         XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.completed","item":{"id":"i","type":"command_execution","command":"bash -lc \"ls x\"","aggregated_output":"no","exit_code":2,"status":"completed"}}"#),
                        .item(CodexItem(id: "i", kind: .command, text: "ls x", detail: "no", status: .failed, exitCode: 2)))
         XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.completed","item":{"id":"f","type":"file_change","changes":[{"path":"main.tex","kind":"update"},{"path":"a.tex","kind":"add"}],"status":"completed"}}"#),
-                       .item(CodexItem(id: "f", kind: .fileChange, text: "2 个文件", detail: "修改  main.tex\n新增  a.tex")))
+                       .item(CodexItem(id: "f", kind: .fileChange, text: L10n.tr("\(2) 个文件"), detail: L10n.tr("修改") + "  main.tex\n" + L10n.tr("新增") + "  a.tex")))
         XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.updated","item":{"id":"t","type":"todo_list","items":[{"text":"read","completed":true},{"text":"edit","completed":false}]}}"#),
-                       .item(CodexItem(id: "t", kind: .todo, text: "计划", detail: "☑ read\n☐ edit", status: .running)))
+                       .item(CodexItem(id: "t", kind: .todo, text: L10n.tr("计划"), detail: "☑ read\n☐ edit", status: .running)))
         XCTAssertEqual(CodexEvent.parse(line: #"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"config warning"}}"#), .item(CodexItem(id: "item_0", kind: .notice, text: "config warning")))
         XCTAssertEqual(CodexEvent.parse(line: #"{"type":"turn.completed","usage":{"input_tokens":42049,"cached_input_tokens":28032,"output_tokens":57}}"#), .turnCompleted(inputTokens: 42049, outputTokens: 57))
         XCTAssertEqual(CodexEvent.parse(line: #"{"type":"turn.failed","error":{"message":"quota"}}"#), .turnFailed("quota"))

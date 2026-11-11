@@ -6,6 +6,12 @@
 
 一个原生、轻量的 macOS LaTeX 工作区。Swift + AppKit + PDFKit，终端使用 [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)。没有 Electron 或常驻语言服务器；唯一的 WebView 是 Overleaf 登录窗口，登录后即关闭。界面跟随系统深浅色。
 
+## 界面语言
+
+打开 **BetterTeX → 设置…**（`⌘,`），可选择 **跟随系统 / 简体中文 / English**。默认跟随系统语言偏好；没有受支持的语言时使用英语。
+
+选择会自动保存，重新打开 BetterTeX 后生效。切换语言不会立即重建编辑器或停止终端。菜单、项目页、编辑器工具栏、PDF、Agent、Overleaf 提示与日期显示都会使用所选语言；已有项目内容、Agent 回复和外部工具输出保持原样。
+
 ## 运行
 
 发布版本请到 [Releases](https://github.com/tangshunpu/BetterTeX/releases) 下载 `.dmg`，打开后把应用拖到「Applications」（同时提供内容相同的 `.zip`）。自行构建的应用位于 `dist/BetterTeX.app`；推荐解压 `dist/BetterTeX.zip` 后拖到「应用程序」，或用 `./script/make_dmg.sh` 生成 `dist/BetterTeX.dmg`。本地开发构建采用 ad-hoc 签名，尚未经过 Apple 公证。当前构建架构取决于本机（开发验证为 Apple Silicon）。打包脚本会额外生成 ZIP，避免 iCloud / FileProvider 给源码目录中的应用附加 FinderInfo，影响严格签名校验。

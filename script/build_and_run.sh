@@ -48,6 +48,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>dev.bettertex.app</string>
 <key>CFBundleName</key><string>BetterTeX</string>
 <key>CFBundleDisplayName</key><string>BetterTeX</string>
+<key>CFBundleDevelopmentRegion</key><string>en</string>
+<key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string></array>
 <key>CFBundleIconFile</key><string>BetterTeX</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>

@@ -217,10 +217,10 @@ public enum Completer {
         case .input: candidates = index.inputs.map { CompletionItem(label: $0) }
         case .bibliography: candidates = index.bibliographies.map { CompletionItem(label: request.command.lowercased() == "bibliography" && $0.hasSuffix(".bib") ? String($0.dropLast(4)) : $0) }
         case .package: candidates = packages.map { CompletionItem(label: $0) }
-        case .environment: candidates = unique(index.environments + environments).map { CompletionItem(label: $0, detail: index.environments.contains($0) ? "项目定义" : "") }
+        case .environment: candidates = unique(index.environments + environments).map { CompletionItem(label: $0, detail: index.environments.contains($0) ? L10n.tr("项目定义") : "") }
         case .command:
             var seen = Set<String>(); var list: [CompletionItem] = []
-            for name in index.commands where seen.insert(name).inserted { list.append(CompletionItem(label: "\\" + name, detail: "项目定义")) }
+            for name in index.commands where seen.insert(name).inserted { list.append(CompletionItem(label: "\\" + name, detail: L10n.tr("项目定义"))) }
             for name in twoArguments where seen.insert(name).inserted { list.append(CompletionItem(label: "\\" + name, insert: "\\\(name){}{}", caret: name.utf16.count + 2)) }
             for name in oneArgument where seen.insert(name).inserted {
                 list.append(name == "item" ? CompletionItem(label: "\\item", insert: "\\item ") : CompletionItem(label: "\\" + name, insert: "\\\(name){}", caret: name.utf16.count + 2))

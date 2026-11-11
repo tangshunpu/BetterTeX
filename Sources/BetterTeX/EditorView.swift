@@ -9,18 +9,18 @@ final class EditorBuffer {
     var selection = NSRange(location: 0, length: 0)
     init(url: URL) throws {
         self.url = url; snapshot = try DiskSnapshot(url: url)
-        guard snapshot.data.count < 12_000_000, let contents = String(data: snapshot.data, encoding: .utf8) else { throw BetterTeXError.message("仅支持小于 12 MB 的 UTF-8 文本文件。") }
+        guard snapshot.data.count < 12_000_000, let contents = String(data: snapshot.data, encoding: .utf8) else { throw BetterTeXError.message(L10n.tr("仅支持小于 12 MB 的 UTF-8 文本文件。")) }
         text = contents
     }
     func save(overwrite: Bool = false) throws {
         guard dirty else { return }
-        if !overwrite && !snapshot.isCurrent(at: url) { throw BetterTeXError.message("\(url.lastPathComponent) 已被外部程序修改。请先处理文件冲突。") }
+        if !overwrite && !snapshot.isCurrent(at: url) { throw BetterTeXError.message(L10n.tr("\(url.lastPathComponent) 已被外部程序修改。请先处理文件冲突。")) }
         try text.write(to: url, atomically: true, encoding: .utf8)
         snapshot = try DiskSnapshot(url: url); dirty = false
     }
     func reload() throws {
         let fresh = try DiskSnapshot(url: url)
-        guard let contents = String(data: fresh.data, encoding: .utf8) else { throw BetterTeXError.message("文件不是 UTF-8 文本。") }
+        guard let contents = String(data: fresh.data, encoding: .utf8) else { throw BetterTeXError.message(L10n.tr("文件不是 UTF-8 文本。")) }
         snapshot = fresh; text = contents; dirty = false
     }
 }
@@ -28,21 +28,21 @@ final class EditorBuffer {
 /// The quick-insert commands offered above the editor and in the 插入 menu.
 enum Snippet: Int, CaseIterable {
     case image, itemize, enumerate, equation, table, section, bold, italic, cite, ref
-    var title: String { ["图片", "列表", "编号", "公式", "表格", "章节", "粗体", "斜体", "引用", "交叉引用"][rawValue] }
+    var title: String { [L10n.tr("图片"), L10n.tr("列表"), L10n.tr("编号"), L10n.tr("公式"), L10n.tr("表格"), L10n.tr("章节"), L10n.tr("粗体"), L10n.tr("斜体"), L10n.tr("引用"), L10n.tr("交叉引用")][rawValue] }
     var symbol: String { ["photo", "list.bullet", "list.number", "function", "tablecells", "number", "bold", "italic", "quote.opening", "link"][rawValue] }
-    var help: String { ["插入图片（也可拖入或粘贴图片）", "无序列表 itemize", "有序列表 enumerate", "编号公式 equation", "三线表 table", "新章节 \\section", "粗体 \\textbf", "斜体 \\textit", "文献引用 \\cite", "交叉引用 \\ref"][rawValue] }
+    var help: String { [L10n.tr("插入图片（也可拖入或粘贴图片）"), L10n.tr("无序列表 itemize"), L10n.tr("有序列表 enumerate"), L10n.tr("编号公式 equation"), L10n.tr("三线表 table"), L10n.tr("新章节 \\section"), L10n.tr("粗体 \\textbf"), L10n.tr("斜体 \\textit"), L10n.tr("文献引用 \\cite"), L10n.tr("交叉引用 \\ref")][rawValue] }
     /// Text placed before and after the selection, the placeholder used when nothing is selected,
     /// and whether the snippet must start on its own line.
     var template: (before: String, after: String, placeholder: String, block: Bool) {
         switch self {
         case .image: return ("", "", "", false)
-        case .itemize: return ("\\begin{itemize}\n  \\item ", "\n\\end{itemize}\n", "条目", true)
-        case .enumerate: return ("\\begin{enumerate}\n  \\item ", "\n\\end{enumerate}\n", "条目", true)
+        case .itemize: return ("\\begin{itemize}\n  \\item ", "\n\\end{itemize}\n", L10n.tr("条目"), true)
+        case .enumerate: return ("\\begin{enumerate}\n  \\item ", "\n\\end{enumerate}\n", L10n.tr("条目"), true)
         case .equation: return ("\\begin{equation}\n  ", "\n\\end{equation}\n", "E = mc^2", true)
-        case .table: return ("\\begin{table}[htbp]\n  \\centering\n  \\caption{", "}\n  \\begin{tabular}{lcc}\n    \\hline\n    项目 & A & B \\\\\n    \\hline\n    示例 & 1 & 2 \\\\\n    \\hline\n  \\end{tabular}\n\\end{table}\n", "表题", true)
-        case .section: return ("\\section{", "}\n", "标题", true)
-        case .bold: return ("\\textbf{", "}", "文本", false)
-        case .italic: return ("\\textit{", "}", "文本", false)
+        case .table: return ("\\begin{table}[htbp]\n  \\centering\n  \\caption{", L10n.tr("}\n  \\begin{tabular}{lcc}\n    \\hline\n    项目 & A & B \\\\\n    \\hline\n    示例 & 1 & 2 \\\\\n    \\hline\n  \\end{tabular}\n\\end{table}\n"), L10n.tr("表题"), true)
+        case .section: return ("\\section{", "}\n", L10n.tr("标题"), true)
+        case .bold: return ("\\textbf{", "}", L10n.tr("文本"), false)
+        case .italic: return ("\\textit{", "}", L10n.tr("文本"), false)
         case .cite: return ("\\cite{", "}", "key", false)
         case .ref: return ("\\ref{", "}", "label", false)
         }
@@ -258,7 +258,7 @@ final class TabChip: NSView {
         let badge = FileBadge(side: 16); badge.ext = url.pathExtension.lowercased()
         let label = Theme.label(url.lastPathComponent, size: 13, color: active ? Theme.text : Theme.muted, weight: active ? .medium : .regular)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        close.toolTip = "关闭标签  ⌘W"
+        close.toolTip = L10n.tr("关闭标签  ⌘W")
         let row = NSStackView(views: [badge, label, close]); row.spacing = 7; row.alignment = .centerY; row.setCustomSpacing(3, after: label)
         row.translatesAutoresizingMaskIntoConstraints = false; addSubview(row)
         for constraint in close.constraints { constraint.isActive = false }
@@ -360,8 +360,8 @@ final class InsertToolbar: NSView {
     init(_ entries: [(Snippet, ActionButton)], onInsert: @escaping (Snippet) -> Void) {
         self.entries = entries; self.onInsert = onInsert
         super.init(frame: .zero)
-        more = ActionButton("更多", symbol: "chevron.down", style: .tool) { [weak self] in self?.showMore() }
-        more.toolTip = "更多插入命令"; more.imagePosition = .imageTrailing
+        more = ActionButton(L10n.tr("更多"), symbol: "chevron.down", style: .tool) { [weak self] in self?.showMore() }
+        more.toolTip = L10n.tr("更多插入命令"); more.imagePosition = .imageTrailing
         for view in entries.map(\.1) + [more!] { view.translatesAutoresizingMaskIntoConstraints = true; addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -460,7 +460,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
             }
         }
         overview.text = textView; overview.translatesAutoresizingMaskIntoConstraints = false; addSubview(overview)
-        overview.toolTip = "全文概览：蓝 / 绿 / 红为 Git 改动，右侧红 / 橙为编译错误与警告；点按跳转"
+        overview.toolTip = L10n.tr("全文概览：蓝 / 绿 / 红为 Git 改动，右侧红 / 橙为编译错误与警告；点按跳转")
         overview.onJump = { [weak self] fraction in
             guard let self else { return }
             let height = self.textView.bounds.height, visible = self.scroll.contentView.bounds.height
@@ -515,7 +515,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
     }
     /// Inserts a figure environment for an image path relative to the main document.
     func insertFigure(path: String, label: String) {
-        textView.insertSnippet(before: "\\begin{figure}[htbp]\n  \\centering\n  \\includegraphics[width=0.8\\linewidth]{\(path)}\n  \\caption{", after: "}\n  \\label{fig:\(label)}\n\\end{figure}\n", placeholder: "图注", block: true)
+        textView.insertSnippet(before: "\\begin{figure}[htbp]\n  \\centering\n  \\includegraphics[width=0.8\\linewidth]{\(path)}\n  \\caption{", after: "}\n  \\label{fig:\(label)}\n\\end{figure}\n", placeholder: L10n.tr("图注"), block: true)
     }
     /// Adds \usepackage{graphicx} after \documentclass when this file is a main document
     /// that does not load it yet. Returns nil when the file has no preamble to edit.

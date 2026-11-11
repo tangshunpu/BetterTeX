@@ -38,7 +38,7 @@ public final class ProcessRunner: @unchecked Sendable {
         child.standardOutput = pipe
         child.standardError = pipe
         lock.lock()
-        if cancelled { lock.unlock(); throw BetterTeXError.message("操作已取消。") }
+        if cancelled { lock.unlock(); throw BetterTeXError.message(L10n.tr("操作已取消。")) }
         process = child
         // Hold the lock through launch so cancel cannot miss a not-yet-running process.
         do { try child.run(); lock.unlock() }
@@ -61,7 +61,7 @@ public final class ProcessRunner: @unchecked Sendable {
         child.waitUntilExit()
         deadline.cancel()
         lock.lock(); process = nil; let wasCancelled = cancelled; lock.unlock()
-        if wasCancelled { throw BetterTeXError.message("操作已取消。") }
+        if wasCancelled { throw BetterTeXError.message(L10n.tr("操作已取消。")) }
         return CommandResult(status: child.terminationStatus, output: String(decoding: captured, as: UTF8.self))
     }
 }

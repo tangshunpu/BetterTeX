@@ -17,16 +17,16 @@ public struct AgentConfiguration: Equatable {
     public func arguments(for provider: AgentProvider) throws -> [String] {
         let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard model.isEmpty || (model.count <= 150 && model.range(of: "^[A-Za-z0-9][A-Za-z0-9._:/+\\-]*$", options: .regularExpression) != nil) else {
-            throw BetterTeXError.message("模型名称包含无效字符，请使用 CLI 接受的模型 ID。")
+            throw BetterTeXError.message(L10n.tr("模型名称包含无效字符，请使用 CLI 接受的模型 ID。"))
         }
-        guard effort.isEmpty || Self.knownEfforts.contains(effort) else { throw BetterTeXError.message("不支持的思考强度。") }
+        guard effort.isEmpty || Self.knownEfforts.contains(effort) else { throw BetterTeXError.message(L10n.tr("不支持的思考强度。")) }
         var result: [String] = []
         if !model.isEmpty { result += ["--model", model] }
         if !effort.isEmpty {
             switch provider {
             case .codex: result += ["-c", "model_reasoning_effort=\"\(effort)\""]
             case .claude:
-                guard ["low", "medium", "high", "xhigh", "max"].contains(effort) else { throw BetterTeXError.message("Claude CLI 不支持该思考强度。") }
+                guard ["low", "medium", "high", "xhigh", "max"].contains(effort) else { throw BetterTeXError.message(L10n.tr("Claude CLI 不支持该思考强度。")) }
                 result += ["--effort", effort]
             }
         }

@@ -47,8 +47,8 @@ final class OverleafChip: Chip {
         label.setContentCompressionResistancePriority(.required, for: .horizontal)
         let row = NSStackView(views: [icon, label, dot, avatars]); row.spacing = 6; row.alignment = .centerY
         size(nil, 32); pinRow(row, leading: 10, trailing: 10)
-        setAccessibilityElement(true); setAccessibilityRole(.button); setAccessibilityLabel("Overleaf 同步")
-        set(title: "Overleaf", color: nil, people: [], tip: "连接 Overleaf")
+        setAccessibilityElement(true); setAccessibilityRole(.button); setAccessibilityLabel(L10n.tr("Overleaf 同步"))
+        set(title: "Overleaf", color: nil, people: [], tip: L10n.tr("连接 Overleaf"))
     }
     required init?(coder: NSCoder) { fatalError() }
     func set(title: String, color: NSColor?, people: [OverleafPresence], tip: String) {
@@ -74,7 +74,7 @@ final class ProjectPicker: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     init(_ projects: [OverleafProject]) {
         all = projects; shown = projects
         super.init(frame: NSRect(x: 0, y: 0, width: 460, height: 320))
-        search.frame = NSRect(x: 0, y: 290, width: 460, height: 26); search.placeholderString = "筛选项目"; search.delegate = self; addSubview(search)
+        search.frame = NSRect(x: 0, y: 290, width: 460, height: 26); search.placeholderString = L10n.tr("筛选项目"); search.delegate = self; addSubview(search)
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")); column.width = 440; table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 26; table.dataSource = self; table.delegate = self; table.usesAlternatingRowBackgroundColors = true
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 460, height: 282)); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
@@ -90,7 +90,7 @@ final class ProjectPicker: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     func numberOfRows(in tableView: NSTableView) -> Int { shown.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let project = shown[row]
-        let role = ["owner": "所有者", "readAndWrite": "可编辑", "readOnly": "只读", "review": "审阅"][project.accessLevel] ?? project.accessLevel
+        let role = ["owner": L10n.tr("所有者"), "readAndWrite": L10n.tr("可编辑"), "readOnly": L10n.tr("只读"), "review": L10n.tr("审阅")][project.accessLevel] ?? project.accessLevel
         let line = NSStackView(views: [Theme.label(project.name, size: 13), NSView(), Theme.label(role, size: 11.5, color: Theme.muted)]); line.alignment = .centerY
         let cell = NSView(); cell.pinRow(line, leading: 6, trailing: 8); return cell
     }
@@ -98,8 +98,8 @@ final class ProjectPicker: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     /// Runs the picker modally; nil when cancelled.
     static func choose(_ projects: [OverleafProject], title: String, confirm: String) -> OverleafProject? {
         let alert = NSAlert(); alert.messageText = title
-        alert.informativeText = projects.isEmpty ? "这个账户下还没有项目。" : "共 \(projects.count) 个项目。"
-        alert.addButton(withTitle: confirm); alert.addButton(withTitle: "取消")
+        alert.informativeText = projects.isEmpty ? L10n.tr("这个账户下还没有项目。") : L10n.tr("共 \(projects.count) 个项目。")
+        alert.addButton(withTitle: confirm); alert.addButton(withTitle: L10n.tr("取消"))
         let picker = ProjectPicker(projects); alert.accessoryView = picker
         alert.window.initialFirstResponder = picker.search
         return alert.runModal() == .alertFirstButtonReturn ? picker.selected : nil
@@ -164,55 +164,55 @@ final class OverleafPanel: NSViewController {
             stack.addArrangedSubview(view)
             if fill { view.widthAnchor.constraint(equalToConstant: Self.width - 28).isActive = true }
         }
-        let header = NSStackView(views: [Theme.label(model.title, size: 14, weight: .semibold), NSView(), button("邀请") { [weak self] in self?.onInvite?() }]); header.alignment = .centerY
+        let header = NSStackView(views: [Theme.label(model.title, size: 14, weight: .semibold), NSView(), button(L10n.tr("邀请")) { [weak self] in self?.onInvite?() }]); header.alignment = .centerY
         add(header); add(wrapped(model.status, size: 12, color: Theme.muted))
 
-        add(Theme.label("在线协作者 · \(model.people.count)", size: 11.5, color: Theme.muted, weight: .semibold), fill: false)
-        if model.people.isEmpty { add(wrapped("目前只有你在线。", size: 12, color: Theme.faint)) }
+        add(Theme.label(L10n.tr("在线协作者 · \(model.people.count)"), size: 11.5, color: Theme.muted, weight: .semibold), fill: false)
+        if model.people.isEmpty { add(wrapped(L10n.tr("目前只有你在线。"), size: 12, color: Theme.faint)) }
         for person in model.people {
-            let name = Theme.label(person.presence.name + (person.isSelf ? "（你）" : ""), size: 13); name.lineBreakMode = .byTruncatingTail
+            let name = Theme.label(person.presence.name + (person.isSelf ? L10n.tr("（你）") : ""), size: 13); name.lineBreakMode = .byTruncatingTail
             let place = Theme.label(person.place, size: 11.5, color: Theme.muted); place.setContentCompressionResistancePriority(.init(200), for: .horizontal)
             let row = NSStackView(views: [AvatarView(person.presence, side: 24), name, NSView(), place]); row.spacing = 8; row.alignment = .centerY
             add(row)
         }
 
-        add(Theme.label("当前文件的评论 · \(model.comments.count)", size: 11.5, color: Theme.muted, weight: .semibold), fill: false)
+        add(Theme.label(L10n.tr("当前文件的评论 · \(model.comments.count)"), size: 11.5, color: Theme.muted, weight: .semibold), fill: false)
         stack.setCustomSpacing(14, after: stack.arrangedSubviews[stack.arrangedSubviews.count - 2])
         if model.comments.isEmpty { add(wrapped(model.commentHint, size: 12, color: Theme.faint)) }
-        let formatter = RelativeDateTimeFormatter(); formatter.unitsStyle = .short
+        let formatter = RelativeDateTimeFormatter(); formatter.unitsStyle = .short; formatter.locale = L10n.locale
         for comment in model.comments {
             let card = Chip(fill: Theme.fillSoft, radius: 10)
             let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 5
             let offset = comment.offset
             let quote = button("“" + comment.quote.replacingOccurrences(of: "\n", with: " ").prefix(60) + "”", style: .plain) { [weak self] in self?.onJump?(offset) }
-            quote.toolTip = "跳到评论位置"; body.addArrangedSubview(quote)
+            quote.toolTip = L10n.tr("跳到评论位置"); body.addArrangedSubview(quote)
             for message in comment.thread.messages {
                 let stamp = message.date.timeIntervalSince1970 > 0 ? " · " + formatter.localizedString(for: message.date, relativeTo: Date()) : ""
                 body.addArrangedSubview(Theme.label(message.author + stamp, size: 11, color: Theme.muted, weight: .medium))
                 body.addArrangedSubview(wrapped(message.content))
             }
-            let reply = field("回复…"); let id = comment.thread.id
+            let reply = field(L10n.tr("回复…")); let id = comment.thread.id
             let send = { [weak self, weak reply] in
                 guard let reply else { return }
                 let text = reply.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !text.isEmpty { reply.stringValue = ""; self?.onReply?(id, text) }
             }
             actions.append(send)
-            let controls = NSStackView(views: [reply, button("回复", send), button("解决") { [weak self] in self?.onResolve?(id) }]); controls.spacing = 6
+            let controls = NSStackView(views: [reply, button(L10n.tr("回复"), send), button(L10n.tr("解决")) { [weak self] in self?.onResolve?(id) }]); controls.spacing = 6
             body.addArrangedSubview(controls); controls.widthAnchor.constraint(equalToConstant: Self.width - 52).isActive = true
             body.translatesAutoresizingMaskIntoConstraints = false; card.addSubview(body)
             NSLayoutConstraint.activate([body.topAnchor.constraint(equalTo: card.topAnchor, constant: 10), body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10), body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12), body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12)])
             add(card)
         }
         if model.canComment {
-            let input = field("为选中的文字添加评论…")
+            let input = field(L10n.tr("为选中的文字添加评论…"))
             let send = { [weak self, weak input] in
                 guard let input else { return }
                 let text = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !text.isEmpty { input.stringValue = ""; self?.onAddComment?(text) }
             }
             actions.append(send)
-            let row = NSStackView(views: [input, button("添加", send)]); row.spacing = 6; add(row)
+            let row = NSStackView(views: [input, button(L10n.tr("添加"), send)]); row.spacing = 6; add(row)
         }
     }
 }

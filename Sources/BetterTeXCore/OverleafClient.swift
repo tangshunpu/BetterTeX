@@ -6,8 +6,8 @@ public enum OverleafError: LocalizedError {
     case message(String)
     public var errorDescription: String? {
         switch self {
-        case .notLoggedIn: return "Overleaf 登录已失效，请重新登录。"
-        case .http(let status, let detail): return "Overleaf 请求失败（HTTP \(status)）" + (detail.isEmpty ? "。" : "：\(detail)")
+        case .notLoggedIn: return L10n.tr("Overleaf 登录已失效，请重新登录。")
+        case .http(let status, let detail): return L10n.tr("Overleaf 请求失败（HTTP \(status)）") + (detail.isEmpty ? L10n.tr("。") : L10n.tr("：\(detail)"))
         case .message(let text): return text
         }
     }
@@ -64,14 +64,14 @@ public final class OverleafClient {
     }
 
     private func check(_ response: URLResponse, _ data: Data?) throws -> HTTPURLResponse {
-        guard let http = response as? HTTPURLResponse else { throw OverleafError.message("Overleaf 没有响应。") }
+        guard let http = response as? HTTPURLResponse else { throw OverleafError.message(L10n.tr("Overleaf 没有响应。")) }
         // An expired session is answered with a redirect to the sign-in page.
         if http.url?.path.hasPrefix("/login") == true || http.statusCode == 401 { throw OverleafError.notLoggedIn }
         guard (200..<300).contains(http.statusCode) else {
             let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             let detail = object?["message"] as? String ?? (object?["message"] as? [String: Any])?["text"] as? String ?? object?["error"] as? String ?? ""
-            if http.statusCode == 403 && detail.isEmpty { throw OverleafError.http(403, "没有权限，或登录已失效") }
-            if http.statusCode == 429 { throw OverleafError.http(429, "请求过于频繁，请稍后再试") }
+            if http.statusCode == 403 && detail.isEmpty { throw OverleafError.http(403, L10n.tr("没有权限，或登录已失效")) }
+            if http.statusCode == 429 { throw OverleafError.http(429, L10n.tr("请求过于频繁，请稍后再试")) }
             throw OverleafError.http(http.statusCode, detail)
         }
         return http
@@ -157,13 +157,13 @@ public final class OverleafClient {
         var fields = [("name", name)]
         if path.contains("/") { fields.append(("relativePath", path)) }
         let result = try await multipart("project/\(projectID)/upload", query: ["folder_id": rootFolderID], fields: fields, fileName: name, file: data)
-        guard result["success"] as? Bool == true else { throw OverleafError.message("Overleaf 拒绝了 \(path)：\(result["error"] as? String ?? "上传失败")") }
+        guard result["success"] as? Bool == true else { throw OverleafError.message(L10n.tr("Overleaf 拒绝了 \(path)：\(result["error"] as? String ?? L10n.tr("上传失败"))")) }
     }
 
     /// Uploads a zip archive as a brand-new project and returns its id.
     public func createProject(name: String, archive: URL) async throws -> String {
         let result = try await multipart("project/new/upload", query: [:], fields: [("name", name + ".zip")], fileName: name + ".zip", file: try Data(contentsOf: archive))
-        guard let id = result["project_id"] as? String else { throw OverleafError.message("Overleaf 未能创建项目：\(result["error"] as? String ?? "未知错误")") }
+        guard let id = result["project_id"] as? String else { throw OverleafError.message(L10n.tr("Overleaf 未能创建项目：\(result["error"] as? String ?? L10n.tr("未知错误"))")) }
         return id
     }
 
@@ -177,10 +177,10 @@ public final class OverleafClient {
         let result = object(try await send("POST", "project/\(projectID)/invite", json: ["email": email, "privileges": privileges]))
         if result["invite"] is [String: Any] { return }
         switch result["error"] as? String {
-        case "cannot_invite_self": throw OverleafError.message("不能邀请自己。")
-        case "cannot_invite_non_user": throw OverleafError.message("该邮箱尚未注册 Overleaf。")
-        case let code?: throw OverleafError.message("邀请失败：\(code)")
-        default: throw OverleafError.message("邀请没有发出，可能已超出该项目的协作者上限。")
+        case "cannot_invite_self": throw OverleafError.message(L10n.tr("不能邀请自己。"))
+        case "cannot_invite_non_user": throw OverleafError.message(L10n.tr("该邮箱尚未注册 Overleaf。"))
+        case let code?: throw OverleafError.message(L10n.tr("邀请失败：\(code)"))
+        default: throw OverleafError.message(L10n.tr("邀请没有发出，可能已超出该项目的协作者上限。"))
         }
     }
     /// Members and pending invitations as (display name, role) pairs.
@@ -206,7 +206,7 @@ public final class OverleafClient {
                 let user = message["user"] as? [String: Any] ?? [:]
                 let name = [user["first_name"] as? String, user["last_name"] as? String].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
                 return OverleafMessage(id: message["id"] as? String ?? UUID().uuidString, content: message["content"] as? String ?? "",
-                                       author: name.isEmpty ? (user["email"] as? String ?? "协作者") : name,
+                                       author: name.isEmpty ? (user["email"] as? String ?? L10n.tr("协作者")) : name,
                                        date: Date(timeIntervalSince1970: (message["timestamp"] as? Double ?? 0) / 1000))
             }
             result[id] = OverleafThread(id: id, messages: messages, resolved: thread["resolved"] as? Bool ?? false)
@@ -236,10 +236,10 @@ public final class OverleafSocket: NSObject, URLSessionWebSocketDelegate {
         var handshake = URLRequest(url: client.url("socket.io/1/", query: ["projectId": projectID, "t": stamp]))
         handshake.setValue(client.host.absoluteString, forHTTPHeaderField: "Origin")
         let (data, response) = try await client.session.data(for: handshake)
-        guard let http = response as? HTTPURLResponse else { throw OverleafError.message("无法连接 Overleaf 实时服务。") }
+        guard let http = response as? HTTPURLResponse else { throw OverleafError.message(L10n.tr("无法连接 Overleaf 实时服务。")) }
         if http.statusCode == 401 || http.statusCode == 403 { throw OverleafError.notLoggedIn }
         let fields = String(decoding: data, as: UTF8.self).split(separator: ":")
-        guard http.statusCode == 200, let sid = fields.first, fields.count >= 3 else { throw OverleafError.http(http.statusCode, "实时服务握手失败") }
+        guard http.statusCode == 200, let sid = fields.first, fields.count >= 3 else { throw OverleafError.http(http.statusCode, L10n.tr("实时服务握手失败")) }
         var components = URLComponents(url: client.url("socket.io/1/websocket/\(sid)", query: ["projectId": projectID]), resolvingAgainstBaseURL: false)!
         components.scheme = client.host.scheme == "http" ? "ws" : "wss"
         var request = URLRequest(url: components.url!)
@@ -269,7 +269,7 @@ public final class OverleafSocket: NSObject, URLSessionWebSocketDelegate {
         switch frame {
         case .connect: isOpen = true
         case .heartbeat: task?.send(.string("2::")) { _ in }
-        case .disconnect: finish("服务器断开了连接")
+        case .disconnect: finish(L10n.tr("服务器断开了连接"))
         case .error(let reason): finish(reason)
         case .event(let name, let args, _): onEvent?(name, args)
         case .ack(let id, let args): if let callback = acks.removeValue(forKey: id) { callback(args) }

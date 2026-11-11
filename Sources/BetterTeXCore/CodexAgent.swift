@@ -3,12 +3,12 @@ import Foundation
 /// How much the agent may touch, mapped to Codex's own sandbox modes.
 public enum CodexSandbox: String, CaseIterable {
     case readOnly = "read-only", workspaceWrite = "workspace-write", fullAccess = "danger-full-access"
-    public var title: String { switch self { case .readOnly: return "只读"; case .workspaceWrite: return "可改项目"; case .fullAccess: return "完全访问" } }
+    public var title: String { switch self { case .readOnly: return L10n.tr("只读"); case .workspaceWrite: return L10n.tr("可改项目"); case .fullAccess: return L10n.tr("完全访问") } }
     public var detail: String {
         switch self {
-        case .readOnly: return "只能读取文件和运行只读命令"
-        case .workspaceWrite: return "可以修改项目文件夹里的文件，不能联网"
-        case .fullAccess: return "不受沙盒限制，可读写任意文件并联网"
+        case .readOnly: return L10n.tr("只能读取文件和运行只读命令")
+        case .workspaceWrite: return L10n.tr("可以修改项目文件夹里的文件，不能联网")
+        case .fullAccess: return L10n.tr("不受沙盒限制，可读写任意文件并联网")
         }
     }
 }
@@ -48,8 +48,8 @@ public enum CodexEvent: Equatable {
         case "turn.completed":
             let usage = object["usage"] as? [String: Any] ?? [:]
             return .turnCompleted(inputTokens: usage["input_tokens"] as? Int ?? 0, outputTokens: usage["output_tokens"] as? Int ?? 0)
-        case "turn.failed": return .turnFailed((object["error"] as? [String: Any])?["message"] as? String ?? "这一轮没有完成。")
-        case "error": return .turnFailed(object["message"] as? String ?? "Codex 报告了一个错误。")
+        case "turn.failed": return .turnFailed((object["error"] as? [String: Any])?["message"] as? String ?? L10n.tr("这一轮没有完成。"))
+        case "error": return .turnFailed(object["message"] as? String ?? L10n.tr("Codex 报告了一个错误。"))
         case "item.started", "item.updated", "item.completed":
             guard let raw = object["item"] as? [String: Any], let item = item(raw, finished: type == "item.completed") else { return nil }
             return .item(item)
@@ -69,15 +69,15 @@ public enum CodexEvent: Equatable {
                              status: status == .done && (code ?? 0) != 0 ? .failed : status, exitCode: code)
         case "file_change":
             let changes = (raw["changes"] as? [[String: Any]] ?? []).map { change -> String in
-                let kind = ["add": "新增", "delete": "删除", "update": "修改"][change["kind"] as? String ?? ""] ?? (change["kind"] as? String ?? "")
+                let kind = ["add": L10n.tr("新增"), "delete": L10n.tr("删除"), "update": L10n.tr("修改")][change["kind"] as? String ?? ""] ?? (change["kind"] as? String ?? "")
                 return "\(kind)  \(change["path"] as? String ?? "")"
             }
-            return CodexItem(id: id, kind: .fileChange, text: "\(changes.count) 个文件", detail: changes.joined(separator: "\n"), status: status)
+            return CodexItem(id: id, kind: .fileChange, text: L10n.tr("\(changes.count) 个文件"), detail: changes.joined(separator: "\n"), status: status)
         case "mcp_tool_call": return CodexItem(id: id, kind: .toolCall, text: [raw["server"] as? String, raw["tool"] as? String].compactMap { $0 }.joined(separator: " · "), status: status)
         case "web_search": return CodexItem(id: id, kind: .webSearch, text: raw["query"] as? String ?? "", status: status)
         case "todo_list":
             let lines = (raw["items"] as? [[String: Any]] ?? []).map { ($0["completed"] as? Bool == true ? "☑ " : "☐ ") + ($0["text"] as? String ?? "") }
-            return CodexItem(id: id, kind: .todo, text: "计划", detail: lines.joined(separator: "\n"), status: status)
+            return CodexItem(id: id, kind: .todo, text: L10n.tr("计划"), detail: lines.joined(separator: "\n"), status: status)
         case "error": return CodexItem(id: id, kind: .notice, text: raw["message"] as? String ?? "", status: .done)
         default: return nil
         }
@@ -103,10 +103,10 @@ public struct CodexRequest {
     }
     /// Arguments for `codex`. The prompt travels as its own argument after `--`, never through a shell.
     public func arguments() throws -> [String] {
-        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BetterTeXError.message("请输入要发给 Codex 的内容。") }
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BetterTeXError.message(L10n.tr("请输入要发给 Codex 的内容。")) }
         var arguments = ["exec"]
         if let thread {
-            guard thread.range(of: "^[A-Za-z0-9][A-Za-z0-9-]{7,63}$", options: .regularExpression) != nil else { throw BetterTeXError.message("会话 ID 无效，无法继续。") }
+            guard thread.range(of: "^[A-Za-z0-9][A-Za-z0-9-]{7,63}$", options: .regularExpression) != nil else { throw BetterTeXError.message(L10n.tr("会话 ID 无效，无法继续。")) }
             arguments.append("resume")
         }
         arguments += ["--json", "--skip-git-repo-check", "-c", "sandbox_mode=\"\(sandbox.rawValue)\""]

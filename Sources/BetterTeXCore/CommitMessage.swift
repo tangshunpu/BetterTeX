@@ -61,7 +61,7 @@ public enum CommitMessageWriter {
     }
 
     public static func generate(changes: String, recentSubjects: String, model: String, tools: Toolchain, runner: ProcessRunner) throws -> String {
-        guard let codex = tools["codex"] else { throw BetterTeXError.message("未检测到 Codex CLI，无法生成提交说明。") }
+        guard let codex = tools["codex"] else { throw BetterTeXError.message(L10n.tr("未检测到 Codex CLI，无法生成提交说明。")) }
         // An empty scratch folder: nothing for the model to read, and no project instructions to load.
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("bettertex-commit-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
@@ -89,7 +89,7 @@ public enum CommitMessageWriter {
         let message = clean((try? String(contentsOf: output, encoding: .utf8)) ?? "")
         guard result.succeeded, !message.isEmpty else {
             let tail = result.output.split(separator: "\n").filter { !$0.hasPrefix("{") }.suffix(6).map { String($0.prefix(300)) }.joined(separator: "\n")
-            throw BetterTeXError.message("\(model) 未能生成提交说明（\(result.status)）。\n" + tail)
+            throw BetterTeXError.message(L10n.tr("\(model) 未能生成提交说明（\(result.status)）。\n") + tail)
         }
         return message
     }
@@ -99,7 +99,7 @@ extension GitService {
     /// The selected changes as text for summarising: a diff against HEAD for tracked files and
     /// the opening of each new file, cut to `limit` characters.
     public func changeSummary(_ changes: [GitChange], limit: Int = 24_000) throws -> String {
-        guard !changes.isEmpty else { throw BetterTeXError.message("请先勾选要提交的文件。") }
+        guard !changes.isEmpty else { throw BetterTeXError.message(L10n.tr("请先勾选要提交的文件。")) }
         let root = try checked(["rev-parse", "--show-toplevel"]).trimmingCharacters(in: .newlines)
         var text = changes.map { "[\($0.status)] \($0.path)" }.joined(separator: "\n") + "\n\n"
         let tracked = changes.filter { !$0.isUntracked }.flatMap(\.commitPaths)
