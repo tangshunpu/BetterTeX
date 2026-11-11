@@ -32,6 +32,18 @@ Write, compile and preview in one window — with Overleaf sync and your coding 
 | 🖼️ **Quick insert** | Drop or paste an image and get a ready-made `figure` |
 | 🪶 **Native** | Swift + AppKit + PDFKit. No Electron |
 
+## Project home & sign-in
+
+Keep multiple projects in one searchable list, filter by local or Overleaf, and sort by name, location or last modified time. The screenshot below uses six sample projects.
+
+<img src="docs/images/projects.jpg" alt="BetterTeX project home with six sample projects, search, filters and an Overleaf sign-in button">
+
+Sign in to Overleaf in a dedicated window. Once signed in, your Overleaf projects appear on the project home, ready to download and open.
+
+<p align="center">
+  <img src="docs/images/overleaf-login.jpg" width="520" alt="Overleaf sign-in window in BetterTeX">
+</p>
+
 ## Install
 
 1. Download the `.dmg` from [Releases](https://github.com/tangshunpu/BetterTeX/releases) and drag **BetterTeX** into Applications.

@@ -32,6 +32,18 @@
 | 🖼️ **快速插入** | 拖入或粘贴图片，自动生成 `figure` 环境 |
 | 🪶 **原生** | Swift + AppKit + PDFKit，没有 Electron |
 
+## 项目主页与登录
+
+在同一张列表中管理多个项目，按名称或位置搜索，切换本机 / Overleaf 分类，并按名称、位置或修改时间排序。下图展示了 6 个示例项目。
+
+<img src="docs/images/projects.jpg" alt="BetterTeX 项目主页：6 个示例项目、搜索框、分类筛选和 Overleaf 登录入口">
+
+在独立窗口中登录 Overleaf。登录后，Overleaf 项目会出现在项目主页，点按即可下载并打开。
+
+<p align="center">
+  <img src="docs/images/overleaf-login.jpg" width="520" alt="BetterTeX 中的 Overleaf 登录窗口">
+</p>
+
 ## 安装
 
 1. 在 [Releases](https://github.com/tangshunpu/BetterTeX/releases) 下载 `.dmg`，把 **BetterTeX** 拖到「应用程序」。
