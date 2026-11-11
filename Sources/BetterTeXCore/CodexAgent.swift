@@ -25,8 +25,10 @@ public struct CodexItem: Equatable {
     public var detail: String
     public var status: Status
     public var exitCode: Int?
-    public init(id: String, kind: Kind, text: String, detail: String = "", status: Status = .done, exitCode: Int? = nil) {
-        self.id = id; self.kind = kind; self.text = text; self.detail = detail; self.status = status; self.exitCode = exitCode
+    /// For file changes: unified-diff body lines, each starting with "+", "-" or a space.
+    public var diff: String
+    public init(id: String, kind: Kind, text: String, detail: String = "", status: Status = .done, exitCode: Int? = nil, diff: String = "") {
+        self.id = id; self.kind = kind; self.text = text; self.detail = detail; self.status = status; self.exitCode = exitCode; self.diff = diff
     }
 }
 

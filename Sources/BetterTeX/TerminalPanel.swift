@@ -17,7 +17,7 @@ final class AdaptiveTerminal: LocalProcessTerminalView {
 /// The real product icons, read at run time from the Codex and Claude apps installed on this
 /// Mac (nothing is bundled). Without the app, callers fall back to a generic symbol.
 enum AgentLogo {
-    private static let bundles = ["Codex": ["com.openai.codex", "com.openai.chat"], "Claude": ["com.anthropic.claudefordesktop"]]
+    private static let bundles = ["Agent": ["com.openai.codex", "com.openai.chat"], "Codex": ["com.openai.codex", "com.openai.chat"], "Claude": ["com.anthropic.claudefordesktop"]]
     private static var cache: [String: NSImage?] = [:]
     static func image(for tab: String, side: CGFloat) -> NSImage? {
         if cache[tab] == nil {
@@ -40,10 +40,15 @@ final class ComposerTextView: NSTextView {
 
 final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextViewDelegate {
     let header = PanelHeader("agent", title: "Agent")
-    // "Agent" is the native Codex conversation; the others are terminal sessions and the build log.
-    private let tabNames = ["Agent", "Codex", "Claude", "Shell", "Output"]
-    private let switcher = SegmentedTabs(["对话", "Codex", "Claude", "Shell", "输出"])
-    let chat = AgentChatView()
+    // "Agent" is the Codex tab and "Claude" the Claude tab: both are native conversations driven by
+    // the CLI's non-interactive mode. Shell is a terminal session, Output is the build log.
+    private let tabNames = ["Agent", "Claude", "Shell", "Output"]
+    private let switcher = SegmentedTabs(["Codex", "Claude", "Shell", "输出"])
+    let chat = AgentChatView(provider: .codex)
+    let claudeChat = AgentChatView(provider: .claude)
+    /// The conversation behind the active tab, if it is an agent tab.
+    private var activeChat: AgentChatView? { active == "Agent" ? chat : active == "Claude" ? claudeChat : nil }
+    private func idleHint(_ provider: AgentProvider) -> String { "↩ 发送给 \(provider.rawValue) · ⇧↩ 换行 · 使用本机 \(provider.rawValue.lowercased()) 登录" }
     var onOpenFile: ((URL) -> Void)?
     private var sandboxButton: ActionButton!
     private var sandbox = CodexSandbox(rawValue: UserDefaults.standard.string(forKey: "agent.codex.sandbox") ?? "") ?? .workspaceWrite
@@ -81,6 +86,10 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private var history: [AgentSession] = []
     private var historyButton: ActionButton!
     let empty = NSStackView()
+    private let emptyTile = Chip(fill: nil, radius: 16)
+    private let emptyIcon = NSImageView()
+    private let emptyTitle = Theme.label("", size: 20, weight: .bold)
+    private let emptyDescription = NSTextField(wrappingLabelWithString: "")
     /// Folded, the panel is a slim rail of tab buttons; sessions keep running behind it.
     var onFold: ((Bool) -> Void)?
     private let rail = Surface()
@@ -130,14 +139,17 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         for button in [modelButton!, effortButton!] { button.cell?.lineBreakMode = .byTruncatingTail; button.setContentCompressionResistancePriority(.init(200), for: .horizontal) }
         let send = ActionButton("", symbol: "arrow.up", style: .send) { [weak self] in self?.sendPrompt() }; send.toolTip = "发送  ↩"
         let toolSpacer = NSView(); toolSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        sandboxButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showSandboxMenu() }; sandboxButton.toolTip = "Codex 可以做什么"
+        sandboxButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showSandboxMenu() }; sandboxButton.toolTip = "Agent 可以做什么"
         sandboxButton.setContentCompressionResistancePriority(.init(600), for: .horizontal); sandboxButton.setTitle(sandbox.title)
-        chat.onOpenFile = { [weak self] in self?.onOpenFile?($0) }
-        chat.onLog = { [weak self] in self?.append("\nCodex\n" + $0 + "\n") }
-        chat.onChange = { [weak self] in
-            guard let self else { return }
-            if self.active == "Agent" { self.showChatOrEmpty() }
-            self.hint.stringValue = self.chat.running ? "Codex 正在工作 · 可在对话里点停止" : "↩ 发送给 Codex · ⇧↩ 换行 · 使用本机 codex 登录"
+        for view in [chat, claudeChat] {
+            let name = view.provider.rawValue
+            view.onOpenFile = { [weak self] in self?.onOpenFile?($0) }
+            view.onLog = { [weak self] in self?.append("\n\(name)\n" + $0 + "\n") }
+            view.onChange = { [weak self, weak view] in
+                guard let self, let view, self.activeChat === view else { self?.updateRail(); return }
+                self.showChatOrEmpty(); self.updateRail()
+                self.hint.stringValue = view.running ? "\(name) 正在工作 · 可在对话里点停止" : self.idleHint(view.provider)
+            }
         }
         let toolRow = NSStackView(views: [attach, modelButton, effortButton, sandboxButton, toolSpacer, send]); toolRow.spacing = 2; toolRow.alignment = .centerY
         let cardStack = NSStackView(views: [contextRow, composerScroll, toolRow]); cardStack.orientation = .vertical; cardStack.spacing = 8; cardStack.alignment = .leading
@@ -186,38 +198,14 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         }
         card.pin(stack); return card
     }
-    private func providerRow(_ name: String, detail: String, tile: NSColor, symbol: String, primary: Bool, tab: String) -> NSView {
-        let icon: NSView
-        if let logo = AgentLogo.image(for: tab, side: 34) { let view = NSImageView(image: logo); view.size(34, 34); icon = view }
-        else {
-            let chip = Chip(fill: tile, radius: 7); chip.size(30, 30)
-            let glyph = NSImageView(image: Theme.symbol(symbol, size: 13, weight: .bold)!); glyph.contentTintColor = NSColor(hex: 0x1C1C1E)
-            glyph.translatesAutoresizingMaskIntoConstraints = false; chip.addSubview(glyph)
-            NSLayoutConstraint.activate([glyph.centerXAnchor.constraint(equalTo: chip.centerXAnchor), glyph.centerYAnchor.constraint(equalTo: chip.centerYAnchor)])
-            icon = chip
-        }
-        let text = NSStackView(views: [Theme.label(name, size: 14, weight: .semibold), Theme.label(detail, size: 12, color: Theme.muted)]); text.orientation = .vertical; text.spacing = 1; text.alignment = .leading
-        text.setHuggingPriority(.init(1), for: .horizontal)
-        let launch = ActionButton("启动", style: primary ? .pill : .tinted) { [weak self] in self?.select(tab) }
-        launch.setAccessibilityLabel("启动 \(name)")
-        let row = NSStackView(views: [icon, text, launch]); row.spacing = 12; row.alignment = .centerY
-        let holder = NSView(); holder.heightAnchor.constraint(equalToConstant: 56).isActive = true; holder.pinRow(row, leading: 12, trailing: 12)
-        return holder
-    }
     private func buildEmptyState() {
-        let tile = Chip(fill: Theme.accent.withAlphaComponent(0.18), radius: 16); tile.size(56, 56)
-        let sparkle = NSImageView(image: Theme.symbol("sparkles", size: 24, weight: .semibold)!); sparkle.contentTintColor = Theme.accent
-        sparkle.translatesAutoresizingMaskIntoConstraints = false; tile.addSubview(sparkle)
-        NSLayoutConstraint.activate([sparkle.centerXAnchor.constraint(equalTo: tile.centerXAnchor), sparkle.centerYAnchor.constraint(equalTo: tile.centerYAnchor)])
-        let description = NSTextField(wrappingLabelWithString: "连接本机 Codex 或 Claude Code，在当前项目中继续你的工作。")
-        description.font = .systemFont(ofSize: 13); description.textColor = Theme.muted; description.alignment = .center
-        description.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
-        let heroStack = NSStackView(views: [tile, Theme.label("让 Agent 加入写作", size: 20, weight: .bold), description]); heroStack.orientation = .vertical; heroStack.spacing = 8; heroStack.alignment = .centerX
-        heroStack.setCustomSpacing(14, after: tile); hero = heroStack
-        let providers = card([
-            providerRow("Codex", detail: "本机 CLI · 默认", tile: NSColor(hex: 0x64D2FF), symbol: "chevron.left.forwardslash.chevron.right", primary: true, tab: "Codex"),
-            providerRow("Claude Code", detail: "本机 CLI", tile: NSColor(hex: 0xFF9F0A), symbol: "sparkle", primary: false, tab: "Claude")
-        ], separatorInset: 54)
+        emptyTile.size(56, 56)
+        emptyIcon.translatesAutoresizingMaskIntoConstraints = false; emptyTile.addSubview(emptyIcon)
+        NSLayoutConstraint.activate([emptyIcon.centerXAnchor.constraint(equalTo: emptyTile.centerXAnchor), emptyIcon.centerYAnchor.constraint(equalTo: emptyTile.centerYAnchor)])
+        emptyDescription.font = .systemFont(ofSize: 13); emptyDescription.textColor = Theme.muted; emptyDescription.alignment = .center
+        emptyDescription.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        let heroStack = NSStackView(views: [emptyTile, emptyTitle, emptyDescription]); heroStack.orientation = .vertical; heroStack.spacing = 8; heroStack.alignment = .centerX
+        heroStack.setCustomSpacing(14, after: emptyTile); hero = heroStack
         let prompts = ["润色摘要，让它更简洁", "检查公式与引用编号", "修复编译警告"].map { prompt -> NSView in
             let row = RowButton(height: 44) { [weak self] in
                 guard let self else { return }
@@ -236,8 +224,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         for view in suggestionStack.arrangedSubviews { view.widthAnchor.constraint(equalTo: suggestionStack.widthAnchor).isActive = true }
         suggestions = suggestionStack
         empty.orientation = .vertical; empty.spacing = 22; empty.alignment = .centerX
-        for view in [heroStack, providers, suggestionStack] { empty.addArrangedSubview(view) }
-        providers.widthAnchor.constraint(equalTo: empty.widthAnchor).isActive = true; suggestionStack.widthAnchor.constraint(equalTo: empty.widthAnchor).isActive = true
+        for view in [heroStack, suggestionStack] { empty.addArrangedSubview(view) }
+        suggestionStack.widthAnchor.constraint(equalTo: empty.widthAnchor).isActive = true
     }
     override func layout() {
         // Keep the launch card visible when the pane is docked short.
@@ -248,8 +236,10 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             composer.setFrameSize(NSSize(width: width, height: composer.frame.height)); textDidChange(Notification(name: NSText.didChangeNotification))
         }
         let height = content.bounds.height
-        if suggestions?.isHidden != (height < 500) { suggestions?.isHidden = height < 500 }
-        if hero?.isHidden != (height < 300) { hero?.isHidden = height < 300 }
+        // Prompt suggestions belong to the Codex start page only, and need room.
+        let hideSuggestions = activeChat == nil || height < 360
+        if suggestions?.isHidden != hideSuggestions { suggestions?.isHidden = hideSuggestions }
+        if hero?.isHidden != (height < 200) { hero?.isHidden = height < 200 }
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateColors(); updateContextChip() }
     func updateColors() { logView.backgroundColor = Theme.base; logView.textColor = Theme.muted }
@@ -276,7 +266,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         NSLayoutConstraint.activate([rail.topAnchor.constraint(equalTo: topAnchor), rail.bottomAnchor.constraint(equalTo: bottomAnchor), rail.leadingAnchor.constraint(equalTo: leadingAnchor), rail.trailingAnchor.constraint(equalTo: trailingAnchor)])
         let expand = ActionButton("", symbol: "chevron.left.2") { [weak self] in self?.onFold?(false) }; expand.toolTip = "展开 Agent 面板  ⌘J"
         railStack.addArrangedSubview(expand); railStack.setCustomSpacing(10, after: expand)
-        for (name, symbol, title) in [("Agent", "bubble.left.and.text.bubble.right", "Codex 对话"), ("Codex", "chevron.left.forwardslash.chevron.right", "Codex 终端"), ("Claude", "sparkle", "Claude"), ("Shell", "terminal", "Shell"), ("Output", "text.alignleft", "编译与 Git 输出")] {
+        for (name, symbol, title) in [("Agent", "bubble.left.and.text.bubble.right", "Codex"), ("Claude", "sparkle", "Claude"), ("Shell", "terminal", "Shell"), ("Output", "text.alignleft", "编译与 Git 输出")] {
             let button = ActionButton("", symbol: symbol) { [weak self] in self?.onFold?(false); self?.select(name) }
             if let logo = AgentLogo.image(for: name, side: 20) { button.image = logo }
             button.toolTip = "展开并打开 \(title)"; button.setAccessibilityLabel(title); railButtons[name] = button; railStack.addArrangedSubview(button)
@@ -297,7 +287,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     /// Tabs with a live session are tinted so a folded panel still shows what is running.
     private func updateRail() {
         for (name, button) in railButtons {
-            let running = terminals[name] != nil
+            let running = name == "Agent" ? !chat.isEmpty : name == "Claude" ? !claudeChat.isEmpty : terminals[name] != nil
             button.contentTintColor = running ? Theme.accent : Theme.muted
             // Logos keep their own colours, so idle ones are dimmed instead of tinted.
             if AgentLogo.image(for: name, side: 20) != nil { button.alphaValue = running ? 1 : 0.5 }
@@ -309,7 +299,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         let agentRunning = AgentProvider(rawValue: active) != nil && terminals[active] != nil
         let hidden = active == "Shell" || active == "Output"
         composerCard.isHidden = hidden || !rail.isHidden; updateRail()
-        sandboxButton.isHidden = active != "Agent"
+        sandboxButton.isHidden = activeChat == nil
         composerScroll.isHidden = agentRunning; composerTools.isHidden = agentRunning; compactAttach.isHidden = !agentRunning
         placeholder.isHidden = agentRunning || !composer.string.isEmpty
     }
@@ -322,8 +312,9 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     func configure(project: URL, tools: Toolchain) { self.project = project; self.tools = tools }
     /// The conversation tab shows the start page until the first message.
     private func showChatOrEmpty() {
-        if chat.isEmpty { showEmpty() }
-        else if chat.superview !== content { content.subviews.forEach { $0.removeFromSuperview() }; content.pin(chat) }
+        guard let view = activeChat else { return }
+        if view.isEmpty { showEmpty() }
+        else if view.superview !== content { content.subviews.forEach { $0.removeFromSuperview() }; content.pin(view) }
     }
     private func showSandboxMenu() {
         let menu = NSMenu()
@@ -332,15 +323,25 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
                 guard let self else { return }
                 self.sandbox = mode; UserDefaults.standard.set(mode.rawValue, forKey: "agent.codex.sandbox"); self.sandboxButton.setTitle(mode.title)
             }
-            item.toolTip = mode.detail
-            if #available(macOS 14.4, *) { item.subtitle = mode.detail }
+            // The same three steps mean a sandbox mode for Codex and a permission mode for Claude.
+            let detail = self.selectedProvider == .claude ? ClaudeRequest.detail(for: mode) : mode.detail
+            item.toolTip = detail
+            if #available(macOS 14.4, *) { item.subtitle = detail }
             menu.addItem(item)
         }
         popUp(menu, from: sandboxButton)
     }
+    /// The Codex tab's start page, or a short notice when another tab's CLI could not start.
     func showEmpty() {
+        let codex = activeChat != nil
+        let agent = active == "Claude" ? "Claude" : "Codex"
+        if let logo = AgentLogo.image(for: active, side: 56) { emptyIcon.image = logo; emptyIcon.contentTintColor = nil; emptyTile.fill = nil }
+        else { emptyIcon.image = Theme.symbol(codex ? "sparkles" : "terminal", size: 24, weight: .semibold); emptyIcon.contentTintColor = Theme.accent; emptyTile.fill = Theme.accent.withAlphaComponent(0.18) }
+        emptyTitle.stringValue = codex ? "和 \(agent) 一起写作" : "\(active) 未就绪"
+        emptyDescription.stringValue = codex ? "在下方输入要做的事，\(agent) 会在当前项目里阅读、修改文件并运行命令。" : "请先在本机安装并登录对应的命令行工具，然后在「工作区」菜单重新检测工具。"
+        suggestions?.isHidden = !codex
         content.subviews.forEach { $0.removeFromSuperview() }; empty.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(empty)
-        switcher.selected = active == "Agent" ? 0 : -1
+        switcher.selected = tabNames.firstIndex(of: active) ?? -1
         NSLayoutConstraint.activate([empty.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), empty.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), empty.centerYAnchor.constraint(equalTo: content.centerYAnchor)])
         needsLayout = true
     }
@@ -348,16 +349,19 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     @objc private func sendPrompt() {
         let text = composer.string.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{1b}", with: "")
         guard !text.isEmpty else { return }
-        if active == "Agent" {
-            guard !chat.running else { hint.stringValue = "Codex 还在处理上一条 · 等它完成或先点停止"; return }
+        // Anything that is not the Claude terminal goes to the Codex conversation.
+        if active != "Agent", active != "Claude" { select(selectedProvider == .claude ? "Claude" : "Agent") }
+        if let chat = activeChat {
+            let provider = chat.provider, agent = provider.rawValue
+            guard !chat.running else { hint.stringValue = "\(agent) 还在处理上一条 · 等它完成或先点停止"; return }
             guard let project, let tools else { hint.stringValue = "请先打开一个项目"; return }
-            guard let codex = tools["codex"] else { onError?("未检测到 codex。请先安装并登录 Codex CLI，然后在「工作区」菜单重新检测工具。"); return }
+            guard let codex = tools[agent.lowercased()] else { onError?("未检测到 \(agent.lowercased())。请先安装并登录 \(agent) CLI，然后在「工作区」菜单重新检测工具。"); return }
             var prompt = text
             if includeContext, let file = contextFile {
                 if contextLines != nil, let excerpt = currentContext?() { prompt = "当前文件与选中的内容：\n" + excerpt.replacingOccurrences(of: "\u{1b}", with: "") + "\n\n" + text }
                 else { prompt = "当前文件：\(file)\n\n" + text }
             }
-            chat.send(prompt: prompt, display: text, executable: codex, directory: project, environment: tools.environment, configuration: configurations[.codex] ?? AgentConfiguration(), sandbox: sandbox)
+            chat.send(prompt: prompt, display: text, executable: codex, directory: project, environment: tools.environment, configuration: configurations[provider] ?? AgentConfiguration(), sandbox: sandbox)
             setComposer(""); return
         }
         let name = AgentProvider(rawValue: active)?.rawValue ?? selectedProvider.rawValue
@@ -378,13 +382,18 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         }
         setComposer(""); hint.stringValue = "已发送给 \(name)"; updateComposerMode()
     }
-    func select(_ name: String) {
+    func select(_ requested: String) {
+        // "Codex" is the conversation tab; there is no separate Codex terminal.
+        let name = requested == "Codex" ? "Agent" : requested
         active = name
         defer { updateComposerMode() }
         if let provider = AgentProvider(rawValue: name) { selectedProvider = provider; updateModelButton() }
         switcher.selected = tabNames.firstIndex(of: name) ?? -1
         content.subviews.forEach { $0.removeFromSuperview() }
-        if name == "Agent" { selectedProvider = .codex; updateModelButton(); showChatOrEmpty(); hint.stringValue = chat.running ? "Codex 正在工作 · 可在对话里点停止" : "↩ 发送给 Codex · ⇧↩ 换行 · 使用本机 codex 登录"; return }
+        if let view = activeChat {
+            selectedProvider = view.provider; updateModelButton(); showChatOrEmpty()
+            hint.stringValue = view.running ? "\(view.provider.rawValue) 正在工作 · 可在对话里点停止" : idleHint(view.provider); return
+        }
         if name == "Output" { content.pin(logScroll); hint.stringValue = "编译与 Git 输出 · 双击错误定位"; return }
         guard let project, let tools else { showEmpty(); onError?("正在检测本机工具，请稍候。"); return }
         if let existing = terminals[name] { content.pin(existing, inset: 10); window?.makeFirstResponder(existing); hint.stringValue = "\(name) · \(project.lastPathComponent)"; return }
@@ -493,7 +502,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         configurations[provider] = config
         UserDefaults.standard.set(config.model, forKey: "agent.\(provider.rawValue).model"); UserDefaults.standard.set(config.effort, forKey: "agent.\(provider.rawValue).effort")
         updateModelButton()
-        hint.stringValue = terminals[provider.rawValue] == nil ? "配置已更新 · 下次启动 \(provider.rawValue) 时生效" : "配置已更新 · 新建会话后生效"
+        hint.stringValue = "配置已更新 · 下一条消息生效"
     }
     // MARK: History
     /// Lists this project's past Codex and Claude conversations, newest first, to resume one.
@@ -537,21 +546,23 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         newSession(provider: session.provider, resume: session)
     }
     private func newSession(provider: AgentProvider? = nil, resume: AgentSession? = nil) {
-        // In the conversation tab, "new" and Codex history act on the native conversation.
-        if active == "Agent", resume == nil || resume?.provider == .codex {
+        // Agents always mean their native conversation: "new" resets it and history continues a thread there.
+        let target: AgentProvider? = resume?.provider ?? provider ?? (active == "Shell" ? nil : active == "Claude" ? .claude : .codex)
+        if let target {
+            let chat = target == .claude ? claudeChat : self.chat, tab = target == .claude ? "Claude" : "Agent"
             let apply = { [weak self] in
                 guard let self else { return }
-                if let resume { self.chat.resume(thread: resume.id, title: resume.title) } else { self.chat.reset() }
-                self.select("Agent")
+                if let resume { chat.resume(thread: resume.id, title: resume.title) } else { chat.reset() }
+                self.select(tab)
             }
             if chat.running, let window {
-                let alert = NSAlert(); alert.messageText = "停止当前任务并\(resume == nil ? "新建对话" : "切换会话")？"; alert.informativeText = "Codex 正在处理上一条消息，继续的话会先把它停掉。"
+                let alert = NSAlert(); alert.messageText = "停止当前任务并\(resume == nil ? "新建对话" : "切换会话")？"; alert.informativeText = "\(target.rawValue) 正在处理上一条消息，继续的话会先把它停掉。"
                 alert.addButton(withTitle: "继续"); alert.addButton(withTitle: "取消")
                 alert.beginSheetModal(for: window) { if $0 == .alertFirstButtonReturn { apply() } }
             } else { apply() }
             return
         }
-        let name = provider?.rawValue ?? (active == "Shell" ? "Shell" : selectedProvider.rawValue)
+        let name = "Shell"
         let launch = { [weak self] in
             guard let self else { return }
             if let old = self.terminals.removeValue(forKey: name) { old.processDelegate = nil; old.terminate() }
@@ -578,7 +589,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     }
     func stopAll() {
         for terminal in terminals.values { terminal.processDelegate = nil; terminal.terminate() }
-        terminals.removeAll(); chat.reset(); logView.string = ""; select("Agent")
+        terminals.removeAll(); chat.reset(); claudeChat.reset(); logView.string = ""; select("Agent")
     }
     func append(_ text: String) {
         let storage = logView.textStorage!

@@ -314,8 +314,12 @@ final class SegmentedTabs: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        // AppKit can re-deliver a delayed mouse-down whose location is no longer over the control;
+        // without this check such an event would count as a click on the first segment.
+        guard bounds.contains(point) else { return }
         let frames = segmentFrames
         let index = frames.firstIndex { point.x < $0.maxX } ?? (titles.count - 1)
+        guard index != selected else { return }
         selected = index; onSelect?(index)
     }
 }
