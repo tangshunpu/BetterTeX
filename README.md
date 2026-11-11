@@ -150,7 +150,7 @@ Issues and pull requests are welcome.
 - `main` holds the latest released code.
 - `dev` is where development happens. Please open pull requests against `dev`.
 
-Run `./script/test.sh` before submitting a change.
+Run `./script/test.sh` before submitting a change. Contributions are accepted under the same license as the project.
 
 ## Acknowledgements
 
@@ -160,4 +160,6 @@ BetterTeX is an independent project. It is not affiliated with or endorsed by Ov
 
 ## License
 
-A license has not been chosen yet. Until one is added, the source is published for reference and all rights are reserved by the author.
+BetterTeX is released under the [MIT License](LICENSE). You may use, modify and redistribute it, including commercially, as long as the copyright notice and license text are kept.
+
+Third-party components keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

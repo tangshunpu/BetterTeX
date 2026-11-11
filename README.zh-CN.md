@@ -116,3 +116,9 @@ Agent 标题栏的时钟按钮列出当前项目最近的 Codex 与 Claude 会�
 内存随 PDF 页数、打开文件和终端数量变化，Agent 与 TeX 子进程占用单独计算。当前版本未提供 LSP、扩展市场、多窗口工作区或完整的 PDF 注释编辑。
 
 UI 参考：[Overleaf 编辑器设计](https://docs.overleaf.com/getting-started/how-do-i-use-overleaf/redesigned-overleaf-editor)、[编辑器与 PDF 布局](https://docs.overleaf.com/navigating-in-the-editor/working-with-the-pdf-viewer/editor-and-pdf-layout-and-sizing)。未复制 Overleaf 源码或品牌资源。
+
+## 许可证
+
+BetterTeX 以 [MIT 许可证](LICENSE) 发布：可以自由使用、修改和再分发（包括商业用途），只需保留版权声明和许可证全文。
+
+第三方组件沿用各自的许可证，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
