@@ -1,10 +1,12 @@
 # BetterTeX
 
+[English](README.md) · **简体中文**
+
 一个原生、轻量的 macOS LaTeX 工作区。Swift + AppKit + PDFKit，终端使用 [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)。没有 Electron 或常驻语言服务器；唯一的 WebView 是 Overleaf 登录窗口，登录后即关闭。界面跟随系统深浅色。
 
 ## 运行
 
-已构建的应用位于 `dist/BetterTeX.app`；推荐解压 `dist/BetterTeX.zip` 后拖到「应用程序」。本地开发构建采用 ad-hoc 签名，尚未经过 Apple 公证。当前构建架构取决于本机（开发验证为 Apple Silicon）。打包脚本会额外生成 ZIP，避免 iCloud / FileProvider 给源码目录中的应用附加 FinderInfo，影响严格签名校验。
+发布版本请到 [Releases](https://github.com/tangshunpu/BetterTeX/releases) 下载 `.dmg`，打开后把应用拖到「Applications」（同时提供内容相同的 `.zip`）。自行构建的应用位于 `dist/BetterTeX.app`；推荐解压 `dist/BetterTeX.zip` 后拖到「应用程序」，或用 `./script/make_dmg.sh` 生成 `dist/BetterTeX.dmg`。本地开发构建采用 ad-hoc 签名，尚未经过 Apple 公证。当前构建架构取决于本机（开发验证为 Apple Silicon）。打包脚本会额外生成 ZIP，避免 iCloud / FileProvider 给源码目录中的应用附加 FinderInfo，影响严格签名校验。
 
 ```sh
 ./script/build_and_run.sh             # 构建并启动，Codex 的 Run 按钮也调用此脚本
@@ -29,7 +31,7 @@ Swift 6.4 优化器在 PDFKit 高亮桥接函数上存在编译崩溃；`PDFPane
 - 外部修改通过 FSEvents 检测。干净缓冲区自动重载；未保存内容与磁盘冲突时提供明确选择，暂停自动保存与编译。
 - **项目主页**：没有打开项目时显示，仿照 Overleaf 首页。一张可搜索的列表里是所有打开过的本机项目，以及登录后你在 Overleaf 上的全部项目，默认按修改时间从新到旧排序（本机项目取文件最后修改时间，Overleaf 项目取它在 Overleaf 上的最后修改时间，已关联的取两者中较新的），点列标题可改按名称、位置或修改时间排序并反转，选择会被记住；左侧可切换「全部 / 本机 / Overleaf」，并显示 Overleaf 登录状态。点一行就进入项目：本机项目直接打开；尚未下载的 Overleaf 项目会下载到 `~/BetterTeX/`（可用偏好 `projectsFolder` 更改）、建立同步关联后打开，已下载过的只显示为本机那一行并带叶子标记。搜索框里按回车打开第一条结果，右键可在访达中显示或从列表移除。「打开或新建」提供打开文件夹、从 GitHub 克隆和创建示例项目。
 - 第一次启动直接进入项目主页；一个项目都没有时，页面中央会请你登录 Overleaf 或打开已有项目。之后启动会回到上次打开的项目。在项目里点标题栏的九宫格按钮、文件边栏标题行最右的按钮或「文件 → 所有项目」（⇧⌘P）回到主页：先保存文件，有终端会话在运行时会先确认。
-- 首次启动创建可编辑示例于 `~/Library/Application Support/BetterTeX/First Paper`。之后记住上次打开的文件夹。
+- 「创建示例项目」会在 `~/Library/Application Support/BetterTeX/First Paper` 生成一个可编辑的示例。
 
 ## 编译与 PDF
 
