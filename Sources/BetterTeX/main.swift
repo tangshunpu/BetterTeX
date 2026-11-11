@@ -11,6 +11,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         #endif
         setupMenu(); workspace = WorkspaceController(); workspace.show()
+        #if DEBUG
+        // Render the window to a PNG and quit, so the interface can be checked without a visible screen.
+        if let path = ProcessInfo.processInfo.environment["BETTERTEX_SNAPSHOT"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [workspace] in
+                guard let view = workspace?.window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(1) }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path)); exit(0)
+            }
+        }
+        #endif
         NSApp.activate(ignoringOtherApps: true)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -40,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = submenu("文件")
         let create = NSMenu(title: "新建项目"); let createItem = NSMenuItem(title: "新建项目", action: nil, keyEquivalent: ""); createItem.submenu = create; file.addItem(createItem)
         add(create, "从本地文件夹…", #selector(open)); add(create, "从 GitHub 克隆…", #selector(cloneRepository)); add(create, "从 Overleaf 导入…", #selector(importOverleaf))
-        add(file, "打开文件夹…", #selector(open), "o", modifiers: [.command, .shift]); add(file, "新建文件…", #selector(newFile), "n"); add(file, "保存全部", #selector(save), "s"); add(file, "关闭标签", #selector(closeTab), "w"); add(file, "关闭项目", #selector(closeProject)); add(file, "关闭窗口", #selector(NSWindow.performClose(_:)), "w", modifiers: [.command, .shift])
+        add(file, "所有项目", #selector(closeProject), "p", modifiers: [.command, .shift]); add(file, "打开文件夹…", #selector(open), "o", modifiers: [.command, .shift]); add(file, "新建文件…", #selector(newFile), "n"); add(file, "保存全部", #selector(save), "s"); add(file, "关闭标签", #selector(closeTab), "w"); add(file, "关闭项目", #selector(closeProject)); add(file, "关闭窗口", #selector(NSWindow.performClose(_:)), "w", modifiers: [.command, .shift])
         let edit = submenu("编辑")
         add(edit, "撤销", Selector(("undo:")), "z"); add(edit, "重做", Selector(("redo:")), "z", modifiers: [.command, .shift]); edit.addItem(.separator())
         add(edit, "剪切", #selector(NSText.cut(_:)), "x"); add(edit, "复制", #selector(NSText.copy(_:)), "c"); add(edit, "粘贴", #selector(NSText.paste(_:)), "v"); add(edit, "全选", #selector(NSText.selectAll(_:)), "a"); add(edit, "查找…", #selector(find), "f")

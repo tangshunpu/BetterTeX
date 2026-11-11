@@ -17,6 +17,8 @@ public struct OverleafProject: Equatable {
     public let id: String
     public let name: String
     public let accessLevel: String
+    /// When the project last changed on Overleaf, if the server says.
+    public var lastUpdated: Date? = nil
 }
 
 public struct OverleafMessage {
@@ -102,12 +104,23 @@ public final class OverleafClient {
 
     // MARK: Projects
     public func projects() async throws -> [OverleafProject] {
+        // The dashboard endpoint knows when each project last changed; older servers only have the plain list.
+        if let data = try? await send("POST", "api/project", json: ["filters": [String: Any](), "page": ["size": 2000], "sort": ["by": "lastUpdated", "order": "desc"]]),
+           let list = object(data)["projects"] as? [[String: Any]], !list.isEmpty {
+            let detailed = list.filter { $0["trashed"] as? Bool != true && $0["archived"] as? Bool != true }.compactMap(Self.project)
+            if !detailed.isEmpty { return detailed }
+        }
         let data = try await send("GET", "user/projects")
         guard let list = object(data)["projects"] as? [[String: Any]] else { throw OverleafError.notLoggedIn }
-        return list.compactMap { item in
-            guard let id = item["_id"] as? String, let name = item["name"] as? String else { return nil }
-            return OverleafProject(id: id, name: name, accessLevel: item["accessLevel"] as? String ?? "")
+        return list.compactMap(Self.project)
+    }
+    static func project(_ item: [String: Any]) -> OverleafProject? {
+        guard let id = item["_id"] as? String ?? item["id"] as? String, let name = item["name"] as? String else { return nil }
+        let updated = (item["lastUpdated"] as? String).flatMap { text -> Date? in
+            let precise = ISO8601DateFormatter(); precise.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return precise.date(from: text) ?? ISO8601DateFormatter().date(from: text)
         }
+        return OverleafProject(id: id, name: name, accessLevel: item["accessLevel"] as? String ?? "", lastUpdated: updated)
     }
 
     /// Downloads the whole project as a zip archive; the caller removes the file.

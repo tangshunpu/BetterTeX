@@ -64,12 +64,24 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         }
         ui.welcome.onOpen = { [weak self] in self?.openFolder() }
         ui.welcome.onClone = { [weak self] in self?.cloneRepository() }
-        ui.welcome.onImport = { [weak self] in self?.overleaf.importProject() }
+        ui.welcome.onSample = { [weak self] in
+            guard let self else { return }
+            do { self.loadProject(try SampleProject.create()) } catch { self.error(error.localizedDescription) }
+        }
         ui.welcome.onRecent = { [weak self] url in
             guard let self else { return }
             if FileManager.default.fileExists(atPath: url.path) { self.loadProject(url) }
-            else { self.forgetRecent(url); self.ui.welcome.setRecents(self.recentProjects); self.error("找不到「\(url.path)」，它可能已被移动或删除。") }
+            else { self.forgetRecent(url); self.refreshDashboard(); self.error("找不到「\(url.path)」，它可能已被移动或删除。") }
         }
+        ui.welcome.onForget = { [weak self] url in self?.forgetRecent(url); self?.refreshDashboard() }
+        ui.welcome.onRefresh = { [weak self] in self?.refreshDashboard() }
+        ui.welcome.onSignIn = { [weak self] in self?.loadOverleafProjects(interactive: true) }
+        ui.welcome.onSignOut = { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in await self.overleaf.forgetSession(); self.ui.welcome.setOverleaf(.signedOut); self.setStatus("已退出 Overleaf 登录") }
+        }
+        ui.welcome.onDownload = { [weak self] in self?.downloadOverleaf($0) }
+        ui.onHome = { [weak self] in self?.closeProject() }
         ui.explorer.onJump = { [weak self] in self?.ui.editor.goTo(line: $0) }
         ui.onOpenFile = { [weak self] in self?.openFile($0) }
         ui.editor.onOutline = { [weak self] items in
@@ -181,12 +193,13 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     func show() {
         window.makeKeyAndOrderFront(nil); positionTrafficLights()
         DispatchQueue.main.async { [weak self] in self?.ui.initialLayout() }
-        do {
-            let last = UserDefaults.standard.string(forKey: "lastProject")
-            if let last, FileManager.default.fileExists(atPath: last) { loadProject(URL(fileURLWithPath: last)) }
-            else if last == "" { showStartPage() }   // the project was closed on purpose last time
-            else { loadProject(try SampleProject.create()) }
-        } catch { self.error(error.localizedDescription) }
+        #if DEBUG
+        // Open straight to the dashboard without touching the saved state (for interface checks).
+        if ProcessInfo.processInfo.environment["BETTERTEX_START"] == "dashboard" { showStartPage(); detectTools(); return }
+        #endif
+        // Reopen the last project; on first launch, or after closing a project, show the dashboard.
+        if let last = UserDefaults.standard.string(forKey: "lastProject"), FileManager.default.fileExists(atPath: last) { loadProject(URL(fileURLWithPath: last)) }
+        else { showStartPage() }
         detectTools()
     }
     func detectTools() {
@@ -205,11 +218,65 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     }
     // MARK: Opening and closing projects
     var recentProjects: [URL] { (UserDefaults.standard.stringArray(forKey: "recentProjects") ?? []).map { URL(fileURLWithPath: $0) } }
+    /// When each known project was last opened, by path.
+    private var recentDates: [String: Double] { UserDefaults.standard.dictionary(forKey: "recentProjectDates") as? [String: Double] ?? [:] }
     private func rememberRecent(_ url: URL) {
-        let paths = [url.path] + recentProjects.map(\.path).filter { $0 != url.path }
-        UserDefaults.standard.set(Array(paths.prefix(8)), forKey: "recentProjects")
+        let paths = Array(([url.path] + recentProjects.map(\.path).filter { $0 != url.path }).prefix(200))
+        var dates = recentDates.filter { paths.contains($0.key) }; dates[url.path] = Date().timeIntervalSince1970
+        UserDefaults.standard.set(paths, forKey: "recentProjects"); UserDefaults.standard.set(dates, forKey: "recentProjectDates")
     }
     private func forgetRecent(_ url: URL) { UserDefaults.standard.set(recentProjects.map(\.path).filter { $0 != url.path }, forKey: "recentProjects") }
+    /// Where projects downloaded from the dashboard are kept.
+    var projectsFolder: URL {
+        UserDefaults.standard.string(forKey: "projectsFolder").map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("BetterTeX", isDirectory: true)
+    }
+
+    // MARK: Project dashboard
+    /// Reloads the dashboard: local projects at once, Overleaf projects when a saved login exists.
+    func refreshDashboard() {
+        let dates = recentDates
+        let known = recentProjects.filter { FileManager.default.fileExists(atPath: $0.path) }
+        let entries = known.map { LocalProject(url: $0, opened: dates[$0.path].map(Date.init(timeIntervalSince1970:)), link: OverleafLink.load(project: $0)) }
+        ui.welcome.setLocal(entries)
+        // Modification times need a walk through each folder, so they arrive a moment later.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let dated = entries.map { entry -> LocalProject in var copy = entry; copy.modified = Self.lastModified(entry.url); return copy }
+            DispatchQueue.main.async { guard let self, self.project == nil else { return }; self.ui.welcome.setLocal(dated) }
+        }
+        loadOverleafProjects(interactive: false)
+    }
+    /// The newest modification time among a project's own files; build output and hidden files are ignored.
+    static func lastModified(_ project: URL) -> Date? {
+        let skipped: Set<String> = [".bettertex", "node_modules", "build", "dist", "__pycache__"]
+        guard let walker = FileManager.default.enumerator(at: project, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey], options: [.skipsHiddenFiles]) else { return nil }
+        var newest: Date?; var visited = 0
+        while let url = walker.nextObject() as? URL {
+            visited += 1; if visited > 5000 { break }
+            if skipped.contains(url.lastPathComponent) { walker.skipDescendants(); continue }
+            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey]), values.isDirectory != true, let date = values.contentModificationDate else { continue }
+            if newest == nil || date > newest! { newest = date }
+        }
+        return newest
+    }
+    private func loadOverleafProjects(interactive: Bool) {
+        ui.welcome.setOverleaf(.loading)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do { self.ui.welcome.setOverleaf(.signedIn(try await self.overleaf.projects(interactive: interactive))); if interactive { self.setStatus("已登录 Overleaf") } }
+            catch OverleafError.notLoggedIn { self.ui.welcome.setOverleaf(.signedOut) }
+            catch { self.ui.welcome.setOverleaf(interactive ? .signedOut : .failed(error.localizedDescription)); if interactive { self.setStatus(error.localizedDescription) } }
+        }
+    }
+    /// Downloads an Overleaf project into the projects folder and opens it.
+    private func downloadOverleaf(_ chosen: OverleafProject) {
+        ui.welcome.setProgress("正在下载「\(chosen.name)」…")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do { try await self.overleaf.download(chosen, into: self.projectsFolder) }
+            catch { self.error("下载失败：\(error.localizedDescription)") }
+            self.ui.welcome.setProgress(nil)
+        }
+    }
     /// Stops everything tied to the open project: builds, timers, the watcher, terminals and buffers.
     private func resetWorkspace() {
         generation = UUID(); saveJob?.cancel(); compileJob?.cancel(); compiler.runner.cancel(); compiler = TeXCompiler()
@@ -232,7 +299,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         window.title = "BetterTeX"; ui.setTitle(project: "未打开项目", file: nil); ui.projectURL = nil; ui.setBranch(""); ui.terminal.contextFile = nil; ui.terminal.project = nil
         ui.explorer.unload(); ui.editor.clear(); ui.editor.textView.isEditable = false; refreshTabs()
         overleaf.projectChanged(); setStatus("未打开项目")
-        ui.welcome.setRecents(recentProjects.filter { FileManager.default.fileExists(atPath: $0.path) }); ui.welcome.isHidden = false
+        ui.welcome.isHidden = false; refreshDashboard()
     }
     func loadProject(_ url: URL) {
         resetWorkspace(); ui.welcome.isHidden = true; rememberRecent(url.standardizedFileURL)

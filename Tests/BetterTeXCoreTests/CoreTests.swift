@@ -72,6 +72,59 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(models, [AgentModel(id: "local-model", name: "Local Model", efforts: ["low", "ultra"])])
         XCTAssertEqual(AgentConfiguration.codexModels(from: Data("broken".utf8)), [])
     }
+    func testClaudeStreamBecomesConversationEventsAndRequestArguments() throws {
+        let stream = ClaudeStream()
+        XCTAssertEqual(stream.parse(line: #"{"type":"system","subtype":"init","session_id":"639c12a5-7415-4cec-b4a1-e494f611176f"}"#), [.threadStarted("639c12a5-7415-4cec-b4a1-e494f611176f"), .turnStarted])
+        XCTAssertEqual(stream.parse(line: #"{"type":"system","subtype":"task_summary","detail":"x"}"#), [])
+        // A command is a running card until its result arrives, then carries the output.
+        let call = stream.parse(line: #"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo hi"}}]}}"#)
+        XCTAssertEqual(call, [.item(CodexItem(id: "t1", kind: .command, text: "echo hi", status: .running))])
+        let done = stream.parse(line: #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"hi"}]}}"#)
+        XCTAssertEqual(done, [.item(CodexItem(id: "t1", kind: .command, text: "echo hi", detail: "hi", status: .done))])
+        // Edits list the file; a denied tool is marked failed with the reason.
+        let edit = stream.parse(line: #"{"type":"assistant","message":{"id":"m2","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"/p/main.tex"}}]}}"#)
+        XCTAssertEqual(edit, [.item(CodexItem(id: "t2", kind: .fileChange, text: "1 个文件", detail: "修改  /p/main.tex", status: .running))])
+        // An edit previews old / new text, then shows the applied patch with context.
+        guard case .item(let preview)? = stream.parse(line: #"{"type":"assistant","message":{"id":"m6","content":[{"type":"tool_use","id":"t6","name":"Edit","input":{"file_path":"/p/a.tex","old_string":"beta","new_string":"BETA"}}]}}"#).first else { return XCTFail() }
+        XCTAssertEqual(preview.diff, "-beta\n+BETA")
+        guard case .item(let applied)? = stream.parse(line: #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t6","content":"ok"}]},"tool_use_result":{"structuredPatch":[{"lines":[" alpha","-beta","+BETA"," gamma"]}]}}"#).first else { return XCTFail() }
+        XCTAssertEqual(applied.diff, " alpha\n-beta\n+BETA\n gamma"); XCTAssertEqual(applied.status, .done)
+        // Text streams in as a growing running entry, and the finished block reuses its id.
+        _ = stream.parse(line: #"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m7"}}}"#)
+        _ = stream.parse(line: #"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#)
+        _ = stream.parse(line: #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你"}}}"#)
+        guard case .item(let growing)? = stream.parse(line: #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"好"}}}"#).first else { return XCTFail() }
+        XCTAssertEqual(growing.text, "你好"); XCTAssertEqual(growing.status, .running)
+        guard case .item(let finished)? = stream.parse(line: #"{"type":"assistant","message":{"id":"m7","content":[{"type":"text","text":"你好。"}]}}"#).first else { return XCTFail() }
+        XCTAssertEqual(finished.id, growing.id); XCTAssertEqual(finished.status, .done); XCTAssertEqual(finished.text, "你好。")
+        guard case .item(let denied)? = stream.parse(line: #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":[{"type":"text","text":"denied"}]}]}}"#).first else { return XCTFail() }
+        XCTAssertEqual(denied.status, .failed); XCTAssertTrue(denied.detail.hasSuffix("denied"))
+        // Other tools show their name and main argument, with project paths made relative.
+        let read = ClaudeStream(root: "/p").parse(line: #"{"type":"assistant","message":{"id":"m5","content":[{"type":"tool_use","id":"t5","name":"Read","input":{"file_path":"/p/sections/intro.tex"}}]}}"#)
+        XCTAssertEqual(read, [.item(CodexItem(id: "t5", kind: .toolCall, text: "Read · sections/intro.tex", status: .running))])
+        XCTAssertEqual(ClaudeStream.summary(["file": ["numLines": 4]], output: "x"), "4 行")
+        // Two text blocks of one message stay separate entries; sub-agent messages are dropped.
+        let first = stream.parse(line: #"{"type":"assistant","message":{"id":"m3","content":[{"type":"text","text":"A"}]}}"#)
+        let second = stream.parse(line: #"{"type":"assistant","message":{"id":"m3","content":[{"type":"text","text":"B"}]}}"#)
+        guard case .item(let a)? = first.first, case .item(let b)? = second.first else { return XCTFail() }
+        XCTAssertNotEqual(a.id, b.id); XCTAssertEqual(b.text, "B")
+        XCTAssertEqual(stream.parse(line: #"{"type":"assistant","parent_tool_use_id":"t9","message":{"id":"m4","content":[{"type":"text","text":"inner"}]}}"#), [])
+        XCTAssertEqual(stream.parse(line: #"{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":4,"cache_read_input_tokens":96,"output_tokens":20}}"#), [.turnCompleted(inputTokens: 100, outputTokens: 20)])
+        XCTAssertEqual(stream.parse(line: #"{"type":"result","subtype":"error_max_turns","is_error":true,"result":"too long"}"#), [.turnFailed("too long")])
+
+        let request = ClaudeRequest(prompt: "-润色", session: "639c12a5-7415-4cec-b4a1-e494f611176f", configuration: AgentConfiguration(model: "sonnet", effort: "high"), sandbox: .readOnly)
+        XCTAssertEqual(try request.arguments(), ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "plan", "--model", "sonnet", "--effort", "high", "--resume", "639c12a5-7415-4cec-b4a1-e494f611176f", "--", "-润色"])
+        XCTAssertEqual(ClaudeRequest.permissionMode(for: .workspaceWrite), "acceptEdits"); XCTAssertEqual(ClaudeRequest.permissionMode(for: .fullAccess), "bypassPermissions")
+        XCTAssertThrowsError(try ClaudeRequest(prompt: "  ").arguments())
+        XCTAssertThrowsError(try ClaudeRequest(prompt: "x", session: "--evil").arguments())
+    }
+    func testOverleafProjectListEntriesFromBothEndpoints() {
+        let detailed = OverleafClient.project(["id": "abc", "name": "Paper", "accessLevel": "owner", "lastUpdated": "2026-11-10T08:30:00.123Z"])
+        XCTAssertEqual(detailed?.id, "abc"); XCTAssertNotNil(detailed?.lastUpdated)
+        let plain = OverleafClient.project(["_id": "def", "name": "Old"])
+        XCTAssertEqual(plain?.id, "def"); XCTAssertNil(plain?.lastUpdated)
+        XCTAssertNil(OverleafClient.project(["name": "no id"]))
+    }
     func testAgentHistoryListsOnlyThisProjectsSessionsNewestFirst() throws {
         let home = directory.appendingPathComponent("home"); let project = directory.appendingPathComponent("my paper")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)

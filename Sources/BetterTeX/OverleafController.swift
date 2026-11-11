@@ -116,6 +116,15 @@ final class OverleafController {
             return try await operation(created)
         }
     }
+    /// The account's projects. Without `interactive`, a missing or expired login throws instead of
+    /// showing the sign-in window, so the dashboard can check quietly.
+    @MainActor func projects(interactive: Bool) async throws -> [OverleafProject] {
+        if interactive { return try await withLogin { try await $0.projects() } }
+        do { return try await ensureClient(interactive: false).projects() }
+        catch OverleafError.notLoggedIn { client = nil; throw OverleafError.notLoggedIn }
+    }
+    /// Forgets the saved session without touching the open project's link.
+    @MainActor func forgetSession() async { teardown(); client = nil; await OverleafLogin.clear(host: host); set(link == nil ? .idle : .signedOut) }
     func signIn() {
         run("登录", alert: true) { [self] in
             _ = try await withLogin { try await $0.projects() }
@@ -601,6 +610,13 @@ final class OverleafController {
             let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
             panel.prompt = "导入到这里"; panel.message = "选择存放「\(chosen.name)」的位置，将在其中新建同名文件夹。"
             guard panel.runModal() == .OK, let parent = panel.url else { return }
+            try await download(chosen, into: parent)
+        }
+    }
+    /// Downloads one Overleaf project into a new folder under `parent`, links it and opens it.
+    @MainActor func download(_ chosen: OverleafProject, into parent: URL) async throws {
+        do {
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
             let name = chosen.name.replacingOccurrences(of: "[/:\\\\]", with: "-", options: .regularExpression)
             var target = parent.appendingPathComponent(name, isDirectory: true); var suffix = 1
             while FileManager.default.fileExists(atPath: target.path) { suffix += 1; target = parent.appendingPathComponent("\(name) \(suffix)", isDirectory: true) }
