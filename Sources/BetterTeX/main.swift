@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = submenu("文件")
         let create = NSMenu(title: "新建项目"); let createItem = NSMenuItem(title: "新建项目", action: nil, keyEquivalent: ""); createItem.submenu = create; file.addItem(createItem)
         add(create, "从本地文件夹…", #selector(open)); add(create, "从 GitHub 克隆…", #selector(cloneRepository)); add(create, "从 Overleaf 导入…", #selector(importOverleaf))
-        add(file, "打开文件夹…", #selector(open), "o", modifiers: [.command, .shift]); add(file, "新建文件…", #selector(newFile), "n"); add(file, "保存全部", #selector(save), "s"); add(file, "关闭标签", #selector(closeTab), "w"); add(file, "关闭窗口", #selector(NSWindow.performClose(_:)), "w", modifiers: [.command, .shift])
+        add(file, "打开文件夹…", #selector(open), "o", modifiers: [.command, .shift]); add(file, "新建文件…", #selector(newFile), "n"); add(file, "保存全部", #selector(save), "s"); add(file, "关闭标签", #selector(closeTab), "w"); add(file, "关闭项目", #selector(closeProject)); add(file, "关闭窗口", #selector(NSWindow.performClose(_:)), "w", modifiers: [.command, .shift])
         let edit = submenu("编辑")
         add(edit, "撤销", Selector(("undo:")), "z"); add(edit, "重做", Selector(("redo:")), "z", modifiers: [.command, .shift]); edit.addItem(.separator())
         add(edit, "剪切", #selector(NSText.cut(_:)), "x"); add(edit, "复制", #selector(NSText.copy(_:)), "c"); add(edit, "粘贴", #selector(NSText.paste(_:)), "v"); add(edit, "全选", #selector(NSText.selectAll(_:)), "a"); add(edit, "查找…", #selector(find), "f")
@@ -61,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc func open() { workspace.openFolder() }
     @objc func newFile() { workspace.newFile() }
+    @objc func closeProject() { workspace.closeProject() }
     @objc func cloneRepository() { workspace.cloneRepository() }
     @objc func importOverleaf() { workspace.overleaf.importProject() }
     @objc func exportOverleaf() { if workspace.overleaf.link == nil { workspace.overleaf.exportProject() } else { workspace.setStatus("当前项目已关联 Overleaf") } }

@@ -107,6 +107,60 @@ private final class StatusDot: NSView {
     }
 }
 
+/// The start page shown while no project is open.
+final class WelcomeView: Surface {
+    var onOpen: (() -> Void)?
+    var onClone: (() -> Void)?
+    var onImport: (() -> Void)?
+    var onRecent: ((URL) -> Void)?
+    private let recents = NSStackView()
+    private let recentTitle = Theme.label("最近的项目", size: 11.5, color: Theme.muted, weight: .semibold)
+    override init(frame: NSRect) {
+        super.init(frame: frame); fill = Theme.base
+        let mark = LogoMark(); mark.size(56, 56)
+        func action(_ title: String, _ detail: String, _ symbol: String, _ handler: @escaping () -> Void) -> NSView {
+            let icon = NSImageView(image: Theme.symbol(symbol, size: 17, weight: .medium)!); icon.contentTintColor = Theme.accent; icon.size(26, 26)
+            let text = NSStackView(views: [Theme.label(title, size: 14, weight: .semibold), Theme.label(detail, size: 12, color: Theme.muted)]); text.orientation = .vertical; text.spacing = 1; text.alignment = .leading
+            let row = NSStackView(views: [icon, text, NSView()]); row.spacing = 12; row.alignment = .centerY
+            let button = RowButton(height: 56, action: handler); button.pinRow(row, leading: 14, trailing: 14)
+            button.setAccessibilityElement(true); button.setAccessibilityRole(.button); button.setAccessibilityLabel(title); return button
+        }
+        let actions = NSStackView(views: [
+            action("打开文件夹…", "打开本机上的 LaTeX 项目", "folder") { [weak self] in self?.onOpen?() },
+            action("从 GitHub 克隆…", "输入仓库地址或 owner/repo", "arrow.triangle.branch") { [weak self] in self?.onClone?() },
+            action("从 Overleaf 导入…", "下载项目并保持同步", "leaf") { [weak self] in self?.onImport?() }
+        ]); actions.orientation = .vertical; actions.spacing = 0; actions.alignment = .leading
+        let card = Chip(fill: Theme.card, radius: 14); card.pin(actions)
+        recents.orientation = .vertical; recents.spacing = 0; recents.alignment = .leading
+        let recentCard = Chip(fill: Theme.card, radius: 14); recentCard.pin(recents)
+        let column = NSStackView(views: [mark, Theme.label("BetterTeX", size: 24, weight: .bold), Theme.label("打开一个项目开始写作", size: 13, color: Theme.muted), card, recentTitle, recentCard])
+        column.orientation = .vertical; column.spacing = 8; column.alignment = .centerX
+        column.setCustomSpacing(16, after: mark); column.setCustomSpacing(22, after: column.arrangedSubviews[2]); column.setCustomSpacing(20, after: card)
+        column.translatesAutoresizingMaskIntoConstraints = false; addSubview(column)
+        for view in [card, recentCard] as [NSView] { view.widthAnchor.constraint(equalToConstant: 420).isActive = true }
+        for view in actions.arrangedSubviews { view.widthAnchor.constraint(equalTo: actions.widthAnchor).isActive = true }
+        recentTitle.widthAnchor.constraint(equalToConstant: 396).isActive = true
+        NSLayoutConstraint.activate([column.centerXAnchor.constraint(equalTo: centerXAnchor), column.centerYAnchor.constraint(equalTo: centerYAnchor)])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    func setRecents(_ urls: [URL]) {
+        recents.arrangedSubviews.forEach { recents.removeArrangedSubview($0); $0.removeFromSuperview() }
+        recentTitle.isHidden = urls.isEmpty; recents.superview?.isHidden = urls.isEmpty
+        for url in urls {
+            let folder = NSImageView(image: Theme.symbol("folder.fill", size: 14)!); folder.contentTintColor = Theme.accent; folder.size(22, 22)
+            let path = Theme.label((url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath, size: 11.5, color: Theme.muted); path.lineBreakMode = .byTruncatingHead
+            path.setContentCompressionResistancePriority(.init(100), for: .horizontal)
+            let name = Theme.label(url.lastPathComponent, size: 13.5, weight: .medium); name.setContentCompressionResistancePriority(.init(300), for: .horizontal)
+            let row = NSStackView(views: [folder, name, NSView(), path]); row.spacing = 10; row.alignment = .centerY
+            let button = RowButton(height: 40) { [weak self] in self?.onRecent?(url) }; button.pinRow(row, leading: 14, trailing: 14)
+            button.setAccessibilityElement(true); button.setAccessibilityRole(.button); button.setAccessibilityLabel(url.lastPathComponent)
+            recents.addArrangedSubview(button); button.widthAnchor.constraint(equalTo: recents.widthAnchor).isActive = true
+        }
+    }
+    // Swallow clicks so nothing behind the start page reacts.
+    override func mouseDown(with event: NSEvent) {}
+}
+
 /// The whole window content: title bar, sidebar, editor / PDF / agent panes and status bar.
 final class WorkspaceView: Surface {
     enum Activity { case idle, busy, failed }
@@ -117,6 +171,7 @@ final class WorkspaceView: Surface {
     let terminal = TerminalPanel()
     let search = SearchField()
     let overleaf = OverleafChip()
+    let welcome = WelcomeView()
     let status = Theme.label("正在检测本机工具…", size: 11.5, color: Theme.soft)
     let branch = Theme.label("", size: 11.5, color: Theme.muted)
     let position = Theme.label("Ln 1, Col 1", size: 11.5, color: Theme.muted)
@@ -255,6 +310,8 @@ final class WorkspaceView: Surface {
                 if let (position, _) = self.dropTarget(id, at: point) { self.movePanel(id, to: position) }
             }
         }
+        welcome.isHidden = true; welcome.translatesAutoresizingMaskIntoConstraints = false; addSubview(welcome)
+        NSLayoutConstraint.activate([welcome.topAnchor.constraint(equalTo: top.bottomAnchor), welcome.bottomAnchor.constraint(equalTo: bottom.topAnchor), welcome.leadingAnchor.constraint(equalTo: leadingAnchor), welcome.trailingAnchor.constraint(equalTo: trailingAnchor)])
         dockOverlay.frame = bounds; dockOverlay.autoresizingMask = [.width, .height]; dockOverlay.isHidden = true; addSubview(dockOverlay)
     }
     required init?(coder: NSCoder) { fatalError() }

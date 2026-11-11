@@ -102,12 +102,14 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
     var onOpen: ((URL) -> Void)?
     var onNew: (() -> Void)?
     var onSearch: (() -> Void)?
+    var onCloseProject: (() -> Void)?
     var onJump: ((Int) -> Void)?
     override init(frame: NSRect) {
         super.init(frame: frame); fill = Theme.sidebar; lineColor = Theme.line; trailingLine = true
         let search = ActionButton("", symbol: "magnifyingglass") { [weak self] in self?.onSearch?() }; search.toolTip = "搜索文件  ⌘K"
         let plus = ActionButton("", symbol: "plus", style: .accentIcon) { [weak self] in self?.onNew?() }; plus.toolTip = "新建文件  ⌘N"
-        let header = NSStackView(views: [Theme.label("文件", size: 12, color: Theme.muted, weight: .semibold), NSView(), search, plus]); header.spacing = 2; header.alignment = .centerY
+        let close = ActionButton("", symbol: "rectangle.portrait.and.arrow.right") { [weak self] in self?.onCloseProject?() }; close.toolTip = "关闭项目，回到起始页"; close.setAccessibilityLabel("关闭项目")
+        let header = NSStackView(views: [Theme.label("文件", size: 12, color: Theme.muted, weight: .semibold), NSView(), search, plus, close]); header.spacing = 2; header.alignment = .centerY
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("files")); outline.addTableColumn(column); outline.outlineTableColumn = column
         outline.headerView = nil; outline.rowHeight = 32; outline.indentationPerLevel = 16; outline.intercellSpacing = NSSize(width: 0, height: 2)
@@ -139,6 +141,8 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
     }
     required init?(coder: NSCoder) { fatalError() }
     func load(_ url: URL) { root = FileNode(url); outline.reloadData() }
+    /// Empties the tree when no project is open.
+    func unload() { root = nil; outline.reloadData(); setOutline([], cursorLine: 1) }
     func refresh() {
         guard let root else { return }
         let expanded = (0..<outline.numberOfRows).compactMap { outline.item(atRow: $0) as? FileNode }.filter { outline.isItemExpanded($0) }.map { $0.url.path }

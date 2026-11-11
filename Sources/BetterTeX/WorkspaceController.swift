@@ -48,6 +48,15 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         if UserDefaults.standard.object(forKey: "autoBuild") != nil { ui.autoBuildEnabled = UserDefaults.standard.bool(forKey: "autoBuild") }
         ui.explorer.onOpen = { [weak self] in self?.openFile($0) }
         ui.explorer.onNew = { [weak self] in self?.newFile() }
+        ui.explorer.onCloseProject = { [weak self] in self?.closeProject() }
+        ui.welcome.onOpen = { [weak self] in self?.openFolder() }
+        ui.welcome.onClone = { [weak self] in self?.cloneRepository() }
+        ui.welcome.onImport = { [weak self] in self?.overleaf.importProject() }
+        ui.welcome.onRecent = { [weak self] url in
+            guard let self else { return }
+            if FileManager.default.fileExists(atPath: url.path) { self.loadProject(url) }
+            else { self.forgetRecent(url); self.ui.welcome.setRecents(self.recentProjects); self.error("找不到「\(url.path)」，它可能已被移动或删除。") }
+        }
         ui.explorer.onJump = { [weak self] in self?.ui.editor.goTo(line: $0) }
         ui.onOpenFile = { [weak self] in self?.openFile($0) }
         ui.editor.onOutline = { [weak self] items in
@@ -159,7 +168,9 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil); positionTrafficLights()
         DispatchQueue.main.async { [weak self] in self?.ui.initialLayout() }
         do {
-            if let path = UserDefaults.standard.string(forKey: "lastProject"), FileManager.default.fileExists(atPath: path) { loadProject(URL(fileURLWithPath: path)) }
+            let last = UserDefaults.standard.string(forKey: "lastProject")
+            if let last, FileManager.default.fileExists(atPath: last) { loadProject(URL(fileURLWithPath: last)) }
+            else if last == "" { showStartPage() }   // the project was closed on purpose last time
             else { loadProject(try SampleProject.create()) }
         } catch { self.error(error.localizedDescription) }
         detectTools()
@@ -178,10 +189,39 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             }
         }
     }
-    func loadProject(_ url: URL) {
+    // MARK: Opening and closing projects
+    var recentProjects: [URL] { (UserDefaults.standard.stringArray(forKey: "recentProjects") ?? []).map { URL(fileURLWithPath: $0) } }
+    private func rememberRecent(_ url: URL) {
+        let paths = [url.path] + recentProjects.map(\.path).filter { $0 != url.path }
+        UserDefaults.standard.set(Array(paths.prefix(8)), forKey: "recentProjects")
+    }
+    private func forgetRecent(_ url: URL) { UserDefaults.standard.set(recentProjects.map(\.path).filter { $0 != url.path }, forKey: "recentProjects") }
+    /// Stops everything tied to the open project: builds, timers, the watcher, terminals and buffers.
+    private func resetWorkspace() {
         generation = UUID(); saveJob?.cancel(); compileJob?.cancel(); compiler.runner.cancel(); compiler = TeXCompiler()
         building = false; buildPending = false; gitBusy = false; ui.setBuilding(false); ui.activity = .idle
         watcher.stop(); ui.terminal.stopAll(); buffers.removeAll(); active = nil; conflicts.removeAll()
+    }
+    /// Closes the project and returns to the start page. Files are saved first; nothing is deleted.
+    func closeProject() {
+        guard project != nil else { return }
+        guard saveAll() else { return }
+        if !ui.terminal.terminals.isEmpty {
+            let alert = NSAlert(); alert.messageText = "关闭项目并结束终端会话？"; alert.informativeText = "运行中的 Codex、Claude 和 Shell 会话将停止。文件修改已经保存。"; alert.addButton(withTitle: "关闭项目"); alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        resetWorkspace(); showStartPage()
+        UserDefaults.standard.set("", forKey: "lastProject")
+    }
+    private func showStartPage() {
+        project = nil; compiledPDF = nil; compiledRoot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; ui.preview.clear()
+        window.title = "BetterTeX"; ui.setTitle(project: "未打开项目", file: nil); ui.projectURL = nil; ui.setBranch(""); ui.terminal.contextFile = nil; ui.terminal.project = nil
+        ui.explorer.unload(); ui.editor.clear(); ui.editor.textView.isEditable = false; refreshTabs()
+        overleaf.projectChanged(); setStatus("未打开项目")
+        ui.welcome.setRecents(recentProjects.filter { FileManager.default.fileExists(atPath: $0.path) }); ui.welcome.isHidden = false
+    }
+    func loadProject(_ url: URL) {
+        resetWorkspace(); ui.welcome.isHidden = true; rememberRecent(url.standardizedFileURL)
         project = url.standardizedFileURL; compiledPDF = nil; compiledRoot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; ui.preview.clear()
         window.title = url.lastPathComponent; ui.setTitle(project: url.lastPathComponent, file: nil); ui.projectURL = url.standardizedFileURL; ui.setBranch(""); ui.terminal.contextFile = nil
         ui.explorer.load(url); ui.editor.clear(); ui.editor.textView.isEditable = false; refreshTabs()
