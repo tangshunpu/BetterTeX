@@ -1,4 +1,5 @@
 import AppKit
+import BetterTeXCore
 
 /// The custom title bar. Its empty area drags the window like a native title bar.
 final class HeaderBar: Surface {
@@ -295,11 +296,21 @@ final class WorkspaceView: Surface {
     func toggleTerminal() { terminalItem.isCollapsed.toggle() }
     func togglePDF() { pdfItem.isCollapsed.toggle() }
     func showOutput() { terminalItem.isCollapsed = false; terminal.select("Output") }
+    private var buildingIndicator: DispatchWorkItem?
     func setBuilding(_ building: Bool) {
-        buildButton.image = Theme.symbol(building ? "stop.fill" : "play.fill", size: 10, weight: .bold)
-        buildButton.setTitle(building ? "停止" : "编译")
-        if building { activity = .busy } else if activity == .busy { activity = .idle }
+        buildingIndicator?.cancel(); buildingIndicator = nil
+        func apply(_ busy: Bool) {
+            buildButton.image = Theme.symbol(busy ? "stop.fill" : "play.fill", size: 10, weight: .bold)
+            buildButton.setTitle(busy ? "停止" : "编译")
+            if busy { activity = .busy } else { preview.stage = nil; if activity == .busy { activity = .idle } }
+        }
+        guard building else { apply(false); return }
+        // Builds that finish almost at once (nothing to do) never show the busy state, so the UI does not flash.
+        let job = DispatchWorkItem { apply(true) }; buildingIndicator = job
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: job)
     }
+    /// Names the program currently running inside a build.
+    func setBuildStage(_ stage: BuildStage) { preview.stage = "第 \(stage.step) 步 · \(stage.title)" }
 
     // MARK: Search
     private func searchResults(_ query: String) -> [SearchResult] {

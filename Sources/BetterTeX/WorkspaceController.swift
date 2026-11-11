@@ -11,6 +11,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     var compiler = TeXCompiler()
     var building = false
     var buildPending = false
+    /// Fingerprint of the inputs of the last build, so automatic triggers never repeat it.
+    var lastBuildSignature: String?
     var gitBusy = false
     var compiledPDF: URL?
     var compiledRoot: URL?
@@ -177,7 +179,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         generation = UUID(); saveJob?.cancel(); compileJob?.cancel(); compiler.runner.cancel(); compiler = TeXCompiler()
         building = false; buildPending = false; gitBusy = false; ui.setBuilding(false); ui.activity = .idle
         watcher.stop(); ui.terminal.stopAll(); buffers.removeAll(); active = nil; conflicts.removeAll()
-        project = url.standardizedFileURL; compiledPDF = nil; compiledRoot = nil; ui.preview.clear()
+        project = url.standardizedFileURL; compiledPDF = nil; compiledRoot = nil; lastBuildSignature = nil; ui.preview.clear()
         window.title = url.lastPathComponent; ui.setTitle(project: url.lastPathComponent, file: nil); ui.projectURL = url.standardizedFileURL; ui.setBranch(""); ui.terminal.contextFile = nil
         ui.explorer.load(url); ui.editor.clear(); ui.editor.textView.isEditable = false; refreshTabs()
         if let tools { ui.terminal.configure(project: url, tools: tools) }
@@ -281,27 +283,38 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     }
     func scheduleBuild() {
         compileJob?.cancel()
-        let job = DispatchWorkItem { [weak self] in self?.build() }; compileJob = job
+        let job = DispatchWorkItem { [weak self] in self?.build(automatic: true) }; compileJob = job
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: job)
     }
     @objc func buildClicked() {
         if building { buildPending = false; compileJob?.cancel(); compiler.runner.cancel(); setStatus("正在停止编译…") }
         else { compileJob?.cancel(); build() }
     }
-    func build() {
+    /// `automatic` builds (after saving, on file changes, when opening a project) are skipped
+    /// when nothing the build reads has changed since the previous one.
+    func build(automatic: Bool = false) {
         guard let project, let active, let tools, conflicts.isEmpty else { return }
         if building { buildPending = true; return }
         guard saveAll() else { return }
+        let selected = TeXEngine(rawValue: ui.selectedEngine) ?? .automatic
+        let rootPath = (try? TeXProject.root(active: active.url, project: project))?.path ?? active.url.path
+        let signature = BuildSignature.compute(project: project, root: rootPath, engine: selected.rawValue)
+        if automatic, signature == lastBuildSignature { return }
+        lastBuildSignature = signature
         building = true; buildPending = false; compiler.runner.reset()
         ui.setBuilding(true)
         setStatus("正在编译…")
-        let selected = TeXEngine(rawValue: ui.selectedEngine) ?? .automatic
         let token = generation; let compiler = compiler; let source = active.url
         ui.terminal.append("\n── \(Date().formatted(date: .omitted, time: .standard)) · Build \(source.lastPathComponent) ──\n")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Result { try compiler.build(active: source, project: project, selected: selected, tools: tools) { text in
+            let result = Result { try compiler.build(active: source, project: project, selected: selected, tools: tools, onStage: { stage in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.generation == token, self.building else { return }
+                    self.ui.setBuildStage(stage); self.setStatus("正在编译 · \(stage.title)")
+                }
+            }, onOutput: { text in
                 DispatchQueue.main.async { [weak self] in if self?.generation == token { self?.ui.terminal.append(text) } }
-            } }
+            }) }
             DispatchQueue.main.async {
                 guard let self, self.generation == token else { return }
                 self.building = false; self.ui.setBuilding(false)

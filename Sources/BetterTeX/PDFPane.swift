@@ -14,6 +14,30 @@ final class SyncedPDFView: PDFView {
     }
 }
 
+/// A thin indeterminate bar under the PDF header while a build is running.
+final class BuildProgressBar: NSView {
+    private let runner = CALayer()
+    var animating = false { didSet { if animating != oldValue { update() } } }
+    override init(frame: NSRect) {
+        super.init(frame: frame); wantsLayer = true; layer?.masksToBounds = true; layer?.addSublayer(runner); isHidden = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func layout() { super.layout(); update() }
+    private func update() {
+        isHidden = !animating; runner.removeAllAnimations()
+        guard animating, bounds.width > 0 else { return }
+        runner.backgroundColor = Theme.accent.cgColor
+        // With Reduce Motion on, a steady tinted line stands in for the moving one.
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { runner.frame = bounds; runner.opacity = 0.6; return }
+        let width = max(80, bounds.width * 0.3)
+        runner.opacity = 1; runner.frame = NSRect(x: -width, y: 0, width: width, height: bounds.height)
+        let move = CABasicAnimation(keyPath: "position.x")
+        move.fromValue = -width / 2; move.toValue = bounds.width + width / 2
+        move.duration = 1.2; move.repeatCount = .infinity; move.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        runner.add(move, forKey: "run")
+    }
+}
+
 final class PDFPane: Surface {
     enum SyncState { case none, synced, building, failed }
     let pdfView = SyncedPDFView()
@@ -24,6 +48,11 @@ final class PDFPane: Surface {
     var onAuto: ((Bool) -> Void)?
     private let stateChip = Chip(fill: nil, radius: -1)
     private let stateIcon = NSImageView()
+    private let stateSpinner = NSProgressIndicator()
+    private let progressBar = BuildProgressBar()
+    private var loadedData: Data?
+    /// The step a running build is on, shown in the state chip.
+    var stage: String? { didSet { if stage != oldValue { let current = state; state = current } } }
     private let stateLabel = Theme.label("", size: 11.5, weight: .semibold)
     private let autoLabel = Theme.label("自动预览", size: 12, color: Theme.muted)
     private let zoomLabel = Theme.label("100%", size: 12, weight: .medium)
@@ -33,15 +62,19 @@ final class PDFPane: Surface {
     private var highlightPage: PDFPage?
     var state: SyncState = .none {
         didSet {
-            let (color, symbol, text): (NSColor, String, String) = state == .building ? (Theme.orange, "arrow.triangle.2.circlepath", "编译中") : state == .failed ? (Theme.red, "exclamationmark", "编译失败") : (Theme.green, "checkmark", "已同步")
+            let (color, symbol, text): (NSColor, String, String) = state == .building ? (Theme.orange, "arrow.triangle.2.circlepath", stage ?? "编译中") : state == .failed ? (Theme.red, "exclamationmark", "编译失败") : (Theme.green, "checkmark", "已同步")
             stateChip.isHidden = state == .none; stateChip.fill = color.withAlphaComponent(0.16)
             stateIcon.image = Theme.symbol(symbol, size: 9, weight: .bold); stateIcon.contentTintColor = color
             stateLabel.stringValue = text; stateLabel.textColor = color
+            let building = state == .building
+            stateIcon.isHidden = building; stateSpinner.isHidden = !building; progressBar.animating = building
+            if building { stateSpinner.startAnimation(nil) } else { stateSpinner.stopAnimation(nil) }
         }
     }
     override init(frame: NSRect) {
         super.init(frame: frame); fill = Theme.pdfBack; lineColor = Theme.line; trailingLine = true
-        let stateRow = NSStackView(views: [stateIcon, stateLabel]); stateRow.spacing = 4; stateRow.alignment = .centerY
+        stateSpinner.style = .spinning; stateSpinner.controlSize = .mini; stateSpinner.isDisplayedWhenStopped = false; stateSpinner.size(12, 12)
+        let stateRow = NSStackView(views: [stateIcon, stateSpinner, stateLabel]); stateRow.spacing = 4; stateRow.alignment = .centerY
         stateChip.size(nil, 22); stateChip.pinRow(stateRow, leading: 8, trailing: 8)
         stateChip.setContentCompressionResistancePriority(.required, for: .horizontal)
         autoSwitch.controlSize = .mini; autoSwitch.state = .on; autoSwitch.target = self; autoSwitch.action = #selector(autoChanged)
@@ -82,11 +115,12 @@ final class PDFPane: Surface {
         empty.setCustomSpacing(12, after: empty.arrangedSubviews.last!); empty.addArrangedSubview(shortcuts)
         pageLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         pageChip.size(nil, 26); pageChip.pinRow(pageLabel, leading: 12, trailing: 12); pageChip.isHidden = true
-        for view in [header, pdfView, empty, pageChip] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        for view in [header, pdfView, empty, pageChip, progressBar] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: topAnchor), header.leadingAnchor.constraint(equalTo: leadingAnchor), header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), header.heightAnchor.constraint(equalToConstant: 46),
             pdfView.topAnchor.constraint(equalTo: header.bottomAnchor), pdfView.leadingAnchor.constraint(equalTo: leadingAnchor), pdfView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), pdfView.bottomAnchor.constraint(equalTo: bottomAnchor),
             empty.centerXAnchor.constraint(equalTo: centerXAnchor), empty.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 23),
+            progressBar.topAnchor.constraint(equalTo: header.bottomAnchor), progressBar.leadingAnchor.constraint(equalTo: leadingAnchor), progressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), progressBar.heightAnchor.constraint(equalToConstant: 2),
             pageChip.centerXAnchor.constraint(equalTo: centerXAnchor), pageChip.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16)
         ])
         NotificationCenter.default.addObserver(self, selector: #selector(pageChanged), name: .PDFViewPageChanged, object: pdfView)
@@ -105,7 +139,11 @@ final class PDFPane: Surface {
     @objc private func scaleChanged() { zoomLabel.stringValue = "\(Int((pdfView.scaleFactor * 100).rounded()))%" }
     func load(_ url: URL) {
         // Read bytes so PDFKit cannot keep a mapped file alive while TeX rewrites it.
-        guard let data = try? Data(contentsOf: url), let document = PDFDocument(data: data) else { return }
+        guard let data = try? Data(contentsOf: url) else { return }
+        // An unchanged PDF keeps its rendered pages; replacing the document would only make it blink.
+        if data == loadedData, pdfView.document != nil { return }
+        guard let document = PDFDocument(data: data) else { return }
+        loadedData = data
         let oldPage = pdfView.currentPage.flatMap { pdfView.document?.index(for: $0) } ?? 0
         let oldDestination = pdfView.currentDestination
         let wasAuto = pdfView.autoScales; let scale = pdfView.scaleFactor
@@ -118,7 +156,7 @@ final class PDFPane: Surface {
         pdfView.autoScales = wasAuto; if !wasAuto { pdfView.scaleFactor = scale }
         pageChanged(); scaleChanged()
     }
-    func clear() { pdfView.document = nil; empty.isHidden = false; pageChip.isHidden = true; state = .none }
+    func clear() { loadedData = nil; pdfView.document = nil; empty.isHidden = false; pageChip.isHidden = true; state = .none }
     @objc func pageChanged() {
         guard let doc = pdfView.document, let page = pdfView.currentPage else { return }
         pageLabel.stringValue = "第 \(doc.index(for: page) + 1) 页，共 \(doc.pageCount) 页"; pageChip.isHidden = false

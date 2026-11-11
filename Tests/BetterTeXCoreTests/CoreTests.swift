@@ -151,3 +151,52 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(headFiles.contains("renamed paper.tex")); XCTAssertFalse(headFiles.contains("my paper.tex"))
     }
 }
+
+final class BuildProgressTests: XCTestCase {
+    func testStageTrackerFollowsLatexmkAcrossChunks() {
+        var tracker = BuildStageTracker()
+        var stages = tracker.consume("Latexmk: applying rule 'pdflatex'...\n------------\nRunning 'pdfla")
+        XCTAssertTrue(stages.isEmpty)
+        stages += tracker.consume("tex  -interaction=nonstopmode \"m.tex\"'\n------------\nThis is pdfTeX\nRunning 'bibtex  \"m.aux\"'\n")
+        stages += tracker.consume("Running 'pdflatex  -recorder \"m.tex\"'\nRunning '/Library/TeX/texbin/pdflatex -x'\nNot Running 'x'\n")
+        XCTAssertEqual(stages.map(\.tool), ["pdflatex", "bibtex", "pdflatex", "pdflatex"])
+        XCTAssertEqual(stages.map(\.pass), [1, 1, 2, 3]); XCTAssertEqual(stages.map(\.step), [1, 2, 3, 4])
+        XCTAssertEqual(stages[1].title, "整理参考文献"); XCTAssertEqual(stages[3].title, "排版 · 第 3 遍")
+        XCTAssertEqual(tracker.begin("/usr/bin/biber").step, 5)
+    }
+    /// Runs latexmk on a document with a bibliography and checks the reported programme sequence.
+    func testRealBuildReportsStagesAndSecondBuildRunsNothing() throws {
+        let tools = Toolchain.discover()
+        try XCTSkipUnless(tools["latexmk"] != nil && tools["pdflatex"] != nil && tools["bibtex"] != nil, "需要 latexmk、pdflatex 和 bibtex")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("BetterTeX stages \(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let main = directory.appendingPathComponent("main.tex")
+        try "\\documentclass{article}\\begin{document}Hi \\cite{a}\\bibliographystyle{plain}\\bibliography{refs}\\end{document}\n".write(to: main, atomically: true, encoding: .utf8)
+        try "@book{a,title={T},author={A},year={2020},publisher={P}}\n".write(to: directory.appendingPathComponent("refs.bib"), atomically: true, encoding: .utf8)
+        var stages: [BuildStage] = []
+        let first = try TeXCompiler().build(active: main, project: directory, selected: .automatic, tools: tools, onStage: { stages.append($0) })
+        XCTAssertTrue(first.succeeded)
+        XCTAssertEqual(Array(stages.map(\.tool).prefix(3)), ["pdflatex", "bibtex", "pdflatex"])
+        XCTAssertGreaterThanOrEqual(stages.filter { $0.tool == "pdflatex" }.count, 3)
+        XCTAssertEqual(stages.map(\.step), Array(1...stages.count))
+        // With nothing changed latexmk starts no programme at all.
+        var again: [BuildStage] = []
+        let second = try TeXCompiler().build(active: main, project: directory, selected: .automatic, tools: tools, onStage: { again.append($0) })
+        XCTAssertTrue(second.succeeded); XCTAssertTrue(again.isEmpty)
+    }
+    func testBuildSignatureChangesOnlyWithInputs() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("BetterTeX signature \(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent(".bettertex"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let main = directory.appendingPathComponent("main.tex"); try "a".write(to: main, atomically: true, encoding: .utf8)
+        let first = BuildSignature.compute(project: directory, root: main.path, engine: "Auto")
+        XCTAssertEqual(first, BuildSignature.compute(project: directory, root: main.path, engine: "Auto"))
+        // Build output lives in the hidden .bettertex folder and must not look like a source change.
+        try "pdf".write(to: directory.appendingPathComponent(".bettertex/main.pdf"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(first, BuildSignature.compute(project: directory, root: main.path, engine: "Auto"))
+        XCTAssertNotEqual(first, BuildSignature.compute(project: directory, root: main.path, engine: "XeLaTeX"))
+        try "ab".write(to: main, atomically: true, encoding: .utf8)
+        XCTAssertNotEqual(first, BuildSignature.compute(project: directory, root: main.path, engine: "Auto"))
+    }
+}
