@@ -7,7 +7,7 @@
 **原生的 macOS LaTeX 工作区。**<br>
 在一个窗口里写作、编译和预览，内置 Overleaf 同步和你的编程 Agent。
 
-[![Release](https://img.shields.io/badge/release-v0.1.0--alpha.2-0A84FF?style=flat-square)](https://github.com/tangshunpu/BetterTeX/releases)
+[![Release](https://img.shields.io/badge/release-v0.1.0--alpha.3-0A84FF?style=flat-square)](https://github.com/tangshunpu/BetterTeX/releases)
 [![Platform](https://img.shields.io/badge/macOS-13%2B-1C1C1E?style=flat-square&logo=apple&logoColor=white)](#安装)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-8E8E93?style=flat-square)](#安装)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?style=flat-square&logo=swift&logoColor=white)](https://swift.org)
