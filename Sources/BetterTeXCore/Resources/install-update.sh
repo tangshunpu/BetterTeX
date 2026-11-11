@@ -9,6 +9,8 @@ staging="$4"
 result="$5"
 opener="$6"
 backup="$staging/previous.app"
+old_moved=0
+new_moved=0
 
 # A cancelled or stalled quit must never replace an application that is still running.
 attempt=0
@@ -18,20 +20,29 @@ while kill -0 "$parent_pid" 2>/dev/null; do
     /bin/sleep 0.2
 done
 
-# Recover the old app on every failed filesystem operation. Keep a backup if rollback itself fails.
+# A failed rollback must never reopen the new application or claim the old one was restored.
+recovery_required() {
+    printf 'recovery-required\n%s\n' "$backup" > "$result"
+    exit 1
+}
 fail() {
+    if [ "$old_moved" -eq 1 ]; then
+        if [ -e "$target" ]; then
+            [ "$new_moved" -eq 1 ] && [ ! -e "$replacement" ] || recovery_required
+            /bin/mv "$target" "$replacement" || recovery_required
+        fi
+        /bin/mv "$backup" "$target" || recovery_required
+    fi
     printf 'failed\n' > "$result"
-    if [ -d "$backup" ] && [ ! -e "$target" ]; then /bin/mv "$backup" "$target" || exit 1; fi
     if [ -d "$target" ]; then "$opener" -n "$target"; fi
     exit 1
 }
 [ -d "$target" ] && [ -d "$replacement" ] || fail
 /bin/mv "$target" "$backup" || fail
+old_moved=1
 [ ! -e "$target" ] || fail
 /bin/mv "$replacement" "$target" || fail
+new_moved=1
 printf 'installed\n' > "$result"
-if ! "$opener" -n "$target"; then
-    /bin/mv "$target" "$replacement" || fail
-    fail
-fi
+"$opener" -n "$target" || fail
 /bin/rm -rf "$staging"

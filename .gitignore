@@ -4,3 +4,6 @@ dist/
 .DS_Store
 .bettertex/
 *.xcuserstate
+
+# Publisher signing keys belong outside the repository.
+ed25519-private.key

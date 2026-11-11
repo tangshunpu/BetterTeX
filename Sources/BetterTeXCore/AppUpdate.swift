@@ -72,11 +72,20 @@ public struct AppRelease: Decodable, Sendable {
             }
         }.first
     }
+    public func signatureAsset(for archive: ReleaseAsset) -> ReleaseAsset? {
+        let name = archive.name + ".sig"
+        return assets.first {
+            $0.name == name && $0.size > 0 && $0.size <= 1024 && $0.sha256 != nil
+                && $0.browserDownloadURL == AppUpdateClient.repositoryURL.appendingPathComponent("releases/download")
+                    .appendingPathComponent(tagName).appendingPathComponent(name)
+        }
+    }
     public static func newest(in releases: [Self], after current: ReleaseVersion, includePrereleases: Bool) -> Self? {
-        releases.filter { release in
-            guard !release.draft, let version = release.version, version > current else { return false }
-            return includePrereleases || (!release.prerelease && version.prerelease.isEmpty)
-        }.max { $0.version! < $1.version! }
+        releases.compactMap { release -> (release: Self, version: ReleaseVersion)? in
+            guard !release.draft, let version = release.version, version > current,
+                  includePrereleases || (!release.prerelease && version.prerelease.isEmpty) else { return nil }
+            return (release, version)
+        }.max { $0.version < $1.version }?.release
     }
 }
 

@@ -17,7 +17,10 @@ final class UpdateController: NSObject {
     func start() {
         if let result = try? String(contentsOf: UpdateInstaller.resultURL, encoding: .utf8) {
             try? FileManager.default.removeItem(at: UpdateInstaller.resultURL)
-            if result.trimmingCharacters(in: .whitespacesAndNewlines) == "failed" {
+            let lines = result.components(separatedBy: "\n")
+            if lines.first == "recovery-required" {
+                showMessage(L10n.tr("更新未能完成"), L10n.tr("自动恢复失败，旧版备份位于：\(lines.dropFirst().first ?? "")。请从 Release 页面重新安装 BetterTeX。"))
+            } else if lines.first == "failed" {
                 showMessage(L10n.tr("更新未能完成"), L10n.tr("已保留上一版本。请重新检查更新，或从 Release 页面下载安装。"))
             }
         }
@@ -63,7 +66,7 @@ final class UpdateController: NSObject {
     private func present(_ release: AppRelease) {
         presentedVersion = release.tagName
         let version = release.version?.description ?? release.tagName
-        let installable = release.asset() != nil
+        let installable = release.asset().flatMap { release.signatureAsset(for: $0) } != nil
         let detail = installable
             ? L10n.tr("当前版本：\(currentVersion)。安装前会保存文件，并重新打开 BetterTeX。")
             : L10n.tr("此版本暂未提供适合当前 Mac 的自动更新安装包，请前往 Release 页面下载。")
@@ -75,7 +78,7 @@ final class UpdateController: NSObject {
                               releaseURL: release.pageURL)
     }
     private func download(_ release: AppRelease) {
-        guard task == nil, let asset = release.asset() else { return }
+        guard task == nil, let asset = release.asset(), let signatureAsset = release.signatureAsset(for: asset) else { return }
         do { try UpdateInstaller.checkDestination(Bundle.main.bundleURL) }
         catch { showError(error); return }
         showMessage(L10n.tr("正在下载更新…"), L10n.tr("下载完成后将验证安装包，并保存文件、安装及重启。"), busy: true)
@@ -87,12 +90,14 @@ final class UpdateController: NSObject {
             do {
                 try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
                 let archive = temporary.appendingPathComponent("update.zip")
+                let signature = temporary.appendingPathComponent("update.zip.sig")
                 try await client.download(asset, to: archive)
+                try await client.download(signatureAsset, to: signature)
                 try Task.checkCancellation()
                 showMessage(L10n.tr("正在验证更新…"), L10n.tr("请稍候，正在准备安装。"), busy: true)
                 panel?.setCancelAction { [weak self] in self?.task?.cancel() }
                 let destination = Bundle.main.bundleURL
-                let update = try await Task.detached { try UpdateInstaller.prepare(archive: archive, release: release, destination: destination) }.value
+                let update = try await Task.detached { try UpdateInstaller.prepare(archive: archive, signature: signature, release: release, destination: destination) }.value
                 if Task.isCancelled { update.discard(); throw CancellationError() }
                 prepared = update
                 showReady(update)

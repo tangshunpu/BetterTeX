@@ -593,3 +593,8 @@
 "自动检查更新" = "Automatically check for updates";
 "接收预发布版本（alpha / beta）" = "Include prereleases (alpha / beta)";
 "检查更新…" = "Check for Updates…";
+
+/* Update review fixes */
+"应用缺少必要资源（%1$@），请重新安装 BetterTeX。" = "A required app resource is missing (%1$@). Please reinstall BetterTeX.";
+"无法验证更新的发布者签名，已停止安装。" = "The update’s publisher signature could not be verified. Installation has been stopped.";
+"自动恢复失败，旧版备份位于：%1$@。请从 Release 页面重新安装 BetterTeX。" = "Automatic recovery failed. The previous app is backed up at: %1$@. Please reinstall BetterTeX from the release page.";

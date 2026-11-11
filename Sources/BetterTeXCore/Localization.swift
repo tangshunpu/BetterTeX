@@ -60,10 +60,14 @@ public struct Localizer {
     let bundle: Bundle
 
     public init(language: AppLanguage, preferredLanguages: [String] = Locale.preferredLanguages) {
+        self.init(language: language, preferredLanguages: preferredLanguages, resourceBundle: AppResources.bundle)
+    }
+
+    init(language: AppLanguage, preferredLanguages: [String], resourceBundle: Bundle?) {
         self.language = language.resolved(preferredLanguages: preferredLanguages)
         // Explicit sub-bundle lookup supports an app preference independent of the OS language.
-        bundle = Bundle.module.url(forResource: self.language.rawValue, withExtension: "lproj")
-            .flatMap(Bundle.init(url:)) ?? Bundle.module
+        bundle = resourceBundle?.url(forResource: self.language.rawValue, withExtension: "lproj")
+            .flatMap(Bundle.init(url:)) ?? resourceBundle ?? .main
     }
 
     public func string(_ text: LocalizedText) -> String {

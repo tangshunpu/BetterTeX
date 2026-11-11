@@ -11,7 +11,9 @@ public struct PreparedAppUpdate: Sendable {
 public enum UpdateInstaller {
     public static let resultURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("BetterTeX/Updates/install-result")
-    static var scriptURL: URL { Bundle.module.url(forResource: "install-update", withExtension: "sh")! }
+    static func scriptURL(in bundle: Bundle? = AppResources.bundle) throws -> URL {
+        try AppResources.requiredURL("install-update", fileExtension: "sh", in: bundle)
+    }
 
     public static func checkDestination(_ destination: URL) throws {
         let parent = destination.deletingLastPathComponent()
@@ -23,7 +25,13 @@ public enum UpdateInstaller {
         }
     }
 
-    public static func prepare(archive: URL, release: AppRelease, destination: URL) throws -> PreparedAppUpdate {
+    public static func prepare(archive: URL, signature: URL, release: AppRelease, destination: URL) throws -> PreparedAppUpdate {
+        try prepare(archive: archive, signature: signature, release: release, destination: destination, publicKey: UpdateSignature.trustedPublicKey())
+    }
+
+    static func prepare(archive: URL, signature: URL, release: AppRelease, destination: URL, publicKey: Data) throws -> PreparedAppUpdate {
+        // Publisher authentication must succeed before extraction or any staging mutation.
+        try UpdateSignature.verify(archive: archive, signature: Data(contentsOf: signature), publicKey: publicKey)
         try checkDestination(destination)
         let fm = FileManager.default
         let directory = destination.deletingLastPathComponent().appendingPathComponent(".BetterTeX-update-\(UUID().uuidString)", isDirectory: true)
@@ -86,14 +94,15 @@ public enum UpdateInstaller {
                                                  result: URL = resultURL) throws -> Process {
         try checkDestination(update.destination)
         let script = update.directory.appendingPathComponent("install.sh")
-        try Data(contentsOf: scriptURL).write(to: script, options: .atomic)
+        try Data(contentsOf: scriptURL()).write(to: script, options: .atomic)
         try FileManager.default.createDirectory(at: result.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let process = installerProcess(update, script: script, parentPID: parentPID, result: result)
+        let process = try installerProcess(update, script: script, parentPID: parentPID, result: result)
         try process.run()
         return process
     }
-    static func installerProcess(_ update: PreparedAppUpdate, script: URL = scriptURL, parentPID: Int32,
-                                 result: URL, opener: String = "/usr/bin/open") -> Process {
+    static func installerProcess(_ update: PreparedAppUpdate, script: URL? = nil, parentPID: Int32,
+                                 result: URL, opener: String = "/usr/bin/open") throws -> Process {
+        let script = try script ?? scriptURL()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [script.path, String(parentPID), update.destination.path, update.application.path,

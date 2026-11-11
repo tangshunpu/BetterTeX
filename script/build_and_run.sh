@@ -43,7 +43,13 @@ cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/.$APP_NAME.new"
 mv -f "$APP_BUNDLE/Contents/MacOS/.$APP_NAME.new" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 # Include any SwiftPM resource bundles next to the executable.
 for resource in "$BUILD_DIR"/*.bundle; do
-  if [[ -d "$resource" ]]; then cp -R "$resource" "$APP_BUNDLE/Contents/Resources/"; cp -R "$resource" "$APP_BUNDLE/Contents/MacOS/"; fi
+  if [[ -d "$resource" ]]; then
+    resource_name="$(basename "$resource")"
+    # Replace rather than merge: an earlier build may contain obsolete resources and signatures.
+    rm -rf "$APP_BUNDLE/Contents/Resources/$resource_name" "$APP_BUNDLE/Contents/MacOS/$resource_name"
+    cp -R "$resource" "$APP_BUNDLE/Contents/Resources/"
+    cp -R "$resource" "$APP_BUNDLE/Contents/MacOS/"
+  fi
 done
 cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -70,15 +76,32 @@ PLIST
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :BetterTeXReleaseVersion string $APP_VERSION" "$APP_BUNDLE/Contents/Info.plist"
 xattr -cr "$APP_BUNDLE"
+for resource in "$APP_BUNDLE/Contents/Resources/"*.bundle "$APP_BUNDLE/Contents/MacOS/"*.bundle; do
+  if [[ -d "$resource" ]]; then codesign --force --sign - "$resource" >/dev/null; fi
+done
 codesign --force --sign - "$APP_BUNDLE" >/dev/null
 mkdir -p "$ROOT_DIR/dist"
+rm -rf "$DELIVERY_BUNDLE"
 ditto --norsrc "$APP_BUNDLE" "$DELIVERY_BUNDLE"
-# FileProvider may add FinderInfo to copied bundles; strip it after copying.
-xattr -cr "$DELIVERY_BUNDLE"
+"$ROOT_DIR/script/verify_bundle.sh" "$APP_BUNDLE"
+# FileProvider can attach FinderInfo asynchronously after copying. Retry cleanup briefly,
+# but never deliver a bundle that still fails the resource/signature checks.
+for verification_attempt in 1 2 3; do
+  xattr -cr "$DELIVERY_BUNDLE"
+  if "$ROOT_DIR/script/verify_bundle.sh" "$DELIVERY_BUNDLE" > "$BUILD_CACHE/bundle-verification.log" 2>&1; then break; fi
+  if [[ "$verification_attempt" == 3 ]]; then cat "$BUILD_CACHE/bundle-verification.log" >&2; exit 1; fi
+  sleep 0.2
+done
 # Keep a clean portable archive even when Documents is managed by iCloud.
 ditto -c -k --norsrc --noextattr --keepParent "$APP_BUNDLE" "$ROOT_DIR/dist/BetterTeX.zip"
-cp "$ROOT_DIR/dist/BetterTeX.zip" "$ROOT_DIR/dist/BetterTeX-$APP_VERSION-macOS-$(uname -m).zip"
-codesign --verify --deep --strict "$APP_BUNDLE"
+UPDATE_ARCHIVE="$ROOT_DIR/dist/BetterTeX-$APP_VERSION-macOS-$(uname -m).zip"
+cp "$ROOT_DIR/dist/BetterTeX.zip" "$UPDATE_ARCHIVE"
+# An archive rebuilt without a signing key must not retain a stale detached signature.
+rm -f "$UPDATE_ARCHIVE.sig" "$ROOT_DIR/dist/BetterTeX.zip.sig"
+if [[ -n "${BETTERTEX_UPDATE_SIGNING_KEY:-}" ]]; then
+  swift "$ROOT_DIR/script/sign_update.swift" sign "$UPDATE_ARCHIVE" "$BETTERTEX_UPDATE_SIGNING_KEY" "$ROOT_DIR/Sources/BetterTeXCore/Resources/UpdateSigningPublicKey.txt"
+  cp "$UPDATE_ARCHIVE.sig" "$ROOT_DIR/dist/BetterTeX.zip.sig"
+fi
 APP_BUNDLE="$DELIVERY_BUNDLE"
 
 case "$MODE" in

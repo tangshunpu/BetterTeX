@@ -18,18 +18,23 @@
 
 设置里可关闭自动检查，或选择是否接收 alpha / beta 预发布版本。Alpha 构建默认接收预发布版本，正式构建默认只接收正式版。版本比较支持 `alpha.2`、`alpha.10` 与正式版之间的顺序，不会降级。
 
-应用需要位于可写的位置，推荐「应用程序」文件夹；从 DMG 或 App Translocation 中运行时，请先移动应用。自动安装要求 Release 附带匹配处理器架构的 ZIP 和 GitHub 的 SHA-256 校验值；缺少兼容包时，提示会提供下载页面。安装还会检查包内版本、应用标识、macOS 要求及代码签名。旧版未内置更新器，需要手动安装一次包含此功能的版本。
+应用需要位于可写的位置，推荐「应用程序」文件夹；从 DMG 或 App Translocation 中运行时，请先移动应用。自动安装要求 Release 附带匹配处理器架构的 ZIP、同名 `.zip.sig` 发布者签名和 GitHub 的 SHA-256 校验值；缺少签名或兼容包时，提示会提供下载页面，不自动安装。安装还会检查包内版本、应用标识、macOS 要求及代码签名。旧版未内置更新器，需要手动安装一次包含此功能的版本。
 
 ### 发布更新包
 
 版本默认来自仓库根目录的 `VERSION`。发布时先更新该文件，或设置 `BETTERTEX_VERSION`；Release 的标签必须是同一版本（可加 `v` 前缀）。例如：
 
 ```sh
+BETTERTEX_UPDATE_SIGNING_KEY="$HOME/Library/Application Support/BetterTeX/ReleaseSigning/ed25519-private.key" \
 BETTERTEX_VERSION=0.1.0-alpha.3 CONFIGURATION=release ./script/build_and_run.sh --build-only
 ./script/make_dmg.sh
 ```
 
-将 `dist/BetterTeX-0.1.0-alpha.3-macOS-arm64.zip`（Intel 构建为 `x86_64`）和 DMG 一起上传到对应 GitHub Release。GitHub 上传后提供资产的 `sha256:` digest，更新器会验证它。打包会把完整版本写入 `BetterTeXReleaseVersion`；`CFBundleShortVersionString` 保留三段数字，`CFBundleVersion` 默认使用 Git 提交计数，也可通过 `BETTERTEX_BUILD_NUMBER` 覆盖。当前包采用 ad-hoc 签名，信任来源为此仓库的 HTTPS Release 和资产校验值；将来若使用 Developer ID 签名，更新必须保持同一签名团队。
+将 `dist/BetterTeX-0.1.0-alpha.3-macOS-arm64.zip`、对应的 `.zip.sig`（Intel 构建为 `x86_64`）和 DMG 一起上传到对应 GitHub Release。GitHub 上传后提供资产的 `sha256:` digest，更新器会验证它。打包会把完整版本写入 `BetterTeXReleaseVersion`；`CFBundleShortVersionString` 保留三段数字，`CFBundleVersion` 默认使用 Git 提交计数，也可通过 `BETTERTEX_BUILD_NUMBER` 覆盖。当前包采用 ad-hoc 代码签名，自动更新另外使用 Ed25519 发布者签名。应用内固定公钥 `Sources/BetterTeXCore/Resources/UpdateSigningPublicKey.txt`，在解压前验证签名；即使 GitHub Release 及其 SHA-256 字段被篡改，没有对应私钥也不能通过自动安装校验。将来若使用 Developer ID 签名，更新还必须保持同一签名团队。
+
+维护者的私钥存放于仓库外的 `~/Library/Application Support/BetterTeX/ReleaseSigning/ed25519-private.key`，权限为 `0600`。请离线备份，不要将它提交到 Git 或与 Release 一起上传。普通开发构建不需要私钥；只有显式设置 `BETTERTEX_UPDATE_SIGNING_KEY` 才生成 `.sig`，且工具会拒绝与固定公钥不匹配的私钥。不要随意重新生成密钥：旧安装只能信任已内置的公钥，丢失私钥时需要设计受信任的密钥迁移或手动安装新版。
+
+可用 `swift script/sign_update.swift sign ZIP PRIVATE_KEY PUBLIC_KEY` 单独签名，用 `verify ZIP SIGNATURE PUBLIC_KEY` 验证；签名覆盖带协议标识的 ZIP SHA-256。`generate PRIVATE_KEY PUBLIC_KEY` 仅用于新项目初始化或测试，会拒绝覆盖已有文件。构建、DMG 暂存和挂载验证均检查安装脚本、公钥、两种语言及 SwiftTerm 资源，防止漏包。若回滚也失败，更新器不会再次启动未能打开的新版，会保留旧版备份并在下次启动给出恢复路径。
 
 ## 运行
 

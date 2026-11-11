@@ -16,7 +16,7 @@ STAGE="$BUILD_CACHE/DMG"
 # iCloud-managed folder can pick up Finder attributes that break strict signature checks.
 rm -rf "$STAGE"; mkdir -p "$STAGE"
 ditto -x -k "$ARCHIVE" "$STAGE"
-codesign --verify --deep --strict "$STAGE/$APP_NAME.app"
+"$ROOT_DIR/script/verify_bundle.sh" "$STAGE/$APP_NAME.app"
 ln -s /Applications "$STAGE/Applications"
 
 rm -f "$OUTPUT"
@@ -28,7 +28,7 @@ rm -rf "$STAGE"
 MOUNT="$(mktemp -d)"
 hdiutil attach "$OUTPUT" -nobrowse -readonly -mountpoint "$MOUNT" >/dev/null 2> >(grep -v "is deprecated" >&2)
 trap 'hdiutil detach "$MOUNT" >/dev/null 2>&1 || true; rmdir "$MOUNT" 2>/dev/null || true' EXIT
-codesign --verify --deep --strict "$MOUNT/$APP_NAME.app"
+"$ROOT_DIR/script/verify_bundle.sh" "$MOUNT/$APP_NAME.app"
 [[ -L "$MOUNT/Applications" ]]
 
 echo "Built $OUTPUT"

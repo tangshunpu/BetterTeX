@@ -3,6 +3,7 @@ import CryptoKit
 @testable import BetterTeXCore
 
 final class AppUpdateTests: XCTestCase {
+    private let signingKey = Curve25519.Signing.PrivateKey()
     func testSemanticVersionPrecedenceAndMalformedVersions() throws {
         let versions = ["0.1.0-alpha.1", "0.1.0-alpha.2", "0.1.0-alpha.10", "0.1.0-beta", "0.1.0-rc.1", "0.1.0", "0.1.1", "0.10.0", "1.0.0"]
         let parsed = try versions.map { try XCTUnwrap(ReleaseVersion($0)) }
@@ -89,12 +90,12 @@ final class AppUpdateTests: XCTestCase {
         let source = try makeApp(at: folder.appendingPathComponent("Source/BetterTeX.app"), version: "0.2.0")
         let archive = folder.appendingPathComponent("update.zip")
         try run("/usr/bin/ditto", ["-c", "-k", "--keepParent", source.path, archive.path])
-        let update = try UpdateInstaller.prepare(archive: archive, release: release("0.2.0"), destination: installed)
+        let update = try prepare(archive: archive, release: release("0.2.0"), destination: installed)
         defer { update.discard() }
         XCTAssertTrue(FileManager.default.fileExists(atPath: update.application.path))
         XCTAssertEqual(try bundleVersion(installed), "0.1.0")
         XCTAssertEqual(try bundleVersion(update.application), "0.2.0")
-        XCTAssertThrowsError(try UpdateInstaller.prepare(archive: archive, release: release("0.3.0"), destination: installed))
+        XCTAssertThrowsError(try prepare(archive: archive, release: release("0.3.0"), destination: installed))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: installed.deletingLastPathComponent().path).filter { $0.hasPrefix(".BetterTeX-update-") }.count, 1)
     }
 
@@ -105,7 +106,7 @@ final class AppUpdateTests: XCTestCase {
         try FileManager.default.createSymbolicLink(atPath: source.appendingPathComponent("escape").path, withDestinationPath: "/tmp")
         let archive = folder.appendingPathComponent("update.zip")
         try run("/usr/bin/ditto", ["-c", "-k", "--keepParent", source.path, archive.path])
-        XCTAssertThrowsError(try UpdateInstaller.prepare(archive: archive, release: release("0.2.0"), destination: installed))
+        XCTAssertThrowsError(try prepare(archive: archive, release: release("0.2.0"), destination: installed))
         XCTAssertThrowsError(try UpdateInstaller.checkDestination(URL(fileURLWithPath: "/Volumes/BetterTeX/BetterTeX.app")))
         let alias = folder.appendingPathComponent("Alias.app")
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: installed)
@@ -142,7 +143,7 @@ final class AppUpdateTests: XCTestCase {
             try Data("new".utf8).write(to: next.appendingPathComponent("marker"))
             let update = PreparedAppUpdate(directory: directory, application: next, destination: target)
             let result = folder.appendingPathComponent("result")
-            let process = UpdateInstaller.installerProcess(update, parentPID: Int32.max, result: result, opener: shouldLaunch ? "/usr/bin/true" : "/usr/bin/false")
+            let process = try UpdateInstaller.installerProcess(update, parentPID: Int32.max, result: result, opener: shouldLaunch ? "/usr/bin/true" : "/usr/bin/false")
             try process.run(); process.waitUntilExit()
             XCTAssertEqual(process.terminationStatus, shouldLaunch ? 0 : 1)
             XCTAssertEqual(try String(contentsOf: target.appendingPathComponent("marker")), shouldLaunch ? "new" : "old")
@@ -157,7 +158,7 @@ final class AppUpdateTests: XCTestCase {
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: next, withIntermediateDirectories: true)
         let update = PreparedAppUpdate(directory: folder, application: next, destination: target)
-        let process = UpdateInstaller.installerProcess(update, parentPID: ProcessInfo.processInfo.processIdentifier, result: folder.appendingPathComponent("result"), opener: "/usr/bin/true")
+        let process = try UpdateInstaller.installerProcess(update, parentPID: ProcessInfo.processInfo.processIdentifier, result: folder.appendingPathComponent("result"), opener: "/usr/bin/true")
         try process.run()
         Thread.sleep(forTimeInterval: 0.3)
         XCTAssertTrue(process.isRunning)
@@ -170,6 +171,14 @@ final class AppUpdateTests: XCTestCase {
         let english = Localizer(language: .english)
         XCTAssertEqual(english.string("当前版本：\("0.2.0")"), "Current version: 0.2.0")
         XCTAssertEqual(english.string("检查或下载更新失败（HTTP \(429)）。"), "Could not check for or download updates (HTTP 429).")
+    }
+
+    private func prepare(archive: URL, release: AppRelease, destination: URL) throws -> PreparedAppUpdate {
+        let signature = archive.appendingPathExtension("sig")
+        let bytes = try signingKey.signature(for: UpdateSignature.message(for: archive))
+        try Data(bytes.base64EncodedString().utf8).write(to: signature)
+        return try UpdateInstaller.prepare(archive: archive, signature: signature, release: release, destination: destination,
+                                           publicKey: Data(signingKey.publicKey.rawRepresentation.base64EncodedString().utf8))
     }
 
     private func release(_ version: String, prerelease: Bool = false, draft: Bool = false, assets: [[String: Any]] = []) throws -> AppRelease {
