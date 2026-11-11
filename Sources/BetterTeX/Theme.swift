@@ -302,6 +302,8 @@ final class SegmentedTabs: NSView {
             }
         } else { thumb.frame = frame(for: selected) }
     }
+    // The whole control is one click target; otherwise the title labels swallow the clicks that land on them.
+    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let index = min(titles.count - 1, max(0, Int((point.x - 2) / ((bounds.width - 4) / CGFloat(titles.count)))))

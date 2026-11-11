@@ -34,6 +34,8 @@ final class PanelHeader: Surface {
     func setLeading(_ control: NSView) { titleLabel.isHidden = true; row.insertArrangedSubview(control, at: 0) }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
+        // Clickable custom views (the tab switcher) keep their clicks; only inert areas drag the pane.
+        if hit is SegmentedTabs { return hit }
         if hit is NSTextField || hit === row || hit?.superview === row && !(hit is NSControl) { return self }
         return hit
     }
