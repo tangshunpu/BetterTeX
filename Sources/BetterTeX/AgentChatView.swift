@@ -25,7 +25,7 @@ final class AgentChatView: NSView {
     private let scroll = NSScrollView()
     private let stack = NSStackView()
     private let working = NSStackView()
-    private let workingLabel = Theme.label("正在工作…", size: 12, color: Theme.muted)
+    private let workingLabel = Theme.label(L10n.tr("正在工作…"), size: 12, color: Theme.muted)
     private var entries: [String: Entry] = [:]
     private var order: [String] = []
     private var rows: [String: NSView] = [:]
@@ -45,7 +45,7 @@ final class AgentChatView: NSView {
     init(provider: AgentProvider = .codex) {
         self.provider = provider
         super.init(frame: .zero)
-        activity = "\(provider.rawValue) 正在工作…"
+        activity = L10n.tr("\(provider.rawValue) 正在工作…")
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         stack.edgeInsets = NSEdgeInsets(top: 12, left: Self.inset, bottom: 12, right: Self.inset)
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -53,7 +53,7 @@ final class AgentChatView: NSView {
         scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.documentView = document
         scroll.translatesAutoresizingMaskIntoConstraints = false; addSubview(scroll)
         let spinner = NSProgressIndicator(); spinner.style = .spinning; spinner.controlSize = .small; spinner.startAnimation(nil)
-        let stop = ActionButton("停止", symbol: "stop.fill", style: .tinted) { [weak self] in self?.stop() }
+        let stop = ActionButton(L10n.tr("停止"), symbol: "stop.fill", style: .tinted) { [weak self] in self?.stop() }
         working.setViews([spinner, workingLabel, NSView(), stop], in: .leading); working.spacing = 8; working.alignment = .centerY
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: topAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -99,7 +99,7 @@ final class AgentChatView: NSView {
                     // A turn that ended without a completion event failed before or outside the model call.
                     if outcome.status != 0, self.entries["d\(number)"] == nil {
                         let detail = outcome.stderr.components(separatedBy: "\n").last { !$0.isEmpty } ?? ""
-                        self.append("f\(number)", .status("\(self.name) 退出（\(outcome.status)）" + (detail.isEmpty ? "" : "：\(detail)"), failed: true))
+                        self.append("f\(number)", .status(L10n.tr("\(self.name) 退出（\(outcome.status)）") + (detail.isEmpty ? "" : L10n.tr("：\(detail)")), failed: true))
                     }
                 }
             }
@@ -108,7 +108,7 @@ final class AgentChatView: NSView {
     func stop() {
         guard running, turn != nil else { return }
         cancelTurn?(); cancelTurn = nil; turn = nil; setRunning(false)
-        append("f\(turnNumber)", .status("已停止", failed: false))
+        append("f\(turnNumber)", .status(L10n.tr("已停止"), failed: false))
     }
     /// Forgets the conversation; the next prompt starts a new Codex thread.
     func reset() {
@@ -120,18 +120,18 @@ final class AgentChatView: NSView {
     /// Continues a conversation recorded by the Codex CLI. Its earlier messages are not shown.
     func resume(thread: String, title: String) {
         reset(); self.thread = thread
-        append("s\(UUID().uuidString)", .status("已接上之前的会话：\(title)。之前的消息不在这里显示，\(name) 仍记得上下文。", failed: false))
+        append("s\(UUID().uuidString)", .status(L10n.tr("已接上之前的会话：\(title)。之前的消息不在这里显示，\(name) 仍记得上下文。"), failed: false))
     }
     private var elapsed: String {
         let seconds = Int(Date().timeIntervalSince(started))
-        return seconds < 60 ? "\(seconds) 秒" : "\(seconds / 60) 分 \(seconds % 60) 秒"
+        return seconds < 60 ? L10n.tr("\(seconds) 秒") : L10n.tr("\(seconds / 60) 分 \(seconds % 60) 秒")
     }
     private func refreshWorking() { workingLabel.stringValue = running ? "\(activity)  \(elapsed)" : activity }
     private func setRunning(_ value: Bool) {
         running = value
         ticker?.invalidate(); ticker = nil
         if value {
-            started = Date(); activity = "\(name) 正在工作…"
+            started = Date(); activity = L10n.tr("\(name) 正在工作…")
             ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refreshWorking() }
         }
         if value { if working.superview == nil { stack.addArrangedSubview(working); working.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -Self.inset * 2).isActive = true } }
@@ -150,12 +150,12 @@ final class AgentChatView: NSView {
             }
             if item.kind == .message || item.kind == .reasoning, item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
             append("i\(number).\(item.id)", .item(item))
-            activity = item.status != .running ? "\(name) 正在工作…" : item.kind == .command ? "正在运行命令…" : item.kind == .message ? "\(name) 正在回复…" : item.kind == .reasoning ? "\(name) 正在思考…" : item.kind == .fileChange ? "正在修改文件…" : "\(name) 正在工作…"
+            activity = item.status != .running ? L10n.tr("\(name) 正在工作…") : item.kind == .command ? L10n.tr("正在运行命令…") : item.kind == .message ? L10n.tr("\(name) 正在回复…") : item.kind == .reasoning ? L10n.tr("\(name) 正在思考…") : item.kind == .fileChange ? L10n.tr("正在修改文件…") : L10n.tr("\(name) 正在工作…")
             // Streamed text grows in place; keep its tail in view.
             if item.status == .running, item.kind == .message || item.kind == .reasoning { scrollToEnd() }
         case .turnCompleted(let input, let output):
             func short(_ value: Int) -> String { value >= 1000 ? String(format: "%.1fk", Double(value) / 1000) : "\(value)" }
-            append("d\(number)", .status("完成 · \(elapsed) · 输入 \(short(input)) / 输出 \(short(output)) tokens", failed: false))
+            append("d\(number)", .status(L10n.tr("完成 · \(elapsed) · 输入 \(short(input)) / 输出 \(short(output)) tokens"), failed: false))
         case .turnFailed(let message): append("d\(number)", .status(message, failed: true))
         }
     }
@@ -256,7 +256,7 @@ final class AgentChatView: NSView {
     private func clipped(_ lines: [String], key: String, collapsed: Int, tail: Bool) -> (shown: [String], toggle: NSView?) {
         guard lines.count > collapsed else { return (lines, nil) }
         let open = expanded.contains(key)
-        let toggle = ActionButton(open ? "收起" : "展开全部 \(lines.count) 行", symbol: open ? "chevron.up" : "chevron.down", style: .plain) { [weak self] in
+        let toggle = ActionButton(open ? L10n.tr("收起") : L10n.tr("展开全部 \(lines.count) 行"), symbol: open ? "chevron.up" : "chevron.down", style: .plain) { [weak self] in
             guard let self, let entry = self.entries[key] else { return }
             if self.expanded.contains(key) { self.expanded.remove(key) } else { self.expanded.insert(key) }
             self.append(key, entry)
@@ -304,7 +304,7 @@ final class AgentChatView: NSView {
             let bubble = Chip(fill: Theme.fillSoft, radius: 8, border: Theme.adaptive(0x3C3C43, 0xFFFFFF, lightAlpha: 0.16, darkAlpha: 0.12))
             let label = wrapped(plain(text)); label.translatesAutoresizingMaskIntoConstraints = false; bubble.addSubview(label)
             NSLayoutConstraint.activate([label.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 8), label.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -8), label.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10), label.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10)])
-            bubble.setAccessibilityLabel("你：\(text)"); return bubble
+            bubble.setAccessibilityLabel(L10n.tr("你：\(text)")); return bubble
         case .item(let item):
             let running = item.status == .running
             switch item.kind {
@@ -314,7 +314,7 @@ final class AgentChatView: NSView {
                 let lines = item.text.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n")
                 let (shown, toggle) = clipped(lines, key: key, collapsed: 3, tail: running)
                 let label = wrapped(NSAttributedString(string: shown.joined(separator: "\n"), attributes: [.font: font, .foregroundColor: Theme.muted]))
-                return timeline(Theme.faint, running: running, column([toolTitle("思考", ""), label] + (toggle.map { [$0] } ?? []), spacing: 3))
+                return timeline(Theme.faint, running: running, column([toolTitle(L10n.tr("思考"), ""), label] + (toggle.map { [$0] } ?? []), spacing: 3))
             case .notice: return timeline(Theme.orange, wrapped(plain(item.text, size: 11.5, color: Theme.orange)))
             case .toolCall, .webSearch:
                 let parts = item.text.components(separatedBy: " · ")
@@ -331,7 +331,7 @@ final class AgentChatView: NSView {
                     else if line.hasPrefix("▸") { attributes[.foregroundColor] = Theme.text; attributes[.font] = NSFont.systemFont(ofSize: 12.5, weight: .semibold) }
                     text.append(NSAttributedString(string: line + (index < lines.count - 1 ? "\n" : ""), attributes: attributes))
                 }
-                return timeline(statusColor(item.status), running: running, column([toolTitle("待办", ""), wrapped(text)], spacing: 3))
+                return timeline(statusColor(item.status), running: running, column([toolTitle(L10n.tr("待办"), ""), wrapped(text)], spacing: 3))
             case .command:
                 var views: [NSView] = [toolTitle("Bash", item.text)]
                 let output = item.detail.trimmingCharacters(in: .newlines)
@@ -349,8 +349,8 @@ final class AgentChatView: NSView {
                     guard let self, let directory = self.directory else { return }
                     self.onOpenFile?(path.hasPrefix("/") ? URL(fileURLWithPath: path) : directory.appendingPathComponent(path))
                 }
-                open.toolTip = "在编辑器中打开 \(path)"; open.cell?.lineBreakMode = .byTruncatingMiddle; open.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-                let title = Theme.label(parts.first == "写入" ? "Write" : "Edit", size: 12.5, weight: .semibold); title.setContentCompressionResistancePriority(.required, for: .horizontal)
+                open.toolTip = L10n.tr("在编辑器中打开 \(path)"); open.cell?.lineBreakMode = .byTruncatingMiddle; open.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+                let title = Theme.label(parts.first == L10n.tr("写入") ? "Write" : "Edit", size: 12.5, weight: .semibold); title.setContentCompressionResistancePriority(.required, for: .horizontal)
                 let header = NSStackView(views: [title, open, NSView()]); header.spacing = 4; header.alignment = .centerY
                 var views: [NSView] = [header]
                 if !item.diff.isEmpty {
@@ -374,7 +374,7 @@ final class AgentChatView: NSView {
             let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
             let line = NSStackView(views: [spacer, bubble]); line.alignment = .top
             spacer.widthAnchor.constraint(greaterThanOrEqualTo: line.widthAnchor, multiplier: 0.12).isActive = true
-            bubble.setAccessibilityLabel("你：\(text)"); return line
+            bubble.setAccessibilityLabel(L10n.tr("你：\(text)")); return line
         case .status(let text, let failed):
             return wrapped(plain(text, size: 11.5, color: failed ? Theme.red : Theme.faint), selectable: failed)
         case .item(let item):
@@ -386,10 +386,10 @@ final class AgentChatView: NSView {
                 let line = NSStackView(views: [statusIcon(item.status, symbol: item.kind == .webSearch ? "magnifyingglass" : "wrench.and.screwdriver"), wrapped(plain(item.text, size: 12, color: Theme.soft))]); line.spacing = 7; line.alignment = .firstBaseline
                 return card(line)
             case .todo:
-                let title = NSStackView(views: [statusIcon(item.status, symbol: "checklist"), Theme.label("计划", size: 12, color: Theme.soft, weight: .semibold)]); title.spacing = 7
+                let title = NSStackView(views: [statusIcon(item.status, symbol: "checklist"), Theme.label(L10n.tr("计划"), size: 12, color: Theme.soft, weight: .semibold)]); title.spacing = 7
                 return card(column([title, wrapped(plain(item.detail, size: 12.5))]))
             case .fileChange:
-                let title = NSStackView(views: [statusIcon(item.status, symbol: "doc.badge.gearshape"), Theme.label("修改了 \(item.text)", size: 12, color: Theme.soft, weight: .semibold)]); title.spacing = 7
+                let title = NSStackView(views: [statusIcon(item.status, symbol: "doc.badge.gearshape"), Theme.label(L10n.tr("修改了 \(item.text)"), size: 12, color: Theme.soft, weight: .semibold)]); title.spacing = 7
                 var lines: [NSView] = [title]
                 for change in item.detail.split(separator: "\n") {
                     let parts = change.components(separatedBy: "  "); let path = parts.dropFirst().joined(separator: "  ")
@@ -406,12 +406,12 @@ final class AgentChatView: NSView {
                 let command = Theme.label(item.text.replacingOccurrences(of: "\n", with: " ⏎ "), size: 12, color: Theme.text); command.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
                 command.lineBreakMode = .byTruncatingTail; command.toolTip = item.text; command.setContentCompressionResistancePriority(.init(1), for: .horizontal)
                 var header: [NSView] = [statusIcon(item.status, symbol: "terminal"), command]
-                if let code = item.exitCode, code != 0 { header.append(Theme.label("退出码 \(code)", size: 11, color: Theme.red)) }
+                if let code = item.exitCode, code != 0 { header.append(Theme.label(L10n.tr("退出码 \(code)"), size: 11, color: Theme.red)) }
                 let output = item.detail.trimmingCharacters(in: .newlines)
                 let lines = output.isEmpty ? [] : output.components(separatedBy: "\n")
                 let open = expanded.contains(key)
                 if lines.count > 4 {
-                    let toggle = ActionButton(open ? "收起" : "\(lines.count) 行", symbol: open ? "chevron.up" : "chevron.down", style: .plain) { [weak self] in
+                    let toggle = ActionButton(open ? L10n.tr("收起") : L10n.tr("\(lines.count) 行"), symbol: open ? "chevron.up" : "chevron.down", style: .plain) { [weak self] in
                         guard let self, let entry = self.entries[key] else { return }
                         if self.expanded.contains(key) { self.expanded.remove(key) } else { self.expanded.insert(key) }
                         self.append(key, entry)

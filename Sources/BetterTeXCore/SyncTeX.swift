@@ -32,15 +32,15 @@ public enum SyncTeX {
         return SourceLocation(file: URL(fileURLWithPath: path, relativeTo: base).standardizedFileURL, line: line, column: max(0, Int(values["Column"] ?? "") ?? 0))
     }
     public static func forward(file: URL, line: Int, column: Int, pdf: URL, tools: Toolchain) throws -> PDFLocation {
-        guard let binary = tools["synctex"] else { throw BetterTeXError.message("未检测到 synctex。请在 TeX 发行版中安装 SyncTeX。") }
+        guard let binary = tools["synctex"] else { throw BetterTeXError.message(L10n.tr("未检测到 synctex。请在 TeX 发行版中安装 SyncTeX。")) }
         let result = try ProcessRunner().run(binary, ["view", "-i", "\(line):\(column):\(file.path)", "-o", pdf.path], environment: tools.environment, timeout: 10)
-        guard result.succeeded, let point = parseForward(result.output) else { throw BetterTeXError.message("该位置没有 PDF 映射。请先成功编译，并选择正文所在行。") }
+        guard result.succeeded, let point = parseForward(result.output) else { throw BetterTeXError.message(L10n.tr("该位置没有 PDF 映射。请先成功编译，并选择正文所在行。")) }
         return point
     }
     public static func inverse(page: Int, x: Double, y: Double, pdf: URL, root: URL, tools: Toolchain) throws -> SourceLocation {
-        guard let binary = tools["synctex"] else { throw BetterTeXError.message("未检测到 synctex。") }
+        guard let binary = tools["synctex"] else { throw BetterTeXError.message(L10n.tr("未检测到 synctex。")) }
         let result = try ProcessRunner().run(binary, ["edit", "-o", "\(page):\(x):\(y):\(pdf.path)"], directory: root.deletingLastPathComponent(), environment: tools.environment, timeout: 10)
-        guard result.succeeded, let location = parseInverse(result.output, directory: root.deletingLastPathComponent()) else { throw BetterTeXError.message("此处没有对应的 TeX 源码。") }
+        guard result.succeeded, let location = parseInverse(result.output, directory: root.deletingLastPathComponent()) else { throw BetterTeXError.message(L10n.tr("此处没有对应的 TeX 源码。")) }
         return location
     }
 }

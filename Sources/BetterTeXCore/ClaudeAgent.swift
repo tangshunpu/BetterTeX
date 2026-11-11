@@ -16,18 +16,18 @@ public struct ClaudeRequest {
     }
     public static func detail(for sandbox: CodexSandbox) -> String {
         switch sandbox {
-        case .readOnly: return "计划模式：只阅读和分析，不修改文件"
-        case .workspaceWrite: return "自动接受文件修改；其余操作按你的 Claude 权限设置，需要确认的会被拒绝"
-        case .fullAccess: return "跳过所有权限确认，可运行任意命令"
+        case .readOnly: return L10n.tr("计划模式：只阅读和分析，不修改文件")
+        case .workspaceWrite: return L10n.tr("自动接受文件修改；其余操作按你的 Claude 权限设置，需要确认的会被拒绝")
+        case .fullAccess: return L10n.tr("跳过所有权限确认，可运行任意命令")
         }
     }
     /// Arguments for `claude`. The prompt travels as its own argument after `--`, never through a shell.
     public func arguments() throws -> [String] {
-        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BetterTeXError.message("请输入要发给 Claude 的内容。") }
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BetterTeXError.message(L10n.tr("请输入要发给 Claude 的内容。")) }
         var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", Self.permissionMode(for: sandbox)]
         arguments += try configuration.arguments(for: .claude)
         if let session {
-            guard session.range(of: "^[A-Za-z0-9][A-Za-z0-9-]{7,63}$", options: .regularExpression) != nil else { throw BetterTeXError.message("会话 ID 无效，无法继续。") }
+            guard session.range(of: "^[A-Za-z0-9][A-Za-z0-9-]{7,63}$", options: .regularExpression) != nil else { throw BetterTeXError.message(L10n.tr("会话 ID 无效，无法继续。")) }
             arguments += ["--resume", session]
         }
         return arguments + ["--", prompt]
@@ -93,7 +93,7 @@ public final class ClaudeStream {
         case "result":
             if object["is_error"] as? Bool == true || (object["subtype"] as? String ?? "success") != "success" {
                 let message = object["result"] as? String ?? ""
-                return [.turnFailed(message.isEmpty ? "这一轮没有完成（\(object["subtype"] as? String ?? "error")）。" : message)]
+                return [.turnFailed(message.isEmpty ? L10n.tr("这一轮没有完成（\(object["subtype"] as? String ?? "error")）。") : message)]
             }
             let usage = object["usage"] as? [String: Any] ?? [:]
             let input = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].reduce(0) { $0 + (usage[$1] as? Int ?? 0) }
@@ -135,19 +135,19 @@ public final class ClaudeStream {
         switch tool {
         case "Bash": return CodexItem(id: id, kind: .command, text: string("command"), status: .running)
         case "Write":
-            return CodexItem(id: id, kind: .fileChange, text: "1 个文件", detail: "写入  \(string("file_path"))", status: .running, diff: clip(lines(string("content"), "+")))
+            return CodexItem(id: id, kind: .fileChange, text: L10n.tr("1 个文件"), detail: L10n.tr("写入  \(string("file_path"))"), status: .running, diff: clip(lines(string("content"), "+")))
         case "Edit":
-            return CodexItem(id: id, kind: .fileChange, text: "1 个文件", detail: "修改  \(string("file_path"))", status: .running, diff: clip(lines(string("old_string"), "-") + lines(string("new_string"), "+")))
+            return CodexItem(id: id, kind: .fileChange, text: L10n.tr("1 个文件"), detail: L10n.tr("修改  \(string("file_path"))"), status: .running, diff: clip(lines(string("old_string"), "-") + lines(string("new_string"), "+")))
         case "MultiEdit":
             let edits = (input["edits"] as? [[String: Any]] ?? []).flatMap { lines($0["old_string"] as? String ?? "", "-") + lines($0["new_string"] as? String ?? "", "+") }
-            return CodexItem(id: id, kind: .fileChange, text: "1 个文件", detail: "修改  \(string("file_path"))", status: .running, diff: clip(edits))
-        case "NotebookEdit": return CodexItem(id: id, kind: .fileChange, text: "1 个文件", detail: "修改  \(string("notebook_path"))", status: .running)
+            return CodexItem(id: id, kind: .fileChange, text: L10n.tr("1 个文件"), detail: L10n.tr("修改  \(string("file_path"))"), status: .running, diff: clip(edits))
+        case "NotebookEdit": return CodexItem(id: id, kind: .fileChange, text: L10n.tr("1 个文件"), detail: L10n.tr("修改  \(string("notebook_path"))"), status: .running)
         case "TodoWrite":
             let lines = (input["todos"] as? [[String: Any]] ?? []).map { todo -> String in
                 let state = todo["status"] as? String
                 return (state == "completed" ? "☑ " : state == "in_progress" ? "▸ " : "☐ ") + (todo["content"] as? String ?? "")
             }
-            return CodexItem(id: id, kind: .todo, text: "计划", detail: lines.joined(separator: "\n"), status: .running)
+            return CodexItem(id: id, kind: .todo, text: L10n.tr("计划"), detail: lines.joined(separator: "\n"), status: .running)
         case "WebSearch": return CodexItem(id: id, kind: .webSearch, text: string("query"), status: .running)
         case "WebFetch": return CodexItem(id: id, kind: .webSearch, text: string("url"), status: .running)
         default:
@@ -159,7 +159,7 @@ public final class ClaudeStream {
         }
     }
     static func clip(_ lines: [String], limit: Int = 200) -> String {
-        (lines.count > limit ? Array(lines.prefix(limit)) + [" … 还有 \(lines.count - limit) 行"] : lines).joined(separator: "\n")
+        (lines.count > limit ? Array(lines.prefix(limit)) + [L10n.tr(" … 还有 \(lines.count - limit) 行")] : lines).joined(separator: "\n")
     }
     /// The edit as Claude Code applied it: hunks with their surrounding context lines.
     static func patch(_ result: [String: Any]?) -> String? {
@@ -171,10 +171,10 @@ public final class ClaudeStream {
     }
     /// One short line about what a read or search returned.
     static func summary(_ result: [String: Any]?, output: String) -> String {
-        if let file = result?["file"] as? [String: Any], let count = file["numLines"] as? Int { return "\(count) 行" }
-        if let count = result?["numFiles"] as? Int { return "\(count) 个文件" }
+        if let file = result?["file"] as? [String: Any], let count = file["numLines"] as? Int { return L10n.tr("\(count) 行") }
+        if let count = result?["numFiles"] as? Int { return L10n.tr("\(count) 个文件") }
         let count = output.isEmpty ? 0 : output.components(separatedBy: "\n").count
-        return count == 0 ? "" : "\(count) 行结果"
+        return count == 0 ? "" : L10n.tr("\(count) 行结果")
     }
     /// A tool result is either a string or a list of content blocks.
     static func text(_ content: Any?) -> String {

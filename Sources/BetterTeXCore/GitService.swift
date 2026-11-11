@@ -51,13 +51,13 @@ public final class GitService {
     let tools: Toolchain
     public init(directory: URL, tools: Toolchain) { self.directory = directory; self.tools = tools }
     public func command(_ arguments: [String]) throws -> CommandResult {
-        guard let git = tools["git"] else { throw BetterTeXError.message("未检测到 Git，请安装 Xcode Command Line Tools。") }
+        guard let git = tools["git"] else { throw BetterTeXError.message(L10n.tr("未检测到 Git，请安装 Xcode Command Line Tools。")) }
         var env = tools.environment; env["GIT_TERMINAL_PROMPT"] = "0"; env["GCM_INTERACTIVE"] = "never"
         return try ProcessRunner().run(git, ["-c", "core.quotepath=false"] + arguments, directory: directory, environment: env, timeout: 60)
     }
     public func checked(_ arguments: [String]) throws -> String {
         let result = try command(arguments)
-        guard result.succeeded else { throw BetterTeXError.message(result.output.isEmpty ? "Git 操作失败（\(result.status)）。" : result.output) }
+        guard result.succeeded else { throw BetterTeXError.message(result.output.isEmpty ? L10n.tr("Git 操作失败（\(result.status)）。") : result.output) }
         return result.output
     }
     public func state() throws -> GitState {
@@ -99,7 +99,7 @@ public final class GitService {
     public func pull() throws -> String { try checked(["pull", "--ff-only"]) }
     public func push() throws -> String { try checked(["push"]) }
     public func commitAndPush(message: String, paths: [String]) throws -> String {
-        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !paths.isEmpty else { throw BetterTeXError.message("请填写提交说明并选择文件。") }
+        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !paths.isEmpty else { throw BetterTeXError.message(L10n.tr("请填写提交说明并选择文件。")) }
         let root = try checked(["rev-parse", "--show-toplevel"]).trimmingCharacters(in: .newlines)
         let existing = paths.filter { FileManager.default.fileExists(atPath: URL(fileURLWithPath: root, isDirectory: true).appendingPathComponent($0).path) }
         if !existing.isEmpty { _ = try checked(["-C", root, "add", "--"] + existing) }

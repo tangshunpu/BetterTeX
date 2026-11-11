@@ -6,6 +6,36 @@
 
 一个原生、轻量的 macOS LaTeX 工作区。Swift + AppKit + PDFKit，终端使用 [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)。没有 Electron 或常驻语言服务器；唯一的 WebView 是 Overleaf 登录窗口，登录后即关闭。界面跟随系统深浅色。
 
+## 界面语言
+
+打开 **BetterTeX → 设置…**（`⌘,`），可选择 **跟随系统 / 简体中文 / English**。默认跟随系统语言偏好；没有受支持的语言时使用英语。
+
+选择会自动保存，重新打开 BetterTeX 后生效。切换语言不会立即重建编辑器或停止终端。菜单、项目页、编辑器工具栏、PDF、Agent、Overleaf 提示与日期显示都会使用所选语言；已有项目内容、Agent 回复和外部工具输出保持原样。
+
+## 应用更新
+
+启动时会检查 GitHub Release，自动检查间隔至少 24 小时；也可随时点击 **BetterTeX → 检查更新…**，或 **设置 → 软件更新 → 检查更新…**。自动提示发现新版本时会保留当前编辑焦点；手动检查会将更新窗口置于前台。安装按钮不绑定默认回车快捷键，编辑时按回车不会误触安装。发现新版本后显示发行说明，点击 **下载并安装** 会下载 ZIP、校验文件、保存文档，然后安装并重新打开 BetterTeX。下载中可以取消；若退出时取消终端会话确认，更新会保持就绪，之后可点击 **安装并重启**。选择「稍后」或取消退出后，普通退出（含 `⌘Q`）不会安装或重新打开应用，并会删除未安装的暂存副本，下次更新需重新下载。替换或启动失败会尝试恢复上一版本。
+
+设置里可关闭自动检查，或选择是否接收 alpha / beta 预发布版本。Alpha 构建默认接收预发布版本，正式构建默认只接收正式版；仅修改「自动检查更新」不会将预发布选项固化为显式偏好。版本比较支持 `alpha.2`、`alpha.10` 与正式版之间的顺序，不会降级。
+
+应用需要位于可写的位置，推荐「应用程序」文件夹；从 DMG 或 App Translocation 中运行时，请先移动应用。自动安装要求 Release 附带匹配处理器架构的 ZIP、同名 `.zip.sig` 发布者签名和 GitHub 的 SHA-256 校验值；缺少签名或兼容包时，提示会提供下载页面，不自动安装。安装还会检查包内版本、应用标识、macOS 要求及代码签名。旧版未内置更新器，需要手动安装一次包含此功能的版本。
+
+### 发布更新包
+
+版本默认来自仓库根目录的 `VERSION`。发布时先更新该文件，或设置 `BETTERTEX_VERSION`；Release 的标签必须是同一版本（可加 `v` 前缀）。例如：
+
+```sh
+BETTERTEX_UPDATE_SIGNING_KEY="$HOME/Library/Application Support/BetterTeX/ReleaseSigning/ed25519-private.key" \
+BETTERTEX_VERSION=0.1.0-alpha.3 CONFIGURATION=release ./script/build_and_run.sh --build-only
+./script/make_dmg.sh
+```
+
+将 `dist/BetterTeX-0.1.0-alpha.3-macOS-arm64.zip`、对应的 `.zip.sig`（Intel 构建为 `x86_64`）和 DMG 一起上传到对应 GitHub Release。GitHub 上传后提供资产的 `sha256:` digest，更新器会验证它。打包会把完整版本写入 `BetterTeXReleaseVersion`；`CFBundleShortVersionString` 保留三段数字，`CFBundleVersion` 默认使用 Git 提交计数，也可通过 `BETTERTEX_BUILD_NUMBER` 覆盖。当前包采用 ad-hoc 代码签名，自动更新另外使用 Ed25519 发布者签名。应用内固定公钥 `Sources/BetterTeXCore/Resources/UpdateSigningPublicKey.txt`，在解压前验证签名；即使 GitHub Release 及其 SHA-256 字段被篡改，没有对应私钥也不能通过自动安装校验。将来若使用 Developer ID 签名，更新还必须保持同一签名团队。
+
+维护者的私钥存放于仓库外的 `~/Library/Application Support/BetterTeX/ReleaseSigning/ed25519-private.key`，权限为 `0600`。请离线备份，不要将它提交到 Git 或与 Release 一起上传。普通开发构建不需要私钥；只有显式设置 `BETTERTEX_UPDATE_SIGNING_KEY` 才生成 `.sig`，且工具会拒绝与固定公钥不匹配的私钥。不要随意重新生成密钥：旧安装只能信任已内置的公钥，丢失私钥时需要设计受信任的密钥迁移或手动安装新版。
+
+可用 `swift script/sign_update.swift sign ZIP PRIVATE_KEY PUBLIC_KEY` 单独签名，用 `verify ZIP SIGNATURE PUBLIC_KEY` 验证；签名覆盖带协议标识的 ZIP SHA-256。`generate PRIVATE_KEY PUBLIC_KEY` 仅用于新项目初始化或测试，会拒绝覆盖已有文件。构建、DMG 暂存和挂载验证均检查安装脚本、公钥、两种语言及 SwiftTerm 资源，防止漏包。若回滚也失败，更新器不会再次启动未能打开的新版，会保留旧版备份并在下次启动给出恢复路径。启动时仅清理有本应用记录、超过 24 小时、所属应用及安装助手均已退出的暂存目录；回滚备份、其他安装位置的副本和无法确认来源的目录都会保留。安装助手等待应用退出超时后，会删除尚未安装的暂存副本。
+
 ## 运行
 
 发布版本请到 [Releases](https://github.com/tangshunpu/BetterTeX/releases) 下载 `.dmg`，打开后把应用拖到「Applications」（同时提供内容相同的 `.zip`）。自行构建的应用位于 `dist/BetterTeX.app`；推荐解压 `dist/BetterTeX.zip` 后拖到「应用程序」，或用 `./script/make_dmg.sh` 生成 `dist/BetterTeX.dmg`。本地开发构建采用 ad-hoc 签名，尚未经过 Apple 公证。当前构建架构取决于本机（开发验证为 Apple Silicon）。打包脚本会额外生成 ZIP，避免 iCloud / FileProvider 给源码目录中的应用附加 FinderInfo，影响严格签名校验。
@@ -28,6 +58,9 @@ Swift 6.4 优化器在 PDFKit 高亮桥接函数上存在编译崩溃；`PDFPane
 - 编辑器上方的快速插入栏（也在「插入」菜单）提供图片、列表、编号、公式、表格、章节、粗体、斜体、引用和交叉引用；有选区时包裹选区，否则选中占位文字。图片可通过按钮（⇧⌘I）、拖入编辑器或粘贴（含截图）插入：项目外的文件会拷贝到 `figures/`，自动生成 figure 环境，并在主文档缺少时加入 `\usepackage{graphicx}`。在 `\item` 行末按回车自动续写下一条，在空 `\item` 上按回车结束列表。
 - 拖动 PDF 或 Agent 的标题栏可停靠到左侧、右侧或底部；右键标题栏或标题栏「布局」菜单也提供停靠在左侧 / 右侧 / 底部。Agent 相对整个编辑区移动，PDF 相对源码移动。位置和分栏尺寸会记住，移动与收起面板保留终端会话。「布局 → 恢复默认布局」恢复 PDF 在中间、Agent 在右的排列。
 - 自动补全：输入 `\` 加字母补全命令（含项目里用 `\newcommand` 等定义的宏，带参数的命令会补上花括号）；`\cite{` 列出 `.bib` 和 `\bibitem` 里的文献（可按作者、年份、标题筛选）；`\ref{` 等列出全项目的 `\label`；`\begin{` 补全环境并自动配上 `\end`；`\includegraphics{`、`\input{`、`\bibliography{`、`\usepackage{` 补全路径和宏包名。↑↓ 选择，↩ 或 ⇥ 确认，esc 关闭。
+- 环境模板：输入 `\begin{fig`、`\begin figure` 或 `\fig`，选中 `figure` / `\fig` 后确认，会插入包含 `\centering`、`\includegraphics`、`\caption`、注释掉的 `\label` 提示和 `\end{figure}` 的完整图片环境，光标停在图片路径内。完整输入 `\begin{figure}` 后仍可按 ⇥ / ↩ 展开。
+- 快捷模板仅提供 `\fig`、`\tbl`、`\subfig`、`\itemize`、`\enumerate`、`\description`，候选中明确标注「快捷模板」；其他环境使用 `\begin{…}` 展开，避免把 `\frame`、`\matrix` 等已有命令误改成环境。图片、表格和算法的标签提示默认注释掉，填写唯一标签并取消注释后才参与交叉引用，连续插入模板不会产生重复标签。
+- `\itemize`、`\enumerate` 会展开列表并带出首个 `\item`；`description` 带出 `\item[]`，光标停在标签内。输入 `\ite` 可选择普通 `\item` 或带标签的 `\item[]`。`table`、`tabular`、`tabularx`、`minipage`、`subfigure`、`frame` 等也提供模板；项目自定义环境支持配对展开。补全保留缩进、已有参数与结束标签，整次插入可用 ⌘Z 撤销。图片、子图、自适应表格等仍需在导言区加载相应宏包，候选列表中会提示。
 - UTF-8 文本、LaTeX 语法着色、行号、撤销、原生查找、自动缩进与中文输入法。为控制内存，单文件上限为 12 MB。
 - 停止输入约 0.9 秒自动保存，再等待约 0.6 秒启动编译；取消「自动编译」后仍然自动保存。编译工作在后台执行，持续编辑时合并后续编译请求。自动编译只在源文件、主文档或引擎确实变化时才运行，保存、文件监控和 Overleaf 同步不会各触发一遍。编译时 PDF 标题栏下方显示进度条，状态标签显示当前步骤（如「第 2 步 · 整理参考文献」）；带参考文献的文档首次编译依次是排版、BibTeX / Biber、再排版两遍，属于同一次编译。0.3 秒内结束的编译不显示忙碌状态，PDF 内容未变时不重新载入。
 - 外部修改通过 FSEvents 检测。干净缓冲区自动重载；未保存内容与磁盘冲突时提供明确选择，暂停自动保存与编译。

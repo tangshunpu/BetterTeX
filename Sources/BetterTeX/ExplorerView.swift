@@ -1,4 +1,5 @@
 import AppKit
+import BetterTeXCore
 
 final class FileNode: NSObject {
     let url: URL
@@ -43,7 +44,7 @@ struct OutlineItem {
             if match.range(at: 4).location != NSNotFound { items.append(OutlineItem(title: "Abstract", number: "", level: 0, line: lineNumber)); return }
             let kind = ns.substring(with: match.range(at: 1)); let starred = match.range(at: 2).length > 0
             let title = ns.substring(with: match.range(at: 3)).replacingOccurrences(of: "\\\\[a-zA-Z]+\\s*|[{}]", with: "", options: .regularExpression)
-            if kind == "title" { items.append(OutlineItem(title: "标题", number: "", level: 0, line: lineNumber)); return }
+            if kind == "title" { items.append(OutlineItem(title: L10n.tr("标题"), number: "", level: 0, line: lineNumber)); return }
             let level = kind == "section" ? 0 : kind == "subsection" ? 1 : 2
             var number = ""
             if !starred {
@@ -93,7 +94,7 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
     let outline = NSOutlineView()
     private let outlineStack = NSStackView()
     private let outlineCard = Chip(fill: Theme.fillSoft, radius: 10)
-    private let outlineTitle = Theme.label("大纲", size: 12, color: Theme.muted, weight: .semibold)
+    private let outlineTitle = Theme.label(L10n.tr("大纲"), size: 12, color: Theme.muted, weight: .semibold)
     private var outlineHeight: NSLayoutConstraint!
     private var outlineItems: [OutlineItem] = []
     private var currentOutline = -1
@@ -106,10 +107,10 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
     var onJump: ((Int) -> Void)?
     override init(frame: NSRect) {
         super.init(frame: frame); fill = Theme.sidebar; lineColor = Theme.line; trailingLine = true
-        let search = ActionButton("", symbol: "magnifyingglass") { [weak self] in self?.onSearch?() }; search.toolTip = "搜索文件  ⌘K"
-        let plus = ActionButton("", symbol: "plus", style: .accentIcon) { [weak self] in self?.onNew?() }; plus.toolTip = "新建文件  ⌘N"
-        let close = ActionButton("", symbol: "rectangle.portrait.and.arrow.right") { [weak self] in self?.onCloseProject?() }; close.toolTip = "关闭项目，回到起始页"; close.setAccessibilityLabel("关闭项目")
-        let header = NSStackView(views: [Theme.label("文件", size: 12, color: Theme.muted, weight: .semibold), NSView(), search, plus, close]); header.spacing = 2; header.alignment = .centerY
+        let search = ActionButton("", symbol: "magnifyingglass") { [weak self] in self?.onSearch?() }; search.toolTip = L10n.tr("搜索文件  ⌘K")
+        let plus = ActionButton("", symbol: "plus", style: .accentIcon) { [weak self] in self?.onNew?() }; plus.toolTip = L10n.tr("新建文件  ⌘N")
+        let close = ActionButton("", symbol: "rectangle.portrait.and.arrow.right") { [weak self] in self?.onCloseProject?() }; close.toolTip = L10n.tr("关闭项目，回到起始页"); close.setAccessibilityLabel(L10n.tr("关闭项目"))
+        let header = NSStackView(views: [Theme.label(L10n.tr("文件"), size: 12, color: Theme.muted, weight: .semibold), NSView(), search, plus, close]); header.spacing = 2; header.alignment = .centerY
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("files")); outline.addTableColumn(column); outline.outlineTableColumn = column
         outline.headerView = nil; outline.rowHeight = 32; outline.indentationPerLevel = 16; outline.intercellSpacing = NSSize(width: 0, height: 2)
@@ -188,7 +189,7 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
             let title = Theme.label(item.title, size: 13, color: current ? Theme.text : Theme.soft, weight: current ? .medium : .regular)
             title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             title.setContentHuggingPriority(.init(1), for: .horizontal)
-            let badge = Theme.label("当前", size: 11.5, color: Theme.accent); badge.isHidden = !current
+            let badge = Theme.label(L10n.tr("当前"), size: 11.5, color: Theme.accent); badge.isHidden = !current
             badge.setContentCompressionResistancePriority(.required, for: .horizontal)
             let content = NSStackView(views: [dot, number, title, badge]); content.spacing = 8; content.alignment = .centerY
             content.setCustomSpacing(10 + CGFloat(item.level) * 12, after: dot)
@@ -231,11 +232,11 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         if outline.item(atRow: outline.clickedRow) is FileNode {
-            let finder = NSMenuItem(title: "在访达中显示", action: #selector(showInFinder), keyEquivalent: ""); finder.target = self; menu.addItem(finder)
-            let copy = NSMenuItem(title: "拷贝路径", action: #selector(copyPath), keyEquivalent: ""); copy.target = self; menu.addItem(copy)
+            let finder = NSMenuItem(title: L10n.tr("在访达中显示"), action: #selector(showInFinder), keyEquivalent: ""); finder.target = self; menu.addItem(finder)
+            let copy = NSMenuItem(title: L10n.tr("拷贝路径"), action: #selector(copyPath), keyEquivalent: ""); copy.target = self; menu.addItem(copy)
             menu.addItem(.separator())
         }
-        let new = NSMenuItem(title: "新建文件…", action: #selector(newFile), keyEquivalent: ""); new.target = self; menu.addItem(new)
+        let new = NSMenuItem(title: L10n.tr("新建文件…"), action: #selector(newFile), keyEquivalent: ""); new.target = self; menu.addItem(new)
     }
     private var clickedURL: URL? { (outline.item(atRow: outline.clickedRow) as? FileNode)?.url }
     @objc private func showInFinder() { if let url = clickedURL { NSWorkspace.shared.activateFileViewerSelecting([url]) } }

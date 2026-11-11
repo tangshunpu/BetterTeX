@@ -19,9 +19,9 @@ public struct BuildStage: Equatable {
     public let step: Int
     public var title: String {
         switch tool {
-        case "pdflatex", "xelatex", "lualatex", "latex", "xdvipdfmx", "dvipdfmx": return "排版 · 第 \(pass) 遍"
-        case "bibtex", "bibtex8", "bibtexu", "biber": return "整理参考文献"
-        case "makeindex", "xindy", "texindy", "makeglossaries", "bib2gls": return "生成索引"
+        case "pdflatex", "xelatex", "lualatex", "latex", "xdvipdfmx", "dvipdfmx": return L10n.tr("排版 · 第 \(pass) 遍")
+        case "bibtex", "bibtex8", "bibtexu", "biber": return L10n.tr("整理参考文献")
+        case "makeindex", "xindy", "texindy", "makeglossaries", "bib2gls": return L10n.tr("生成索引")
         default: return tool
         }
     }
@@ -87,7 +87,7 @@ public final class TeXCompiler {
         let output = directory.appendingPathComponent(".bettertex", isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let engine = TeXProject.engine(for: try String(contentsOf: root, encoding: .utf8), selected: selected)
-        guard let executable = tools[engine.executable] else { throw BetterTeXError.message("未检测到 \(engine.rawValue)。请安装 MacTeX / BasicTeX，或选择已安装的引擎。") }
+        guard let executable = tools[engine.executable] else { throw BetterTeXError.message(L10n.tr("未检测到 \(engine.rawValue)。请安装 MacTeX / BasicTeX，或选择已安装的引擎。")) }
         let basename = root.deletingPathExtension().lastPathComponent
         let pdf = output.appendingPathComponent(basename + ".pdf")
         var log = ""; var status: Int32 = 0
@@ -108,7 +108,7 @@ public final class TeXCompiler {
             let flag = engine == .xeLaTeX ? "-xelatex" : engine == .luaLaTeX ? "-lualatex" : "-pdf"
             try execute(latexmk, [flag, "-interaction=nonstopmode", "-halt-on-error", "-file-line-error", "-synctex=1", "-outdir=\(output.path)", root.path])
         } else {
-            if selected == .latexmk { throw BetterTeXError.message("未检测到 latexmk，请选择 Auto 或已安装的 TeX 引擎。") }
+            if selected == .latexmk { throw BetterTeXError.message(L10n.tr("未检测到 latexmk，请选择 Auto 或已安装的 TeX 引擎。")) }
             let args = ["-interaction=nonstopmode", "-halt-on-error", "-file-line-error", "-synctex=1", "-recorder", "-output-directory=\(output.path)", root.path]
             try execute(executable, args)
             if status == 0 {
@@ -117,7 +117,7 @@ public final class TeXCompiler {
                 let needsBibtex = aux.contains("\\bibdata")
                 if needsBiber || needsBibtex {
                     let name = needsBiber ? "biber" : "bibtex"
-                    guard let bib = tools[name] else { throw BetterTeXError.message("该文档需要 \(name)，但本机尚未安装。") }
+                    guard let bib = tools[name] else { throw BetterTeXError.message(L10n.tr("该文档需要 \(name)，但本机尚未安装。")) }
                     var env = tools.environment
                     env["BIBINPUTS"] = directory.path + ":" + (env["BIBINPUTS"] ?? "")
                     env["BSTINPUTS"] = directory.path + ":" + (env["BSTINPUTS"] ?? "")

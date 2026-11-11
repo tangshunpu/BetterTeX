@@ -41,7 +41,7 @@ final class BuildProgressBar: NSView {
 final class PDFPane: Surface {
     enum SyncState { case none, synced, building, failed }
     let pdfView = SyncedPDFView()
-    let header = PanelHeader("pdf", title: "PDF 预览")
+    let header = PanelHeader("pdf", title: L10n.tr("PDF 预览"))
     let empty = NSStackView()
     let autoSwitch = NSSwitch()
     var onExport: (() -> Void)?
@@ -54,7 +54,7 @@ final class PDFPane: Surface {
     /// The step a running build is on, shown in the state chip.
     var stage: String? { didSet { if stage != oldValue { let current = state; state = current } } }
     private let stateLabel = Theme.label("", size: 11.5, weight: .semibold)
-    private let autoLabel = Theme.label("自动预览", size: 12, color: Theme.muted)
+    private let autoLabel = Theme.label(L10n.tr("自动预览"), size: 12, color: Theme.muted)
     private let zoomLabel = Theme.label("100%", size: 12, weight: .medium)
     private let pageChip = Chip(fill: Theme.adaptive(0xFFFFFF, 0x3A3A3C, lightAlpha: 0.9, darkAlpha: 0.88), radius: -1, border: Theme.line)
     private let pageLabel = Theme.label("", size: 12, color: Theme.soft)
@@ -62,7 +62,7 @@ final class PDFPane: Surface {
     private var highlightPage: PDFPage?
     var state: SyncState = .none {
         didSet {
-            let (color, symbol, text): (NSColor, String, String) = state == .building ? (Theme.orange, "arrow.triangle.2.circlepath", stage ?? "编译中") : state == .failed ? (Theme.red, "exclamationmark", "编译失败") : (Theme.green, "checkmark", "已同步")
+            let (color, symbol, text): (NSColor, String, String) = state == .building ? (Theme.orange, "arrow.triangle.2.circlepath", stage ?? L10n.tr("编译中")) : state == .failed ? (Theme.red, "exclamationmark", L10n.tr("编译失败")) : (Theme.green, "checkmark", L10n.tr("已同步"))
             stateChip.isHidden = state == .none; stateChip.fill = color.withAlphaComponent(0.16)
             stateIcon.image = Theme.symbol(symbol, size: 9, weight: .bold); stateIcon.contentTintColor = color
             stateLabel.stringValue = text; stateLabel.textColor = color
@@ -78,21 +78,21 @@ final class PDFPane: Surface {
         stateChip.size(nil, 22); stateChip.pinRow(stateRow, leading: 8, trailing: 8)
         stateChip.setContentCompressionResistancePriority(.required, for: .horizontal)
         autoSwitch.controlSize = .mini; autoSwitch.state = .on; autoSwitch.target = self; autoSwitch.action = #selector(autoChanged)
-        autoSwitch.toolTip = "停止输入后自动保存并编译"; autoSwitch.setAccessibilityLabel("自动预览")
-        let zoomOut = ActionButton("", symbol: "minus") { [weak self] in self?.pdfView.zoomOut(nil) }; zoomOut.toolTip = "缩小"
-        let zoomIn = ActionButton("", symbol: "plus") { [weak self] in self?.pdfView.zoomIn(nil) }; zoomIn.toolTip = "放大"
+        autoSwitch.toolTip = L10n.tr("停止输入后自动保存并编译"); autoSwitch.setAccessibilityLabel(L10n.tr("自动预览"))
+        let zoomOut = ActionButton("", symbol: "minus") { [weak self] in self?.pdfView.zoomOut(nil) }; zoomOut.toolTip = L10n.tr("缩小")
+        let zoomIn = ActionButton("", symbol: "plus") { [weak self] in self?.pdfView.zoomIn(nil) }; zoomIn.toolTip = L10n.tr("放大")
         zoomOut.contentTintColor = Theme.text; zoomIn.contentTintColor = Theme.text
         zoomLabel.alignment = .center; zoomLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium); zoomLabel.size(44, nil)
-        zoomLabel.toolTip = "点按以适合窗口"
+        zoomLabel.toolTip = L10n.tr("点按以适合窗口")
         zoomLabel.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(fitWindow)))
         let zoomRow = NSStackView(views: [zoomOut, Theme.divider(height: 16), zoomLabel, Theme.divider(height: 16), zoomIn]); zoomRow.spacing = 0; zoomRow.alignment = .centerY
         let zoom = Chip(fill: Theme.fill, radius: 8); zoom.size(nil, 30); zoom.pin(zoomRow)
-        let export = ActionButton("", symbol: "arrow.down.to.line", style: .accentIcon) { [weak self] in self?.onExport?() }; export.toolTip = "导出 PDF…"
+        let export = ActionButton("", symbol: "arrow.down.to.line", style: .accentIcon) { [weak self] in self?.onExport?() }; export.toolTip = L10n.tr("导出 PDF…")
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         for view in [stateChip, spacer, autoLabel, autoSwitch, Theme.divider(), zoom, export] { header.addControl(view) }
         header.menuActions = [
-            ("适合窗口", "arrow.up.left.and.arrow.down.right", { [weak self] in self?.pdfView.autoScales = true }),
-            ("导出 PDF…", "arrow.down.to.line", { [weak self] in self?.onExport?() })
+            (L10n.tr("适合窗口"), "arrow.up.left.and.arrow.down.right", { [weak self] in self?.pdfView.autoScales = true }),
+            (L10n.tr("导出 PDF…"), "arrow.down.to.line", { [weak self] in self?.onExport?() })
         ]
         state = .none
 
@@ -109,9 +109,9 @@ final class PDFPane: Surface {
         NSLayoutConstraint.activate([icon.centerXAnchor.constraint(equalTo: tile.centerXAnchor), icon.centerYAnchor.constraint(equalTo: tile.centerYAnchor)])
         empty.orientation = .vertical; empty.spacing = 6; empty.alignment = .centerX
         empty.addArrangedSubview(tile); empty.setCustomSpacing(14, after: tile)
-        empty.addArrangedSubview(Theme.label("尚无 PDF", size: 20, weight: .bold))
-        empty.addArrangedSubview(Theme.label("编译后，PDF 会在这里实时呈现", size: 13, color: Theme.muted))
-        let shortcuts = Theme.label("⌘↩ 编译  ·  ⌘ 点击双向定位", size: 11.5, color: Theme.muted)
+        empty.addArrangedSubview(Theme.label(L10n.tr("尚无 PDF"), size: 20, weight: .bold))
+        empty.addArrangedSubview(Theme.label(L10n.tr("编译后，PDF 会在这里实时呈现"), size: 13, color: Theme.muted))
+        let shortcuts = Theme.label(L10n.tr("⌘↩ 编译  ·  ⌘ 点击双向定位"), size: 11.5, color: Theme.muted)
         empty.setCustomSpacing(12, after: empty.arrangedSubviews.last!); empty.addArrangedSubview(shortcuts)
         pageLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         pageChip.size(nil, 26); pageChip.pinRow(pageLabel, leading: 12, trailing: 12); pageChip.isHidden = true
@@ -159,7 +159,7 @@ final class PDFPane: Surface {
     func clear() { loadedData = nil; pdfView.document = nil; empty.isHidden = false; pageChip.isHidden = true; state = .none }
     @objc func pageChanged() {
         guard let doc = pdfView.document, let page = pdfView.currentPage else { return }
-        pageLabel.stringValue = "第 \(doc.index(for: page) + 1) 页，共 \(doc.pageCount) 页"; pageChip.isHidden = false
+        pageLabel.stringValue = L10n.tr("第 \(doc.index(for: page) + 1) 页，共 \(doc.pageCount) 页"); pageChip.isHidden = false
     }
     // Swift 6.4's constant-propagation pass crashes on this PDFKit annotation bridge.
     // Limit the workaround to this infrequent UI action; keep the app optimized.

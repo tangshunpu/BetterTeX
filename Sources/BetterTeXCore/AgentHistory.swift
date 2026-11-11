@@ -24,7 +24,7 @@ public enum AgentHistory {
 
     /// Arguments that reopen a session; the id is validated because it reaches the command line.
     public static func resumeArguments(for session: AgentSession) throws -> [String] {
-        guard session.id.range(of: "^[A-Za-z0-9][A-Za-z0-9-]{7,63}$", options: .regularExpression) != nil else { throw BetterTeXError.message("会话 ID 无效，无法恢复。") }
+        guard session.id.range(of: "^[A-Za-z0-9][A-Za-z0-9-]{7,63}$", options: .regularExpression) != nil else { throw BetterTeXError.message(L10n.tr("会话 ID 无效，无法恢复。")) }
         switch session.provider {
         case .codex: return ["resume", session.id]
         case .claude: return ["--resume", session.id]
@@ -103,7 +103,7 @@ public enum AgentHistory {
             if id != nil, title != nil { break }
         }
         guard let id, let cwd else { return nil }
-        return (id, cwd, title ?? "未命名会话")
+        return (id, cwd, title ?? L10n.tr("未命名会话"))
     }
 
     // MARK: Helpers

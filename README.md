@@ -23,7 +23,7 @@ Write, compile and preview in one window — with Overleaf sync and your coding 
 
 | | |
 | --- | --- |
-| ✍️ **Editor** | Syntax colouring, outline, and completion for commands, citations, labels and paths |
+| ✍️ **Editor** | Syntax colouring, outline, command / citation / path completion, and full figure, table and list templates with matching `\end` |
 | ⚡ **Live preview** | Auto-compile with latexmk, pdfLaTeX, XeLaTeX or LuaLaTeX; SyncTeX in both directions |
 | 🗂️ **Project home** | Local and Overleaf projects in one searchable list — click to open |
 | 🍃 **Overleaf sync** | Real-time or interval sync, collaborator cursors, comments |
@@ -31,6 +31,8 @@ Write, compile and preview in one window — with Overleaf sync and your coding 
 | 🔀 **Git** | Pull, commit and push without leaving the window |
 | 🖼️ **Quick insert** | Drop or paste an image and get a ready-made `figure` |
 | 🪶 **Native** | Swift + AppKit + PDFKit. No Electron |
+| 🌐 **Languages** | English and Simplified Chinese; choose System Default or a language in **BetterTeX → Settings…** (`⌘,`), then reopen the app |
+| ⬇️ **Updates** | GitHub Release notices preserve editor focus; choose to download, verify the publisher's Ed25519 signature, install and restart. Automatic checks and prerelease options are in Settings |
 
 ## Project home & sign-in
 
@@ -61,7 +63,7 @@ git clone https://github.com/tangshunpu/BetterTeX.git && cd BetterTeX
 
 ## Good to know
 
-- **Alpha.** Expect rough edges. The interface is currently in Simplified Chinese.
+- **Alpha.** Expect rough edges. English and Simplified Chinese interfaces are available.
 - **Your accounts stay yours.** Agents run through your own CLIs, and Overleaf keeps only a session cookie — BetterTeX never sees a password or API key.
 - **Overleaf has no public API.** Sync uses the endpoints of Overleaf's own editor and may need updates when Overleaf changes.
 

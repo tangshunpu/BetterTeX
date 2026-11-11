@@ -126,17 +126,17 @@ final class OverleafController {
     /// Forgets the saved session without touching the open project's link.
     @MainActor func forgetSession() async { teardown(); client = nil; await OverleafLogin.clear(host: host); set(link == nil ? .idle : .signedOut) }
     func signIn() {
-        run("登录", alert: true) { [self] in
+        run(L10n.tr("登录"), alert: true) { [self] in
             _ = try await withLogin { try await $0.projects() }
-            workspace.setStatus("已登录 Overleaf")
+            workspace.setStatus(L10n.tr("已登录 Overleaf"))
             if link != nil { connect() } else { refreshChip() }
         }
     }
     func signOut() {
-        run("退出登录") { [self] in
+        run(L10n.tr("退出登录")) { [self] in
             teardown(); client = nil
             await OverleafLogin.clear(host: host)
-            set(link == nil ? .idle : .signedOut); workspace.setStatus("已退出 Overleaf 登录")
+            set(link == nil ? .idle : .signedOut); workspace.setStatus(L10n.tr("已退出 Overleaf 登录"))
         }
     }
 
@@ -165,19 +165,19 @@ final class OverleafController {
     private func set(_ status: Status) { self.status = status; refreshChip() }
     private func refreshChip() {
         let others = presence.values.filter { $0.clientID != publicID }.sorted { $0.name < $1.name }
-        guard let link else { ui.overleaf.set(title: "Overleaf", color: nil, people: [], tip: "导入、上传或同步 Overleaf 项目"); return }
+        guard let link else { ui.overleaf.set(title: "Overleaf", color: nil, people: [], tip: L10n.tr("导入、上传或同步 Overleaf 项目")); return }
         let title: String, color: NSColor, tip: String
         switch status {
-        case .signedOut: (title, color, tip) = ("未登录", Theme.orange, "点击登录 Overleaf 以继续同步")
-        case .connecting: (title, color, tip) = ("连接中", Theme.orange, "正在连接 Overleaf…")
-        case .syncing: (title, color, tip) = ("同步中", Theme.orange, "正在与 Overleaf 同步…")
-        case .offline(let reason): (title, color, tip) = ("离线", Theme.red, "未连接 Overleaf：\(reason)")
+        case .signedOut: (title, color, tip) = (L10n.tr("未登录"), Theme.orange, L10n.tr("点击登录 Overleaf 以继续同步"))
+        case .connecting: (title, color, tip) = (L10n.tr("连接中"), Theme.orange, L10n.tr("正在连接 Overleaf…"))
+        case .syncing: (title, color, tip) = (L10n.tr("同步中"), Theme.orange, L10n.tr("正在与 Overleaf 同步…"))
+        case .offline(let reason): (title, color, tip) = (L10n.tr("离线"), Theme.red, L10n.tr("未连接 Overleaf：\(reason)"))
         case .idle, .online:
-            if conflicts > 0 { (title, color, tip) = ("\(conflicts) 个冲突", Theme.red, "有文件同时在本地和 Overleaf 被修改，请处理冲突标记后再同步") }
+            if conflicts > 0 { (title, color, tip) = (L10n.tr("\(conflicts) 个冲突"), Theme.red, L10n.tr("有文件同时在本地和 Overleaf 被修改，请处理冲突标记后再同步")) }
             else {
-                let mode = link.mode == .realtime ? "实时同步" : link.mode == .interval ? "每 \(link.intervalMinutes) 分钟同步" : "手动同步"
-                let last = link.lastSync.map { " · 上次同步 " + $0.formatted(date: .omitted, time: .shortened) } ?? ""
-                (title, color, tip) = (link.mode == .realtime ? "实时" : "已连接", Theme.green, "\(link.name) · \(mode)\(last)" + (canWrite ? "" : " · 只读"))
+                let mode = link.mode == .realtime ? L10n.tr("实时同步") : link.mode == .interval ? L10n.tr("每 \(link.intervalMinutes) 分钟同步") : L10n.tr("手动同步")
+                let last = link.lastSync.map { L10n.tr(" · 上次同步 ") + $0.formatted(.dateTime.hour().minute().locale(L10n.locale)) } ?? ""
+                (title, color, tip) = (link.mode == .realtime ? L10n.tr("实时") : L10n.tr("已连接"), Theme.green, "\(link.name) · \(mode)\(last)" + (canWrite ? "" : L10n.tr(" · 只读")))
             }
         }
         ui.overleaf.set(title: title, color: color, people: others, tip: tip)
@@ -199,7 +199,7 @@ final class OverleafController {
                 guard self.generation == token, self.socket == nil else { created.close(); return }
                 self.socket = created
                 // The server answers the connection with `joinProjectResponse`.
-                self.after("join", 20) { [weak self] in if self?.tree == nil { self?.disconnected("加入项目超时") } }
+                self.after("join", 20) { [weak self] in if self?.tree == nil { self?.disconnected(L10n.tr("加入项目超时")) } }
             } catch {
                 guard self.generation == token else { return }
                 if case OverleafError.notLoggedIn = error { self.client = nil; self.set(.signedOut) }
@@ -222,7 +222,7 @@ final class OverleafController {
         func object(_ index: Int) -> [String: Any]? { args.indices.contains(index) ? args[index] as? [String: Any] : nil }
         switch name {
         case "joinProjectResponse":
-            guard let response = object(0), let projectJSON = response["project"] as? [String: Any], let parsed = OverleafTree(project: projectJSON) else { disconnected("无法读取项目结构"); return }
+            guard let response = object(0), let projectJSON = response["project"] as? [String: Any], let parsed = OverleafTree(project: projectJSON) else { disconnected(L10n.tr("无法读取项目结构")); return }
             jobs["join"]?.cancel(); tree = parsed; retries = 0
             publicID = response["publicId"] as? String ?? ""; permissions = response["permissionsLevel"] as? String ?? ""
             if let name = projectJSON["name"] as? String, name != link?.name { link?.name = name; saveLink() }
@@ -236,12 +236,12 @@ final class OverleafController {
             refreshThreads(); attachActiveDoc(); schedule()
             if link?.mode != .manual { requestSync(after: 0.5) }
         case "connectionRejected":
-            let message = object(0)?["message"] as? String ?? "连接被拒绝"
+            let message = object(0)?["message"] as? String ?? L10n.tr("连接被拒绝")
             socket?.close(); socket = nil
             if message.contains("session") || message.contains("not authorized") { client = nil; set(.signedOut) } else { disconnected(message) }
         case "project:access:revoked":
-            socket?.close(); socket = nil; tree = nil; live = nil; set(.offline("你对该项目的访问权限已被移除"))
-        case "forceDisconnect", "reconnectGracefully": disconnected("服务器要求重新连接")
+            socket?.close(); socket = nil; tree = nil; live = nil; set(.offline(L10n.tr("你对该项目的访问权限已被移除")))
+        case "forceDisconnect", "reconnectGracefully": disconnected(L10n.tr("服务器要求重新连接"))
         case "clientTracking.clientUpdated":
             if let json = object(0), let person = OverleafPresence(json: json) { presence[person.clientID] = person; refreshOverlays(); refreshChip() }
         case "clientTracking.clientDisconnected":
@@ -295,10 +295,10 @@ final class OverleafController {
     func sync(userInitiated: Bool) {
         guard link != nil, project != nil else { return }
         if syncing { syncQueued = true; return }
-        guard socket != nil, tree != nil else { if userInitiated { workspace.setStatus("正在连接 Overleaf，连接后自动同步"); retries = 0; connect() }; return }
+        guard socket != nil, tree != nil else { if userInitiated { workspace.setStatus(L10n.tr("正在连接 Overleaf，连接后自动同步")); retries = 0; connect() }; return }
         guard workspace.saveAll() else { return }
         syncing = true; let token = generation
-        run("同步失败", alert: userInitiated) { [self] in
+        run(L10n.tr("同步失败"), alert: userInitiated) { [self] in
             defer { if generation == token { syncing = false; set(socket == nil ? status : .online); if syncQueued { syncQueued = false; requestSync(after: 1) } } }
             set(.syncing)
             try await performSync(token: token, interactive: userInitiated)
@@ -323,7 +323,7 @@ final class OverleafController {
             try data.write(to: localURL(path), options: .atomic)
         }
         func push(_ path: String, _ data: Data) async throws -> Bool {
-            guard canWrite else { notes.append("只读权限，未上传 \(path)"); return false }
+            guard canWrite else { notes.append(L10n.tr("只读权限，未上传 \(path)")); return false }
             if let text = String(data: data, encoding: .utf8), OverleafFiles.isText(path: path, data: data), Merge3.hasMarkers(text) { unresolved += 1; return false }
             try await client.upload(projectID: projectID, rootFolderID: rootID, path: path, data: data); return true
         }
@@ -353,7 +353,7 @@ final class OverleafController {
                     let data = Data(result.text.utf8)
                     try write(data, to: path)
                     if result.conflicts == 0 { if try await push(path, data) { link.setBase(project: project, path: path, data: data); merged += 1 } }
-                    else { link.setBase(project: project, path: path, data: theirs); unresolved += 1; marked += 1; notes.append("\(path) 有 \(result.conflicts) 处冲突，已写入冲突标记") }
+                    else { link.setBase(project: project, path: path, data: theirs); unresolved += 1; marked += 1; notes.append(L10n.tr("\(path) 有 \(result.conflicts) 处冲突，已写入冲突标记")) }
                 case .deleteLocal(let path):
                     if isDirty(path) { continue }
                     try manager.trashItem(at: localURL(path), resultingItemURL: nil); link.setBase(project: project, path: path, data: nil); down += 1
@@ -363,9 +363,9 @@ final class OverleafController {
             catch { notes.append("\(action.path)：\(error.localizedDescription)") }
         }
         if !removals.isEmpty, canWrite {
-            let alert = NSAlert(); alert.messageText = "从 Overleaf 删除 \(removals.count) 个文件？"
-            alert.informativeText = "这些文件已在本地删除，Overleaf 上仍然存在：\n\n" + removals.prefix(12).joined(separator: "\n") + (removals.count > 12 ? "\n…" : "") + "\n\n删除后协作者也将看不到它们（可在 Overleaf 历史记录中找回）。"
-            alert.addButton(withTitle: "恢复到本地"); alert.addButton(withTitle: "从 Overleaf 删除"); alert.addButton(withTitle: "暂不处理")
+            let alert = NSAlert(); alert.messageText = L10n.tr("从 Overleaf 删除 \(removals.count) 个文件？")
+            alert.informativeText = L10n.tr("这些文件已在本地删除，Overleaf 上仍然存在：\n\n") + removals.prefix(12).joined(separator: "\n") + (removals.count > 12 ? "\n…" : "") + L10n.tr("\n\n删除后协作者也将看不到它们（可在 Overleaf 历史记录中找回）。")
+            alert.addButton(withTitle: L10n.tr("恢复到本地")); alert.addButton(withTitle: L10n.tr("从 Overleaf 删除")); alert.addButton(withTitle: L10n.tr("暂不处理"))
             let choice = alert.runModal()
             for path in removals {
                 do {
@@ -380,10 +380,10 @@ final class OverleafController {
         guard generation == token else { return }
         link.lastSync = Date(); link.mode = self.link?.mode ?? link.mode; link.intervalMinutes = self.link?.intervalMinutes ?? link.intervalMinutes
         self.link = link; try link.save(project: project); conflicts = unresolved
-        if !notes.isEmpty { ui.terminal.append("\nOverleaf 同步\n" + notes.joined(separator: "\n") + "\n") }
+        if !notes.isEmpty { ui.terminal.append(L10n.tr("\nOverleaf 同步\n") + notes.joined(separator: "\n") + "\n") }
         if down + merged + marked > 0 { workspace.externalChanges() }
-        let parts = [down > 0 ? "↓\(down)" : nil, up > 0 ? "↑\(up)" : nil, merged > 0 ? "合并 \(merged)" : nil, unresolved > 0 ? "\(unresolved) 个冲突待处理" : nil].compactMap { $0 }
-        if !parts.isEmpty || interactive { workspace.setStatus("Overleaf 同步完成" + (parts.isEmpty ? " · 已是最新" : " · " + parts.joined(separator: " "))) }
+        let parts = [down > 0 ? "↓\(down)" : nil, up > 0 ? "↑\(up)" : nil, merged > 0 ? L10n.tr("合并 \(merged)") : nil, unresolved > 0 ? L10n.tr("\(unresolved) 个冲突待处理") : nil].compactMap { $0 }
+        if !parts.isEmpty || interactive { workspace.setStatus(L10n.tr("Overleaf 同步完成") + (parts.isEmpty ? L10n.tr(" · 已是最新") : " · " + parts.joined(separator: " "))) }
         if unresolved > 0, interactive { ui.showOutput() }
     }
 
@@ -514,14 +514,14 @@ final class OverleafController {
     }
     private func reply(thread: String, text: String) {
         guard let link else { return }
-        run("回复评论", alert: true) { [self] in
+        run(L10n.tr("回复评论"), alert: true) { [self] in
             try await withLogin { try await $0.reply(projectID: link.projectID, thread: thread, content: text) }
             refreshThreads()
         }
     }
     private func resolve(thread: String) {
         guard let link, let doc = live?.docID else { return }
-        run("解决评论", alert: true) { [self] in
+        run(L10n.tr("解决评论"), alert: true) { [self] in
             try await withLogin { try await $0.setResolved(true, projectID: link.projectID, docID: doc, thread: thread) }
             threads[thread]?.resolved = true; refreshOverlays()
         }
@@ -529,12 +529,12 @@ final class OverleafController {
     private func addComment(_ text: String) {
         guard let link, let live, canWrite, let buffer = workspace.active, buffer.url == live.url else { return }
         let selection = ui.editor.textView.selectedRange(), content = buffer.text as NSString
-        guard selection.length > 0, NSMaxRange(selection) <= content.length else { workspace.setStatus("请先在编辑器中选中要评论的文字"); return }
-        guard live.inflight == nil, !live.needsResync, buffer.text == live.shadow else { flush(); workspace.setStatus("正在同步刚才的修改，请稍后再添加评论"); return }
+        guard selection.length > 0, NSMaxRange(selection) <= content.length else { workspace.setStatus(L10n.tr("请先在编辑器中选中要评论的文字")); return }
+        guard live.inflight == nil, !live.needsResync, buffer.text == live.shadow else { flush(); workspace.setStatus(L10n.tr("正在同步刚才的修改，请稍后再添加评论")); return }
         let thread = OverleafText.newObjectID(), quoted = content.substring(with: selection)
-        run("添加评论", alert: true) { [self] in
+        run(L10n.tr("添加评论"), alert: true) { [self] in
             try await withLogin { try await $0.reply(projectID: link.projectID, thread: thread, content: text) }
-            guard self.live === live, live.inflight == nil, buffer.text == live.shadow else { throw OverleafError.message("文档在提交评论时发生了变化，请重试。") }
+            guard self.live === live, live.inflight == nil, buffer.text == live.shadow else { throw OverleafError.message(L10n.tr("文档在提交评论时发生了变化，请重试。")) }
             send([TextOp(.comment, at: selection.location, quoted, thread: thread)], live)
             refreshThreads()
         }
@@ -548,7 +548,7 @@ final class OverleafController {
         }
         model.comments = openComments().compactMap { item in threads[item.range.thread].map { .init(thread: $0, quote: item.range.text, offset: item.offset) } }
         model.canComment = live != nil && canWrite
-        model.commentHint = live == nil ? (link?.mode == .realtime ? "当前文件不是 Overleaf 文档，或尚未连接。" : "切换到实时同步后可查看和回复评论。") : "这个文件还没有未解决的评论。"
+        model.commentHint = live == nil ? (link?.mode == .realtime ? L10n.tr("当前文件不是 Overleaf 文档，或尚未连接。") : L10n.tr("切换到实时同步后可查看和回复评论。")) : L10n.tr("这个文件还没有未解决的评论。")
         return model
     }
 
@@ -557,29 +557,29 @@ final class OverleafController {
         let menu = NSMenu(); menu.autoenablesItems = false
         if let link {
             let header = NSMenuItem(title: link.name, action: nil, keyEquivalent: ""); header.isEnabled = false; menu.addItem(header)
-            if case .signedOut = status { menu.addItem(ClosureMenuItem("登录 Overleaf…", symbol: "person.crop.circle") { [weak self] in self?.signIn() }) }
-            menu.addItem(ClosureMenuItem("立即同步", symbol: "arrow.triangle.2.circlepath") { [weak self] in self?.sync(userInitiated: true) })
-            menu.addItem(ClosureMenuItem("协作者与评论", symbol: "bubble.left.and.bubble.right") { [weak self] in self?.showPanel(from: view) })
-            menu.addItem(ClosureMenuItem("邀请合作者…", symbol: "person.badge.plus") { [weak self] in self?.invite() })
+            if case .signedOut = status { menu.addItem(ClosureMenuItem(L10n.tr("登录 Overleaf…"), symbol: "person.crop.circle") { [weak self] in self?.signIn() }) }
+            menu.addItem(ClosureMenuItem(L10n.tr("立即同步"), symbol: "arrow.triangle.2.circlepath") { [weak self] in self?.sync(userInitiated: true) })
+            menu.addItem(ClosureMenuItem(L10n.tr("协作者与评论"), symbol: "bubble.left.and.bubble.right") { [weak self] in self?.showPanel(from: view) })
+            menu.addItem(ClosureMenuItem(L10n.tr("邀请合作者…"), symbol: "person.badge.plus") { [weak self] in self?.invite() })
             menu.addItem(.separator())
             let modes = NSMenu()
-            modes.addItem(ClosureMenuItem("实时同步", checked: link.mode == .realtime) { [weak self] in self?.setMode(.realtime, minutes: link.intervalMinutes) })
+            modes.addItem(ClosureMenuItem(L10n.tr("实时同步"), checked: link.mode == .realtime) { [weak self] in self?.setMode(.realtime, minutes: link.intervalMinutes) })
             for minutes in [1, 5, 15, 60] {
-                modes.addItem(ClosureMenuItem(minutes == 60 ? "每小时" : "每 \(minutes) 分钟", checked: link.mode == .interval && link.intervalMinutes == minutes) { [weak self] in self?.setMode(.interval, minutes: minutes) })
+                modes.addItem(ClosureMenuItem(minutes == 60 ? L10n.tr("每小时") : L10n.tr("每 \(minutes) 分钟"), checked: link.mode == .interval && link.intervalMinutes == minutes) { [weak self] in self?.setMode(.interval, minutes: minutes) })
             }
-            modes.addItem(ClosureMenuItem("仅手动同步", checked: link.mode == .manual) { [weak self] in self?.setMode(.manual, minutes: link.intervalMinutes) })
-            let mode = NSMenuItem(title: "同步方式", action: nil, keyEquivalent: ""); mode.submenu = modes; mode.image = NSImage(systemSymbolName: "clock.arrow.2.circlepath", accessibilityDescription: nil); menu.addItem(mode)
-            menu.addItem(ClosureMenuItem("在浏览器中打开项目", symbol: "safari") { [weak self] in
+            modes.addItem(ClosureMenuItem(L10n.tr("仅手动同步"), checked: link.mode == .manual) { [weak self] in self?.setMode(.manual, minutes: link.intervalMinutes) })
+            let mode = NSMenuItem(title: L10n.tr("同步方式"), action: nil, keyEquivalent: ""); mode.submenu = modes; mode.image = NSImage(systemSymbolName: "clock.arrow.2.circlepath", accessibilityDescription: nil); menu.addItem(mode)
+            menu.addItem(ClosureMenuItem(L10n.tr("在浏览器中打开项目"), symbol: "safari") { [weak self] in
                 if let self, let url = URL(string: self.host.absoluteString + "/project/" + link.projectID) { NSWorkspace.shared.open(url) }
             })
             menu.addItem(.separator())
-            menu.addItem(ClosureMenuItem("取消与 Overleaf 的关联", symbol: "link.badge.plus") { [weak self] in self?.unlink() })
+            menu.addItem(ClosureMenuItem(L10n.tr("取消与 Overleaf 的关联"), symbol: "link.badge.plus") { [weak self] in self?.unlink() })
         } else {
-            menu.addItem(ClosureMenuItem("从 Overleaf 导入项目…", symbol: "square.and.arrow.down") { [weak self] in self?.importProject() })
-            menu.addItem(ClosureMenuItem("把当前项目上传到 Overleaf…", symbol: "square.and.arrow.up", enabled: project != nil) { [weak self] in self?.exportProject() })
+            menu.addItem(ClosureMenuItem(L10n.tr("从 Overleaf 导入项目…"), symbol: "square.and.arrow.down") { [weak self] in self?.importProject() })
+            menu.addItem(ClosureMenuItem(L10n.tr("把当前项目上传到 Overleaf…"), symbol: "square.and.arrow.up", enabled: project != nil) { [weak self] in self?.exportProject() })
         }
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem("退出 Overleaf 登录", symbol: "rectangle.portrait.and.arrow.right") { [weak self] in self?.signOut() })
+        menu.addItem(ClosureMenuItem(L10n.tr("退出 Overleaf 登录"), symbol: "rectangle.portrait.and.arrow.right") { [weak self] in self?.signOut() })
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 6), in: view)
     }
     private func showPanel(from view: NSView) {
@@ -594,9 +594,9 @@ final class OverleafController {
     }
     private func unlink() {
         guard let project, let link else { return }
-        let alert = NSAlert(); alert.messageText = "取消与「\(link.name)」的关联？"
-        alert.informativeText = "本地文件和 Overleaf 上的项目都会保留，只是不再同步。"
-        alert.addButton(withTitle: "取消关联"); alert.addButton(withTitle: "保留")
+        let alert = NSAlert(); alert.messageText = L10n.tr("取消与「\(link.name)」的关联？")
+        alert.informativeText = L10n.tr("本地文件和 Overleaf 上的项目都会保留，只是不再同步。")
+        alert.addButton(withTitle: L10n.tr("取消关联")); alert.addButton(withTitle: L10n.tr("保留"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         teardown(); OverleafLink.remove(project: project); self.link = nil; set(.idle)
     }
@@ -604,11 +604,11 @@ final class OverleafController {
     // MARK: Import, export, invitations
     /// Downloads an Overleaf project into a new local folder and opens it, linked.
     func importProject() {
-        run("导入失败", alert: true) { [self] in
+        run(L10n.tr("导入失败"), alert: true) { [self] in
             let projects = try await withLogin { try await $0.projects() }
-            guard let chosen = ProjectPicker.choose(projects, title: "从 Overleaf 导入项目", confirm: "导入") else { return }
+            guard let chosen = ProjectPicker.choose(projects, title: L10n.tr("从 Overleaf 导入项目"), confirm: L10n.tr("导入")) else { return }
             let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
-            panel.prompt = "导入到这里"; panel.message = "选择存放「\(chosen.name)」的位置，将在其中新建同名文件夹。"
+            panel.prompt = L10n.tr("导入到这里"); panel.message = L10n.tr("选择存放「\(chosen.name)」的位置，将在其中新建同名文件夹。")
             guard panel.runModal() == .OK, let parent = panel.url else { return }
             try await download(chosen, into: parent)
         }
@@ -620,29 +620,29 @@ final class OverleafController {
             let name = chosen.name.replacingOccurrences(of: "[/:\\\\]", with: "-", options: .regularExpression)
             var target = parent.appendingPathComponent(name, isDirectory: true); var suffix = 1
             while FileManager.default.fileExists(atPath: target.path) { suffix += 1; target = parent.appendingPathComponent("\(name) \(suffix)", isDirectory: true) }
-            workspace.setStatus("正在从 Overleaf 下载「\(chosen.name)」…")
+            workspace.setStatus(L10n.tr("正在从 Overleaf 下载「\(chosen.name)」…"))
             let archive = try await withLogin { try await $0.downloadZip(projectID: chosen.id) }
             defer { try? FileManager.default.removeItem(at: archive) }
             let files = try await background { () -> [String] in try OverleafFiles.unzip(archive, to: target); return Array(OverleafFiles.scan(target).keys) }
             var link = OverleafLink(host: host.absoluteString, projectID: chosen.id, name: chosen.name)
             for path in files { link.setBase(project: target, path: path, data: try? Data(contentsOf: target.appendingPathComponent(path))) }
             link.lastSync = Date(); try link.save(project: target)
-            guard workspace.confirmSwitch() else { workspace.setStatus("已导入到 \(target.path)"); return }
-            workspace.loadProject(target); workspace.setStatus("已从 Overleaf 导入「\(chosen.name)」")
+            guard workspace.confirmSwitch() else { workspace.setStatus(L10n.tr("已导入到 \(target.path)")); return }
+            workspace.loadProject(target); workspace.setStatus(L10n.tr("已从 Overleaf 导入「\(chosen.name)」"))
         }
     }
     /// Uploads the open folder as a new Overleaf project and keeps the two linked.
     func exportProject() {
         guard let project, link == nil else { return }
-        let alert = NSAlert(); alert.messageText = "把当前项目上传到 Overleaf"
-        alert.informativeText = "源文件会作为一个新项目上传到你的 Overleaf 账户并保持同步。隐藏文件、.bettertex 和编译产物不会上传。"
-        let name = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24)); name.stringValue = project.lastPathComponent; name.placeholderString = "Overleaf 项目名称"
-        alert.accessoryView = name; alert.addButton(withTitle: "上传"); alert.addButton(withTitle: "取消"); alert.window.initialFirstResponder = name
+        let alert = NSAlert(); alert.messageText = L10n.tr("把当前项目上传到 Overleaf")
+        alert.informativeText = L10n.tr("源文件会作为一个新项目上传到你的 Overleaf 账户并保持同步。隐藏文件、.bettertex 和编译产物不会上传。")
+        let name = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24)); name.stringValue = project.lastPathComponent; name.placeholderString = L10n.tr("Overleaf 项目名称")
+        alert.accessoryView = name; alert.addButton(withTitle: L10n.tr("上传")); alert.addButton(withTitle: L10n.tr("取消")); alert.window.initialFirstResponder = name
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let title = name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, workspace.saveAll() else { return }
-        run("上传失败", alert: true) { [self] in
-            workspace.setStatus("正在上传到 Overleaf…")
+        run(L10n.tr("上传失败"), alert: true) { [self] in
+            workspace.setStatus(L10n.tr("正在上传到 Overleaf…"))
             let archive = FileManager.default.temporaryDirectory.appendingPathComponent("BetterTeX-upload-\(UUID().uuidString).zip")
             defer { try? FileManager.default.removeItem(at: archive) }
             let files = try await background { () -> [String] in try OverleafFiles.zip(project: project, to: archive); return Array(OverleafFiles.scan(project).keys) }
@@ -651,30 +651,30 @@ final class OverleafController {
             var link = OverleafLink(host: host.absoluteString, projectID: id, name: title)
             for path in files { link.setBase(project: project, path: path, data: try? Data(contentsOf: project.appendingPathComponent(path))) }
             link.lastSync = Date(); try link.save(project: project)
-            projectChanged(); workspace.setStatus("已上传到 Overleaf「\(title)」并建立关联")
+            projectChanged(); workspace.setStatus(L10n.tr("已上传到 Overleaf「\(title)」并建立关联"))
         }
     }
     func invite() {
-        guard let link else { workspace.setStatus("请先把项目上传到 Overleaf 或从 Overleaf 导入"); return }
-        run("邀请失败", alert: true) { [self] in
+        guard let link else { workspace.setStatus(L10n.tr("请先把项目上传到 Overleaf 或从 Overleaf 导入")); return }
+        run(L10n.tr("邀请失败"), alert: true) { [self] in
             let members = (try? await withLogin { try await $0.members(projectID: link.projectID) }) ?? []
-            let roles = [("可编辑", "readAndWrite"), ("仅查看", "readOnly"), ("审阅（仅评论与修订）", "review")]
-            let labels = ["owner": "所有者", "readAndWrite": "可编辑", "readOnly": "仅查看", "review": "审阅"]
-            let alert = NSAlert(); alert.messageText = "邀请合作者加入「\(link.name)」"
+            let roles = [(L10n.tr("可编辑"), "readAndWrite"), (L10n.tr("仅查看"), "readOnly"), (L10n.tr("审阅（仅评论与修订）"), "review")]
+            let labels = ["owner": L10n.tr("所有者"), "readAndWrite": L10n.tr("可编辑"), "readOnly": L10n.tr("仅查看"), "review": L10n.tr("审阅")]
+            let alert = NSAlert(); alert.messageText = L10n.tr("邀请合作者加入「\(link.name)」")
             let current = members.map { member -> String in
                 let pending = member.role.hasPrefix("pending:"); let role = pending ? String(member.role.dropFirst(8)) : member.role
-                return "· \(member.name) — \(labels[role] ?? role)" + (pending ? "（等待接受）" : "")
+                return "· \(member.name) — \(labels[role] ?? role)" + (pending ? L10n.tr("（等待接受）") : "")
             }
-            alert.informativeText = "Overleaf 会向对方发送邀请邮件。" + (current.isEmpty ? "" : "\n\n当前成员：\n" + current.joined(separator: "\n"))
-            let email = NSTextField(frame: NSRect(x: 0, y: 30, width: 320, height: 24)); email.placeholderString = "对方的邮箱地址"
+            alert.informativeText = L10n.tr("Overleaf 会向对方发送邀请邮件。") + (current.isEmpty ? "" : L10n.tr("\n\n当前成员：\n") + current.joined(separator: "\n"))
+            let email = NSTextField(frame: NSRect(x: 0, y: 30, width: 320, height: 24)); email.placeholderString = L10n.tr("对方的邮箱地址")
             let role = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26)); role.addItems(withTitles: roles.map(\.0))
             let box = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 56)); box.addSubview(email); box.addSubview(role)
-            alert.accessoryView = box; alert.addButton(withTitle: "发送邀请"); alert.addButton(withTitle: "取消"); alert.window.initialFirstResponder = email
+            alert.accessoryView = box; alert.addButton(withTitle: L10n.tr("发送邀请")); alert.addButton(withTitle: L10n.tr("取消")); alert.window.initialFirstResponder = email
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             let address = email.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard address.contains("@") else { throw OverleafError.message("请输入有效的邮箱地址。") }
+            guard address.contains("@") else { throw OverleafError.message(L10n.tr("请输入有效的邮箱地址。")) }
             try await withLogin { try await $0.invite(projectID: link.projectID, email: address, privileges: roles[max(0, role.indexOfSelectedItem)].1) }
-            workspace.setStatus("已向 \(address) 发送 Overleaf 邀请")
+            workspace.setStatus(L10n.tr("已向 \(address) 发送 Overleaf 邀请"))
         }
     }
 }

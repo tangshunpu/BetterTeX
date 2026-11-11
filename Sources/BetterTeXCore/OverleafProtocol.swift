@@ -150,11 +150,11 @@ public enum OverleafText {
         for op in ops {
             switch op.kind {
             case .insert:
-                guard op.position <= result.length else { throw BetterTeXError.message("Overleaf 更新与本地副本不一致。") }
+                guard op.position <= result.length else { throw BetterTeXError.message(L10n.tr("Overleaf 更新与本地副本不一致。")) }
                 result.insert(op.text, at: op.position)
             case .delete:
                 let range = NSRange(location: op.position, length: op.length)
-                guard NSMaxRange(range) <= result.length, result.substring(with: range) == op.text else { throw BetterTeXError.message("Overleaf 更新与本地副本不一致。") }
+                guard NSMaxRange(range) <= result.length, result.substring(with: range) == op.text else { throw BetterTeXError.message(L10n.tr("Overleaf 更新与本地副本不一致。")) }
                 result.deleteCharacters(in: range)
             case .comment: break
             }
@@ -261,7 +261,7 @@ public struct OverleafPresence: Equatable {
         clientID = id; userID = json["user_id"] as? String ?? ""
         email = json["email"] as? String ?? ""
         let full = json["name"] as? String ?? [json["first_name"] as? String, json["last_name"] as? String].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
-        name = full.isEmpty ? (email.isEmpty ? "匿名用户" : email) : full
+        name = full.isEmpty ? (email.isEmpty ? L10n.tr("匿名用户") : email) : full
         let cursor = json["cursorData"] as? [String: Any] ?? json
         docID = cursor["doc_id"] as? String; row = cursor["row"] as? Int ?? 0; column = cursor["column"] as? Int ?? 0
     }

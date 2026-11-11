@@ -42,8 +42,8 @@ final class SearchField: Chip, NSTextFieldDelegate, NSTableViewDataSource, NSTab
         super.init(fill: Theme.fill, radius: 10)
         let icon = NSImageView(image: Theme.symbol("magnifyingglass", size: 13, weight: .semibold)!); icon.contentTintColor = Theme.muted
         input.isBordered = false; input.drawsBackground = false; input.focusRingType = .none; input.font = .systemFont(ofSize: 13.5)
-        input.textColor = Theme.text; input.placeholderString = "搜索文件或章节"; input.delegate = self
-        input.cell?.usesSingleLineMode = true; input.cell?.isScrollable = true; input.setAccessibilityLabel("搜索文件或章节")
+        input.textColor = Theme.text; input.placeholderString = L10n.tr("搜索文件或章节"); input.delegate = self
+        input.cell?.usesSingleLineMode = true; input.cell?.isScrollable = true; input.setAccessibilityLabel(L10n.tr("搜索文件或章节"))
         input.setContentHuggingPriority(.init(1), for: .horizontal); input.setContentCompressionResistancePriority(.init(1), for: .horizontal)
         let hint = Theme.label("⌘K", size: 11.5, color: Theme.muted); hintChip.size(nil, 20); hintChip.pinRow(hint, leading: 6, trailing: 6)
         let row = NSStackView(views: [icon, input, hintChip]); row.spacing = 8; row.alignment = .centerY
@@ -120,7 +120,7 @@ final class WorkspaceView: Surface {
     let search = SearchField()
     let overleaf = OverleafChip()
     let welcome = WelcomeView()
-    let status = Theme.label("正在检测本机工具…", size: 11.5, color: Theme.soft)
+    let status = Theme.label(L10n.tr("正在检测本机工具…"), size: 11.5, color: Theme.soft)
     let branch = Theme.label("", size: 11.5, color: Theme.muted)
     let position = Theme.label("Ln 1, Col 1", size: 11.5, color: Theme.muted)
     private let projectLabel = Theme.label("BetterTeX", size: 13.5, weight: .semibold)
@@ -177,18 +177,18 @@ final class WorkspaceView: Surface {
 
         // Title bar
         let top = HeaderBar(); top.fill = Theme.header; top.lineColor = Theme.line; top.bottomLine = true
-        let sidebarToggle = ActionButton("", symbol: "sidebar.left") { [weak self] in self?.toggleSidebar() }; sidebarToggle.toolTip = "显示 / 隐藏边栏  ⌃⌘S"
+        let sidebarToggle = ActionButton("", symbol: "sidebar.left") { [weak self] in self?.toggleSidebar() }; sidebarToggle.toolTip = L10n.tr("显示 / 隐藏边栏  ⌃⌘S")
         let mark = LogoMark(); mark.size(24, 24)
         let wordmark = NSTextField(labelWithAttributedString: Self.wordmark()); wordmark.setAccessibilityLabel("BetterTeX")
         for label in [projectLabel, fileLabel] { label.lineBreakMode = .byTruncatingTail; label.setContentCompressionResistancePriority(.init(300), for: .horizontal) }
         wordmark.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let home = ActionButton("", symbol: "square.grid.2x2") { [weak self] in self?.onHome?() }; home.toolTip = "所有项目  ⇧⌘P"
+        let home = ActionButton("", symbol: "square.grid.2x2") { [weak self] in self?.onHome?() }; home.toolTip = L10n.tr("所有项目  ⇧⌘P")
         let identity = NSStackView(views: [sidebarToggle, home, mark, wordmark, Theme.divider(height: 16), projectLabel, slash, fileLabel]); identity.spacing = 8; identity.alignment = .centerY
         identity.setCustomSpacing(2, after: sidebarToggle)
         identity.setCustomSpacing(10, after: sidebarToggle); identity.setCustomSpacing(10, after: wordmark)
         engineButton = ActionButton(selectedEngine, symbol: "chevron.up.chevron.down", style: .chip) { [weak self] in self?.showEngineMenu() }
-        engineButton.toolTip = "编译引擎；Auto 读取 TeX 指令并优先使用 latexmk"
-        buildButton = ActionButton("编译", symbol: "play.fill", style: .pill) { [weak self] in self?.onBuild?() }; buildButton.toolTip = "编译 / 停止  ⌘↩"
+        engineButton.toolTip = L10n.tr("编译引擎；Auto 读取 TeX 指令并优先使用 latexmk")
+        buildButton = ActionButton(L10n.tr("编译"), symbol: "play.fill", style: .pill) { [weak self] in self?.onBuild?() }; buildButton.toolTip = L10n.tr("编译 / 停止  ⌘↩")
         pullButton = ActionButton("", symbol: "arrow.down") { [weak self] in self?.onPull?() }
         pushButton = ActionButton("", symbol: "arrow.up") { [weak self] in self?.onPush?() }
         let gitIcon = NSImageView(image: Theme.symbol("arrow.triangle.branch", size: 11, weight: .semibold)!); gitIcon.contentTintColor = Theme.muted
@@ -196,10 +196,10 @@ final class WorkspaceView: Surface {
         let gitRow = NSStackView(views: [gitIcon, gitLabel, Theme.divider(height: 16), pullButton, Theme.divider(height: 16), pushButton]); gitRow.spacing = 0; gitRow.alignment = .centerY
         gitRow.setCustomSpacing(5, after: gitIcon); gitRow.setCustomSpacing(9, after: gitLabel)
         let git = Chip(fill: Theme.fill, radius: 8); git.size(nil, 32); git.pinRow(gitRow, leading: 10, trailing: 1)
-        git.setAccessibilityElement(true); git.setAccessibilityRole(.group); git.setAccessibilityLabel("GitHub 同步")
+        git.setAccessibilityElement(true); git.setAccessibilityRole(.group); git.setAccessibilityLabel(L10n.tr("GitHub 同步"))
         setGitHost("GitHub")
-        let agent = ActionButton("", symbol: "terminal") { [weak self] in self?.toggleTerminal() }; agent.toolTip = "显示 / 隐藏 Agent 面板  ⌘J"
-        layoutButton = ActionButton("", symbol: "rectangle.split.3x1") { [weak self] in self?.showLayoutMenu() }; layoutButton.toolTip = "面板与布局"
+        let agent = ActionButton("", symbol: "terminal") { [weak self] in self?.toggleTerminal() }; agent.toolTip = L10n.tr("显示 / 隐藏 Agent 面板  ⌘J")
+        layoutButton = ActionButton("", symbol: "rectangle.split.3x1") { [weak self] in self?.showLayoutMenu() }; layoutButton.toolTip = L10n.tr("面板与布局")
         overleaf.onClick = { [weak self] in if let self { self.onOverleaf?(self.overleaf) } }
         let actions = NSStackView(views: [engineButton, buildButton, Theme.divider(height: 20), git, overleaf, agent, layoutButton]); actions.spacing = 8; actions.alignment = .centerY
         actions.setCustomSpacing(12, after: buildButton); actions.setCustomSpacing(4, after: agent)
@@ -288,18 +288,18 @@ final class WorkspaceView: Surface {
         fileLabel.isHidden = file == nil; slash.isHidden = file == nil
     }
     func setTools(engines: Int, syncTeX: Bool) {
-        toolLabel.stringValue = engines == 0 ? "TeX 未安装" : "\(engines) engines"; toolLabel.isHidden = false
+        toolLabel.stringValue = engines == 0 ? L10n.tr("TeX 未安装") : L10n.tr("\(engines) 个引擎"); toolLabel.isHidden = false
         syncLabel.superview?.isHidden = !syncTeX
     }
     func setDiagnostics(errors: Int, warnings: Int) {
-        errorLabel.stringValue = "\(errors) 错误"; warningLabel.stringValue = "\(warnings) 警告"
+        errorLabel.stringValue = L10n.tr("\(errors) 错误"); warningLabel.stringValue = L10n.tr("\(warnings) 警告")
         errorLabel.textColor = errors > 0 ? Theme.red : Theme.muted; warningLabel.textColor = warnings > 0 ? Theme.orange : Theme.muted
         errorLabel.isHidden = false; warningLabel.isHidden = false
     }
     /// Names the service behind the pull / push pair ("GitHub", or "Git" for other remotes).
     func setGitHost(_ name: String) {
         gitLabel.stringValue = name
-        pullButton.toolTip = "从 \(name) 拉取 · git pull --ff-only"; pushButton.toolTip = "提交并推送到 \(name)"
+        pullButton.toolTip = L10n.tr("从 \(name) 拉取 · git pull --ff-only"); pushButton.toolTip = L10n.tr("提交并推送到 \(name)")
     }
     func setBranch(_ text: String) { branch.stringValue = text; branch.isHidden = text.isEmpty }
     func toggleSidebar() { explorerItem.isCollapsed.toggle() }
@@ -324,7 +324,7 @@ final class WorkspaceView: Surface {
         buildingIndicator?.cancel(); buildingIndicator = nil
         func apply(_ busy: Bool) {
             buildButton.image = Theme.symbol(busy ? "stop.fill" : "play.fill", size: 10, weight: .bold)
-            buildButton.setTitle(busy ? "停止" : "编译")
+            buildButton.setTitle(busy ? L10n.tr("停止") : L10n.tr("编译"))
             if busy { activity = .busy } else { preview.stage = nil; if activity == .busy { activity = .idle } }
         }
         guard building else { apply(false); return }
@@ -333,7 +333,7 @@ final class WorkspaceView: Surface {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: job)
     }
     /// Names the program currently running inside a build.
-    func setBuildStage(_ stage: BuildStage) { preview.stage = "第 \(stage.step) 步 · \(stage.title)" }
+    func setBuildStage(_ stage: BuildStage) { preview.stage = L10n.tr("第 \(stage.step) 步 · \(stage.title)") }
 
     // MARK: Search
     private func searchResults(_ query: String) -> [SearchResult] {
@@ -343,7 +343,7 @@ final class WorkspaceView: Surface {
         if !needle.isEmpty {
             for item in explorer.outlineItemsForSearch where item.title.lowercased().contains(needle) {
                 let line = item.line
-                results.append(SearchResult(title: item.title, detail: "第 \(line) 行", ext: nil) { [weak self] in self?.explorer.onJump?(line) })
+                results.append(SearchResult(title: item.title, detail: L10n.tr("第 \(line) 行"), ext: nil) { [weak self] in self?.explorer.onJump?(line) })
             }
         }
         let excluded: Set<String> = [".bettertex", "node_modules", "dist", "build", "__pycache__"]
@@ -381,11 +381,11 @@ final class WorkspaceView: Surface {
     @objc private func engineSelected(_ item: NSMenuItem) { selectedEngine = item.title; engineButton.setTitle(selectedEngine) }
     private func showLayoutMenu() {
         let menu = NSMenu()
-        for (title, hidden, selector) in [("边栏", explorerItem.isCollapsed, #selector(menuToggleSidebar)), ("PDF 预览", pdfItem.isCollapsed, #selector(menuTogglePDF)), ("Agent 面板", terminalItem.isCollapsed, #selector(menuToggleTerminal))] {
+        for (title, hidden, selector) in [(L10n.tr("边栏"), explorerItem.isCollapsed, #selector(menuToggleSidebar)), (L10n.tr("PDF 预览"), pdfItem.isCollapsed, #selector(menuTogglePDF)), (L10n.tr("Agent 面板"), terminalItem.isCollapsed, #selector(menuToggleTerminal))] {
             let item = NSMenuItem(title: title, action: selector, keyEquivalent: ""); item.target = self; item.state = hidden ? .off : .on; menu.addItem(item)
         }
         menu.addItem(.separator())
-        for (id, title) in [("pdf", "PDF 预览位置"), ("agent", "Agent 面板位置")] {
+        for (id, title) in [("pdf", L10n.tr("PDF 预览位置")), ("agent", L10n.tr("Agent 面板位置"))] {
             let group = NSMenuItem(title: title, action: nil, keyEquivalent: ""); let submenu = NSMenu()
             for position in DockPosition.allCases {
                 let item = NSMenuItem(title: position.title, action: #selector(layoutSelected(_:)), keyEquivalent: "")
@@ -395,7 +395,7 @@ final class WorkspaceView: Surface {
             }
             group.submenu = submenu; menu.addItem(group)
         }
-        menu.addItem(.separator()); let reset = NSMenuItem(title: "恢复默认布局", action: #selector(resetLayout), keyEquivalent: ""); reset.target = self; menu.addItem(reset)
+        menu.addItem(.separator()); let reset = NSMenuItem(title: L10n.tr("恢复默认布局"), action: #selector(resetLayout), keyEquivalent: ""); reset.target = self; menu.addItem(reset)
         menu.popUp(positioning: nil, at: NSPoint(x: layoutButton.bounds.width - 180, y: layoutButton.bounds.height + 6), in: layoutButton)
     }
     @objc private func menuToggleSidebar() { toggleSidebar() }

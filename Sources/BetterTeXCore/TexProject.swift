@@ -18,11 +18,11 @@ public enum TeXProject {
         var candidate = active.standardizedFileURL
         var visited = Set<String>()
         for _ in 0..<12 {
-            guard visited.insert(candidate.path).inserted else { throw BetterTeXError.message("检测到循环的 % !TeX root 指令。") }
+            guard visited.insert(candidate.path).inserted else { throw BetterTeXError.message(L10n.tr("检测到循环的 % !TeX root 指令。")) }
             let text = (try? String(contentsOf: candidate, encoding: .utf8)) ?? ""
             if let relative = directive("root", in: text) {
                 candidate = URL(fileURLWithPath: relative, relativeTo: candidate.deletingLastPathComponent()).standardizedFileURL
-                guard FileManager.default.fileExists(atPath: candidate.path) else { throw BetterTeXError.message("主文件不存在：\(candidate.path)") }
+                guard FileManager.default.fileExists(atPath: candidate.path) else { throw BetterTeXError.message(L10n.tr("主文件不存在：\(candidate.path)")) }
                 continue
             }
             if text.contains("\\documentclass") { return candidate }
@@ -32,8 +32,8 @@ public enum TeXProject {
         let mains = files.filter { ((try? String(contentsOf: $0, encoding: .utf8)) ?? "").contains("\\documentclass") }
         if let main = mains.first(where: { $0.lastPathComponent == "main.tex" }) { return main }
         if mains.count == 1 { return mains[0] }
-        if mains.count > 1 { throw BetterTeXError.message("发现多个主文件。请打开要编译的主文件，或在子文件首行添加 % !TeX root = ../main.tex。") }
-        throw BetterTeXError.message("未找到含 \\documentclass 的主文件。请打开 LaTeX 项目或设置 % !TeX root。")
+        if mains.count > 1 { throw BetterTeXError.message(L10n.tr("发现多个主文件。请打开要编译的主文件，或在子文件首行添加 % !TeX root = ../main.tex。")) }
+        throw BetterTeXError.message(L10n.tr("未找到含 \\documentclass 的主文件。请打开 LaTeX 项目或设置 % !TeX root。"))
     }
 
     public static func sourceFiles(in directory: URL) -> [URL] {
@@ -77,7 +77,7 @@ public struct TeXWarning: Equatable {
         for match in regex.matches(in: joined, range: NSRange(location: 0, length: ns.length)) {
             guard let line = Int(ns.substring(with: match.range(at: 3))) else { continue }
             let key = ns.substring(with: match.range(at: 2)), citation = ns.substring(with: match.range(at: 1)) == "Citation"
-            if seen.insert("\(line)|\(key)").inserted { result.append(TeXWarning(line: line, key: key, message: (citation ? "未定义的引用文献：" : "未定义的交叉引用：") + key)) }
+            if seen.insert("\(line)|\(key)").inserted { result.append(TeXWarning(line: line, key: key, message: (citation ? L10n.tr("未定义的引用文献：") : L10n.tr("未定义的交叉引用：")) + key)) }
         }
         return result
     }

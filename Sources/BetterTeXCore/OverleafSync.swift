@@ -182,7 +182,7 @@ public enum OverleafFiles {
     public static func unzip(_ archive: URL, to directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let result = try ProcessRunner().run("/usr/bin/unzip", ["-q", "-o", archive.path, "-d", directory.path], timeout: 180)
-        guard result.succeeded else { throw BetterTeXError.message("无法解压 Overleaf 项目：\(result.output)") }
+        guard result.succeeded else { throw BetterTeXError.message(L10n.tr("无法解压 Overleaf 项目：\(result.output)")) }
     }
     /// Zips the syncable files of a project for upload as a new Overleaf project.
     public static func zip(project: URL, to archive: URL) throws {
@@ -190,7 +190,7 @@ public enum OverleafFiles {
         let staging = manager.temporaryDirectory.appendingPathComponent("BetterTeX-export-\(UUID().uuidString)", isDirectory: true)
         defer { try? manager.removeItem(at: staging) }
         let files = scan(project).keys
-        guard !files.isEmpty else { throw BetterTeXError.message("项目中没有可上传的文件。") }
+        guard !files.isEmpty else { throw BetterTeXError.message(L10n.tr("项目中没有可上传的文件。")) }
         for path in files {
             let target = staging.appendingPathComponent(path)
             try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -198,6 +198,6 @@ public enum OverleafFiles {
         }
         try? manager.removeItem(at: archive)
         let result = try ProcessRunner().run("/usr/bin/ditto", ["-c", "-k", "--norsrc", "--noextattr", staging.path, archive.path], timeout: 180)
-        guard result.succeeded else { throw BetterTeXError.message("无法打包项目：\(result.output)") }
+        guard result.succeeded else { throw BetterTeXError.message(L10n.tr("无法打包项目：\(result.output)")) }
     }
 }

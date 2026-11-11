@@ -71,14 +71,14 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         ui.welcome.onRecent = { [weak self] url in
             guard let self else { return }
             if FileManager.default.fileExists(atPath: url.path) { self.loadProject(url) }
-            else { self.forgetRecent(url); self.refreshDashboard(); self.error("找不到「\(url.path)」，它可能已被移动或删除。") }
+            else { self.forgetRecent(url); self.refreshDashboard(); self.error(L10n.tr("找不到「\(url.path)」，它可能已被移动或删除。")) }
         }
         ui.welcome.onForget = { [weak self] url in self?.forgetRecent(url); self?.refreshDashboard() }
         ui.welcome.onRefresh = { [weak self] in self?.refreshDashboard() }
         ui.welcome.onSignIn = { [weak self] in self?.loadOverleafProjects(interactive: true) }
         ui.welcome.onSignOut = { [weak self] in
             guard let self else { return }
-            Task { @MainActor in await self.overleaf.forgetSession(); self.ui.welcome.setOverleaf(.signedOut); self.setStatus("已退出 Overleaf 登录") }
+            Task { @MainActor in await self.overleaf.forgetSession(); self.ui.welcome.setOverleaf(.signedOut); self.setStatus(L10n.tr("已退出 Overleaf 登录")) }
         }
         ui.welcome.onDownload = { [weak self] in self?.downloadOverleaf($0) }
         ui.onHome = { [weak self] in self?.closeProject() }
@@ -143,7 +143,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     func pickImage() {
         guard active != nil else { return }
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = true; panel.canChooseDirectories = false; panel.directoryURL = project
-        panel.allowedFileTypes = Array(CodeTextView.imageExtensions); panel.prompt = "插入"; panel.message = "选择要插入的图片；项目外的文件会拷贝到 figures/。"
+        panel.allowedFileTypes = Array(CodeTextView.imageExtensions); panel.prompt = L10n.tr("插入"); panel.message = L10n.tr("选择要插入的图片；项目外的文件会拷贝到 figures/。")
         panel.beginSheetModal(for: window) { [weak self] response in if response == .OK { self?.insertImages(panel.urls) } }
     }
     /// Inserts a figure for each image, copying files from outside the project into `figures/`.
@@ -170,7 +170,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             }
         } catch { self.error(error.localizedDescription); return }
         let package = ui.editor.ensureGraphicx()
-        setStatus("已插入 \(urls.count) 张图片" + (copied > 0 ? " · 已拷贝到 figures/" : "") + (package == true ? " · 已添加 graphicx 宏包" : package == nil ? " · 请在主文档加入 \\usepackage{graphicx}" : ""))
+        setStatus(L10n.tr("已插入 \(urls.count) 张图片") + (copied > 0 ? L10n.tr(" · 已拷贝到 figures/") : "") + (package == true ? L10n.tr(" · 已添加 graphicx 宏包") : package == nil ? L10n.tr(" · 请在主文档加入 \\usepackage{graphicx}") : ""))
         ui.explorer.refresh()
     }
     func insertPastedImage(_ data: Data) {
@@ -182,11 +182,11 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         catch { self.error(error.localizedDescription) }
     }
     func exportPDF() {
-        guard let pdf = compiledPDF else { setStatus("请先编译文档，再导出 PDF"); return }
-        let panel = NSSavePanel(); panel.nameFieldStringValue = pdf.lastPathComponent; panel.directoryURL = project; panel.title = "导出 PDF"
+        guard let pdf = compiledPDF else { setStatus(L10n.tr("请先编译文档，再导出 PDF")); return }
+        let panel = NSSavePanel(); panel.nameFieldStringValue = pdf.lastPathComponent; panel.directoryURL = project; panel.title = L10n.tr("导出 PDF")
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let target = panel.url else { return }
-            do { if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }; try FileManager.default.copyItem(at: pdf, to: target); self?.setStatus("已导出 \(target.lastPathComponent)") }
+            do { if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }; try FileManager.default.copyItem(at: pdf, to: target); self?.setStatus(L10n.tr("已导出 \(target.lastPathComponent)")) }
             catch { self?.error(error.localizedDescription) }
         }
     }
@@ -203,7 +203,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         detectTools()
     }
     func detectTools() {
-        setStatus("正在检测本机工具…")
+        setStatus(L10n.tr("正在检测本机工具…"))
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let tools = Toolchain.discover()
             DispatchQueue.main.async {
@@ -211,7 +211,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                 if let project = self.project { self.ui.terminal.configure(project: project, tools: tools) }
                 let engines = ["pdflatex", "xelatex", "lualatex"].filter { tools[$0] != nil }
                 self.ui.setTools(engines: engines.count, syncTeX: tools["synctex"] != nil)
-                self.setStatus(engines.isEmpty ? "请安装本机 TeX 发行版" : "本机工具就绪")
+                self.setStatus(engines.isEmpty ? L10n.tr("请安装本机 TeX 发行版") : L10n.tr("本机工具就绪"))
                 self.refreshGit(); if self.ui.autoBuildEnabled { self.scheduleBuild() }
             }
         }
@@ -262,18 +262,18 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         ui.welcome.setOverleaf(.loading)
         Task { @MainActor [weak self] in
             guard let self else { return }
-            do { self.ui.welcome.setOverleaf(.signedIn(try await self.overleaf.projects(interactive: interactive))); if interactive { self.setStatus("已登录 Overleaf") } }
+            do { self.ui.welcome.setOverleaf(.signedIn(try await self.overleaf.projects(interactive: interactive))); if interactive { self.setStatus(L10n.tr("已登录 Overleaf")) } }
             catch OverleafError.notLoggedIn { self.ui.welcome.setOverleaf(.signedOut) }
             catch { self.ui.welcome.setOverleaf(interactive ? .signedOut : .failed(error.localizedDescription)); if interactive { self.setStatus(error.localizedDescription) } }
         }
     }
     /// Downloads an Overleaf project into the projects folder and opens it.
     private func downloadOverleaf(_ chosen: OverleafProject) {
-        ui.welcome.setProgress("正在下载「\(chosen.name)」…")
+        ui.welcome.setProgress(L10n.tr("正在下载「\(chosen.name)」…"))
         Task { @MainActor [weak self] in
             guard let self else { return }
             do { try await self.overleaf.download(chosen, into: self.projectsFolder) }
-            catch { self.error("下载失败：\(error.localizedDescription)") }
+            catch { self.error(L10n.tr("下载失败：\(error.localizedDescription)")) }
             self.ui.welcome.setProgress(nil)
         }
     }
@@ -288,7 +288,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         guard project != nil else { return }
         guard saveAll() else { return }
         if !ui.terminal.terminals.isEmpty {
-            let alert = NSAlert(); alert.messageText = "关闭项目并结束终端会话？"; alert.informativeText = "运行中的 Codex、Claude 和 Shell 会话将停止。文件修改已经保存。"; alert.addButton(withTitle: "关闭项目"); alert.addButton(withTitle: "取消")
+            let alert = NSAlert(); alert.messageText = L10n.tr("关闭项目并结束终端会话？"); alert.informativeText = L10n.tr("运行中的 Codex、Claude 和 Shell 会话将停止。文件修改已经保存。"); alert.addButton(withTitle: L10n.tr("关闭项目")); alert.addButton(withTitle: L10n.tr("取消"))
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
         resetWorkspace(); showStartPage()
@@ -296,9 +296,9 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     }
     private func showStartPage() {
         project = nil; compiledPDF = nil; compiledRoot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; ui.preview.clear()
-        window.title = "BetterTeX"; ui.setTitle(project: "未打开项目", file: nil); ui.projectURL = nil; ui.setBranch(""); ui.terminal.contextFile = nil; ui.terminal.project = nil
+        window.title = "BetterTeX"; ui.setTitle(project: L10n.tr("未打开项目"), file: nil); ui.projectURL = nil; ui.setBranch(""); ui.terminal.contextFile = nil; ui.terminal.project = nil
         ui.explorer.unload(); ui.editor.clear(); ui.editor.textView.isEditable = false; refreshTabs()
-        overleaf.projectChanged(); setStatus("未打开项目")
+        overleaf.projectChanged(); setStatus(L10n.tr("未打开项目"))
         ui.welcome.isHidden = false; refreshDashboard()
     }
     func loadProject(_ url: URL) {
@@ -318,16 +318,16 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     func confirmSwitch() -> Bool {
         guard saveAll() else { return false }
         guard !ui.terminal.terminals.isEmpty else { return true }
-        let alert = NSAlert(); alert.messageText = "切换工作区并结束当前终端会话？"; alert.informativeText = "Codex、Claude 和 Shell 会话会关闭，新会话将在新目录启动。"; alert.addButton(withTitle: "切换"); alert.addButton(withTitle: "取消")
+        let alert = NSAlert(); alert.messageText = L10n.tr("切换工作区并结束当前终端会话？"); alert.informativeText = L10n.tr("Codex、Claude 和 Shell 会话会关闭，新会话将在新目录启动。"); alert.addButton(withTitle: L10n.tr("切换")); alert.addButton(withTitle: L10n.tr("取消"))
         return alert.runModal() == .alertFirstButtonReturn
     }
     @objc func openFolder() {
         guard saveAll() else { return }
-        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.prompt = "打开工作区"; panel.directoryURL = project
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.prompt = L10n.tr("打开工作区"); panel.directoryURL = project
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
             if !self.ui.terminal.terminals.isEmpty {
-                let alert = NSAlert(); alert.messageText = "切换工作区并结束当前终端会话？"; alert.informativeText = "Codex、Claude 和 Shell 会话会关闭，新会话将在新目录启动。"; alert.addButton(withTitle: "切换"); alert.addButton(withTitle: "取消")
+                let alert = NSAlert(); alert.messageText = L10n.tr("切换工作区并结束当前终端会话？"); alert.informativeText = L10n.tr("Codex、Claude 和 Shell 会话会关闭，新会话将在新目录启动。"); alert.addButton(withTitle: L10n.tr("切换")); alert.addButton(withTitle: L10n.tr("取消"))
                 guard alert.runModal() == .alertFirstButtonReturn else { return }
             }
             self.loadProject(url)
@@ -365,7 +365,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         saveJob?.cancel(); compileJob?.cancel()
         let job = DispatchWorkItem { [weak self] in
             guard let self, self.conflicts.isEmpty else { return }
-            if self.saveAll() { self.setStatus("已自动保存"); if self.ui.autoBuildEnabled { self.scheduleBuild() } }
+            if self.saveAll() { self.setStatus(L10n.tr("已自动保存")); if self.ui.autoBuildEnabled { self.scheduleBuild() } }
         }
         saveJob = job; DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: job)
     }
@@ -385,8 +385,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                 do {
                     if buffer === active { buffer.selection = ui.editor.textView.selectedRange() }
                     try buffer.reload(); if buffer === active, let project { ui.editor.load(buffer, project: project) }
-                    setStatus("已载入外部修改：\(buffer.url.lastPathComponent)")
-                } catch { setStatus("文件已移动或无法读取：\(buffer.url.lastPathComponent)") }
+                    setStatus(L10n.tr("已载入外部修改：\(buffer.url.lastPathComponent)"))
+                } catch { setStatus(L10n.tr("文件已移动或无法读取：\(buffer.url.lastPathComponent)")) }
             }
         }
         refreshTabs(); refreshGit(); overleaf.localEdited(); overleaf.localFilesChanged(); refreshCompletionIndex(after: 1.5)
@@ -394,14 +394,14 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     }
     func resolveConflict(_ buffer: EditorBuffer) -> Bool {
         guard !resolvingConflict else { return false }; resolvingConflict = true; defer { resolvingConflict = false }
-        let alert = NSAlert(); alert.messageText = "\(buffer.url.lastPathComponent) 存在外部修改"
-        alert.informativeText = "本地编辑尚未保存，磁盘内容也已变化。请选择保留哪个版本；稍后处理会暂停自动保存和编译。"
-        alert.addButton(withTitle: "载入磁盘版本"); alert.addButton(withTitle: "用编辑器版本覆盖"); alert.addButton(withTitle: "稍后处理")
+        let alert = NSAlert(); alert.messageText = L10n.tr("\(buffer.url.lastPathComponent) 存在外部修改")
+        alert.informativeText = L10n.tr("本地编辑尚未保存，磁盘内容也已变化。请选择保留哪个版本；稍后处理会暂停自动保存和编译。")
+        alert.addButton(withTitle: L10n.tr("载入磁盘版本")); alert.addButton(withTitle: L10n.tr("用编辑器版本覆盖")); alert.addButton(withTitle: L10n.tr("稍后处理"))
         let result = alert.runModal()
         do {
             if result == .alertFirstButtonReturn { try buffer.reload(); if active === buffer, let project { ui.editor.load(buffer, project: project) } }
             else if result == .alertSecondButtonReturn { try buffer.save(overwrite: true) }
-            else { setStatus("外部修改冲突 · ⌘S 处理"); return false }
+            else { setStatus(L10n.tr("外部修改冲突 · ⌘S 处理")); return false }
             conflicts.remove(buffer.url); return true
         } catch { self.error(error.localizedDescription); return false }
     }
@@ -411,7 +411,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: job)
     }
     @objc func buildClicked() {
-        if building { buildPending = false; compileJob?.cancel(); compiler.runner.cancel(); setStatus("正在停止编译…") }
+        if building { buildPending = false; compileJob?.cancel(); compiler.runner.cancel(); setStatus(L10n.tr("正在停止编译…")) }
         else { compileJob?.cancel(); build() }
     }
     /// `automatic` builds (after saving, on file changes, when opening a project) are skipped
@@ -427,14 +427,14 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         lastBuildSignature = signature
         building = true; buildPending = false; compiler.runner.reset()
         ui.setBuilding(true)
-        setStatus("正在编译…")
+        setStatus(L10n.tr("正在编译…"))
         let token = generation; let compiler = compiler; let source = active.url
         ui.terminal.append("\n── \(Date().formatted(date: .omitted, time: .standard)) · Build \(source.lastPathComponent) ──\n")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try compiler.build(active: source, project: project, selected: selected, tools: tools, onStage: { stage in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.generation == token, self.building else { return }
-                    self.ui.setBuildStage(stage); self.setStatus("正在编译 · \(stage.title)")
+                    self.ui.setBuildStage(stage); self.setStatus(L10n.tr("正在编译 · \(stage.title)"))
                 }
             }, onOutput: { text in
                 DispatchQueue.main.async { [weak self] in if self?.generation == token { self?.ui.terminal.append(text) } }
@@ -450,10 +450,10 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                     self.ui.setDiagnostics(errors: build.succeeded ? 0 : max(1, build.diagnostics.count), warnings: warnings)
                     if build.succeeded {
                         self.compiledPDF = build.pdf; self.ui.preview.load(build.pdf); self.ui.activity = .idle
-                        self.setStatus(String(format: "编译完成 · %@ · %.1f s", build.engine.rawValue, build.seconds))
+                        self.setStatus(String(format: L10n.tr("编译完成 · %@ · %.1f s"), build.engine.rawValue, build.seconds))
                     } else {
-                        self.setStatus("编译失败 · 保留上次预览"); self.ui.activity = .failed; self.ui.showOutput()
-                        if let first = build.diagnostics.first { self.ui.terminal.append("\n错误：\(first.message)\n双击上方文件:行号可定位源码。\n") }
+                        self.setStatus(L10n.tr("编译失败 · 保留上次预览")); self.ui.activity = .failed; self.ui.showOutput()
+                        if let first = build.diagnostics.first { self.ui.terminal.append(L10n.tr("\n错误：\(first.message)\n双击上方文件:行号可定位源码。\n")) }
                     }
                 case .failure(let error): self.setStatus(error.localizedDescription); self.ui.activity = .failed; self.ui.terminal.append("\n\(error.localizedDescription)\n"); self.ui.showOutput()
                 }
@@ -462,19 +462,19 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         }
     }
     @objc func forwardSync() {
-        guard let active, let pdf = compiledPDF, let tools else { setStatus("请先成功编译文档，再使用双向定位"); return }
+        guard let active, let pdf = compiledPDF, let tools else { setStatus(L10n.tr("请先成功编译文档，再使用双向定位")); return }
         let (line, col) = ui.editor.lineColumn; let file = active.url; let token = generation
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try SyncTeX.forward(file: file, line: line, column: col, pdf: pdf, tools: tools) }
             DispatchQueue.main.async {
                 guard let self, self.generation == token else { return }
-                switch result { case .success(let location): self.ui.pdfItem.isCollapsed = false; self.ui.preview.goTo(location); self.setStatus("源码 → PDF · 第 \(location.page) 页")
+                switch result { case .success(let location): self.ui.pdfItem.isCollapsed = false; self.ui.preview.goTo(location); self.setStatus(L10n.tr("源码 → PDF · 第 \(location.page) 页"))
                 case .failure(let error): self.setStatus(error.localizedDescription) }
             }
         }
     }
     func inverseSync(page: Int, x: Double, y: Double) {
-        guard let pdf = compiledPDF, let root = compiledRoot, let tools else { setStatus("请先编译当前文档以生成 SyncTeX 映射"); return }
+        guard let pdf = compiledPDF, let root = compiledRoot, let tools else { setStatus(L10n.tr("请先编译当前文档以生成 SyncTeX 映射")); return }
         let token = generation
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try SyncTeX.inverse(page: page, x: x, y: y, pdf: pdf, root: root, tools: tools) }
@@ -487,10 +487,10 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     }
     @objc func newFile() {
         guard let project else { return }
-        let panel = NSSavePanel(); panel.directoryURL = project; panel.nameFieldStringValue = "section.tex"; panel.title = "新建文件"; panel.canCreateDirectories = true
+        let panel = NSSavePanel(); panel.directoryURL = project; panel.nameFieldStringValue = "section.tex"; panel.title = L10n.tr("新建文件"); panel.canCreateDirectories = true
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            do { guard !FileManager.default.fileExists(atPath: url.path) else { throw BetterTeXError.message("文件已存在，请使用其他名称。") }; try "".write(to: url, atomically: true, encoding: .utf8); self?.openFile(url); self?.ui.explorer.refresh() }
+            do { guard !FileManager.default.fileExists(atPath: url.path) else { throw BetterTeXError.message(L10n.tr("文件已存在，请使用其他名称。")) }; try "".write(to: url, atomically: true, encoding: .utf8); self?.openFile(url); self?.ui.explorer.refresh() }
             catch { self?.error(error.localizedDescription) }
         }
     }
@@ -535,22 +535,22 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             let state = try? service.state()
             let remotes = (try? service.checked(["remote", "-v"])) ?? ""
             let host = remotes.isEmpty || remotes.lowercased().contains("github.com") ? "GitHub" : "Git"
-            DispatchQueue.main.async { guard let self, self.generation == token else { return }; self.ui.setGitHost(host); self.ui.setBranch(state.map { $0.branch + ($0.changes.isEmpty ? "" : " · \($0.changes.count) 项更改") } ?? "") }
+            DispatchQueue.main.async { guard let self, self.generation == token else { return }; self.ui.setGitHost(host); self.ui.setBranch(state.map { $0.branch + ($0.changes.isEmpty ? "" : L10n.tr(" · \($0.changes.count) 项更改")) } ?? "") }
         }
     }
     func git(push: Bool) {
         guard !gitBusy, saveAll(), let project, let tools else { return }
         gitBusy = true; let token = generation; let service = GitService(directory: project, tools: tools)
-        setStatus("正在检查 Git 状态…")
+        setStatus(L10n.tr("正在检查 Git 状态…"))
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let state = Result { try service.state() }
             DispatchQueue.main.async {
                 guard let self, self.generation == token else { return }
                 self.gitBusy = false
                 switch state {
-                case .failure(let error): self.error("当前目录无法执行 Git 操作。请先在 Shell 中初始化仓库并配置远端。\n\n" + error.localizedDescription)
+                case .failure(let error): self.error(L10n.tr("当前目录无法执行 Git 操作。请先在 Shell 中初始化仓库并配置远端。\n\n") + error.localizedDescription)
                 case .success(let state):
-                    guard state.hasRemote else { self.error("仓库尚未配置远端。请在 Shell 中运行 git remote add origin <URL>，然后设置上游分支。"); return }
+                    guard state.hasRemote else { self.error(L10n.tr("仓库尚未配置远端。请在 Shell 中运行 git remote add origin <URL>，然后设置上游分支。")); return }
                     if push && !state.changes.isEmpty { self.reviewCommit(state, service: service) }
                     else { self.runGit(push ? "Push" : "Pull") { push ? try service.push() : try service.pull() } }
                 }
@@ -558,11 +558,11 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         }
     }
     func reviewCommit(_ state: GitState, service: GitService) {
-        let alert = NSAlert(); alert.messageText = "提交并 Push 到远端"
-        alert.informativeText = "选择本次提交文件。未跟踪文件默认不勾选；已有提交也可以直接推送。GPT Luna 会自动总结提交说明，改动勾选后可点「AI 生成」重写。Git 认证使用本机凭据。"
-        alert.addButton(withTitle: "提交并 Push"); alert.addButton(withTitle: "仅 Push 已有提交"); alert.addButton(withTitle: "取消")
+        let alert = NSAlert(); alert.messageText = L10n.tr("提交并 Push 到远端")
+        alert.informativeText = L10n.tr("选择本次提交文件。未跟踪文件默认不勾选；已有提交也可以直接推送。GPT Luna 会自动总结提交说明，改动勾选后可点「AI 生成」重写。Git 认证使用本机凭据。")
+        alert.addButton(withTitle: L10n.tr("提交并 Push")); alert.addButton(withTitle: L10n.tr("仅 Push 已有提交")); alert.addButton(withTitle: L10n.tr("取消"))
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 280))
-        let message = NSTextField(frame: NSRect(x: 0, y: 244, width: 400, height: 26)); message.placeholderString = "提交说明，例如：完善方法章节"; container.addSubview(message)
+        let message = NSTextField(frame: NSRect(x: 0, y: 244, width: 400, height: 26)); message.placeholderString = L10n.tr("提交说明，例如：完善方法章节"); container.addSubview(message)
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 230)); scroll.hasVerticalScroller = true
         let rows = NSStackView(); rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 7
         var checks: [(NSButton, GitChange)] = []
@@ -579,29 +579,29 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         let draft: (Bool) -> Void = { [weak alert] automatic in
             guard let tools, generate.isEnabled else { return }
             let selected = checks.filter { $0.0.state == .on }.map { $0.1 }
-            if automatic { guard tools["codex"] != nil, !selected.isEmpty else { return }; message.placeholderString = "GPT Luna 正在总结提交说明…" }
-            generate.isEnabled = false; generate.title = "生成中…"
+            if automatic { guard tools["codex"] != nil, !selected.isEmpty else { return }; message.placeholderString = L10n.tr("GPT Luna 正在总结提交说明…") }
+            generate.isEnabled = false; generate.title = L10n.tr("生成中…")
             DispatchQueue.global(qos: .userInitiated).async {
                 let model = CommitMessageWriter.lunaModel(tools: tools)
                 let result = Result { try CommitMessageWriter.generate(changes: try service.changeSummary(selected), recentSubjects: service.recentSubjects(), model: model, tools: tools, runner: writer) }
                 DispatchQueue.main.async {
-                    generate.isEnabled = true; generate.title = "AI 生成"; message.placeholderString = placeholder
+                    generate.isEnabled = true; generate.title = L10n.tr("AI 生成"); message.placeholderString = placeholder
                     guard alert?.window.isVisible == true else { return }
                     switch result {
                     case .success(let text):
                         // Never replace what the user typed while the automatic draft was on its way.
                         guard !automatic || message.stringValue.isEmpty else { return }
-                        message.stringValue = text; message.toolTip = "由 \(model) 生成，可继续修改"
+                        message.stringValue = text; message.toolTip = L10n.tr("由 \(model) 生成，可继续修改")
                     case .failure(let error):
                         let reason = error.localizedDescription
-                        if !automatic { message.placeholderString = "生成失败：" + (reason.components(separatedBy: .newlines).first ?? reason) }
-                        terminal.append("\n提交说明生成\n" + reason + "\n")
+                        if !automatic { message.placeholderString = L10n.tr("生成失败：") + (reason.components(separatedBy: .newlines).first ?? reason) }
+                        terminal.append(L10n.tr("\n提交说明生成\n") + reason + "\n")
                     }
                 }
             }
         }
-        generate = ActionButton("AI 生成", style: .push) { draft(false) }
-        generate.frame = NSRect(x: 406, y: 241, width: 98, height: 32); generate.toolTip = "用 GPT Luna 根据勾选的更改总结提交说明"; container.addSubview(generate)
+        generate = ActionButton(L10n.tr("AI 生成"), style: .push) { draft(false) }
+        generate.frame = NSRect(x: 406, y: 241, width: 98, height: 32); generate.toolTip = L10n.tr("用 GPT Luna 根据勾选的更改总结提交说明"); container.addSubview(generate)
         rows.frame = NSRect(x: 0, y: 0, width: 480, height: max(220, checks.count * 25)); scroll.documentView = rows; container.addSubview(scroll); alert.accessoryView = container
         draft(true)
         alert.beginSheetModal(for: window) { [weak self] result in
@@ -610,7 +610,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             if result == .alertSecondButtonReturn { self.runGit("Push") { try service.push() } }
             else if result == .alertFirstButtonReturn {
                 let paths = checks.filter { $0.0.state == .on }.flatMap { $0.1.commitPaths }
-                guard !message.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !paths.isEmpty else { self.error("提交说明和已选文件不能为空，请重新点击 Push。"); return }
+                guard !message.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !paths.isEmpty else { self.error(L10n.tr("提交说明和已选文件不能为空，请重新点击 Push。")); return }
                 let text = message.stringValue
                 self.runGit("Commit + Push") { try service.commitAndPush(message: text, paths: paths) }
             }
@@ -623,32 +623,36 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             DispatchQueue.main.async {
                 guard let self, self.generation == token else { return }; self.gitBusy = false
                 switch result {
-                case .success(let log): self.setStatus("Git \(label) 完成"); self.ui.terminal.append("\nGit \(label)\n" + log); self.externalChanges()
-                case .failure(let error): self.setStatus("Git \(label) 失败"); self.ui.terminal.append("\nGit \(label)\n" + error.localizedDescription); self.ui.showOutput(); self.error(error.localizedDescription + "\n\n如需交互式登录、设置上游分支或处理冲突，请使用 Shell 标签。")
+                case .success(let log): self.setStatus(L10n.tr("Git \(label) 完成")); self.ui.terminal.append("\nGit \(label)\n" + log); self.externalChanges()
+                case .failure(let error): self.setStatus(L10n.tr("Git \(label) 失败")); self.ui.terminal.append("\nGit \(label)\n" + error.localizedDescription); self.ui.showOutput(); self.error(error.localizedDescription + L10n.tr("\n\n如需交互式登录、设置上游分支或处理冲突，请使用 Shell 标签。"))
                 }
             }
         }
     }
     @objc func showTools() {
-        let alert = NSAlert(); alert.messageText = "本机工具"
-        alert.informativeText = ["latexmk", "pdflatex", "xelatex", "lualatex", "synctex", "codex", "claude", "git"].map { "\($0)\n  \(tools?[$0] ?? "未检测到")" }.joined(separator: "\n\n")
-        alert.addButton(withTitle: "完成"); alert.addButton(withTitle: "重新检测")
+        let alert = NSAlert(); alert.messageText = L10n.tr("本机工具")
+        alert.informativeText = ["latexmk", "pdflatex", "xelatex", "lualatex", "synctex", "codex", "claude", "git"].map { "\($0)\n  \(tools?[$0] ?? L10n.tr("未检测到"))" }.joined(separator: "\n\n")
+        alert.addButton(withTitle: L10n.tr("完成")); alert.addButton(withTitle: L10n.tr("重新检测"))
         alert.beginSheetModal(for: window) { [weak self] result in if result == .alertSecondButtonReturn { self?.detectTools() } }
     }
     func setStatus(_ message: String) { ui.status.stringValue = message; ui.status.toolTip = message }
     func error(_ message: String) {
         setStatus(message.components(separatedBy: .newlines).first ?? message)
-        let alert = NSAlert(); alert.messageText = "BetterTeX"; alert.informativeText = message; alert.addButton(withTitle: "好")
+        let alert = NSAlert(); alert.messageText = "BetterTeX"; alert.informativeText = message; alert.addButton(withTitle: L10n.tr("好"))
         if window.attachedSheet == nil { alert.beginSheetModal(for: window) }
         else { ui.terminal.append("\n" + message + "\n") }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard prepareToClose() else { return false }
+        shutdown(); return true
+    }
+    func prepareToClose() -> Bool {
         guard saveAll() else { return false }
         if !ui.terminal.terminals.isEmpty {
-            let alert = NSAlert(); alert.messageText = "关闭工作区并结束终端会话？"; alert.informativeText = "运行中的 Codex、Claude 和 Shell 会话将停止。文件修改已经保存。"; alert.addButton(withTitle: "关闭"); alert.addButton(withTitle: "取消")
+            let alert = NSAlert(); alert.messageText = L10n.tr("关闭工作区并结束终端会话？"); alert.informativeText = L10n.tr("运行中的 Codex、Claude 和 Shell 会话将停止。文件修改已经保存。"); alert.addButton(withTitle: L10n.tr("关闭")); alert.addButton(withTitle: L10n.tr("取消"))
             if alert.runModal() != .alertFirstButtonReturn { return false }
         }
-        overleaf.shutdown(); compiler.runner.cancel(); ui.terminal.stopAll(); watcher.stop(); return true
+        return true
     }
     func shutdown() { overleaf.shutdown(); saveJob?.cancel(); compileJob?.cancel(); compiler.runner.cancel(); ui.terminal.stopAll(); watcher.stop() }
 }
