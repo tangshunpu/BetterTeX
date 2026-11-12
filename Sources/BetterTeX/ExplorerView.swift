@@ -93,9 +93,13 @@ private final class FileCell: NSTableCellView {
 final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     let outline = NSOutlineView()
     private let outlineStack = NSStackView()
-    private let outlineCard = Chip(fill: Theme.fillSoft, radius: 10)
-    private let outlineTitle = Theme.label(L10n.tr("大纲"), size: 12, color: Theme.muted, weight: .semibold)
-    private var outlineHeight: NSLayoutConstraint!
+    private let outlineScroll = NSScrollView()
+    private let outlineHeader = NSStackView()
+    private let outlineCount = Theme.label("", size: 11, color: Theme.faint, weight: .medium)
+    private let fileScroll = NSScrollView()
+    /// The file list takes only the rows it shows, so the outline sits right under it.
+    private var fileHeight: NSLayoutConstraint!
+    private var currentRow: NSView?
     private var outlineItems: [OutlineItem] = []
     private var currentOutline = -1
     var root: FileNode?
@@ -111,7 +115,7 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
         let plus = ActionButton("", symbol: "plus", style: .accentIcon) { [weak self] in self?.onNew?() }; plus.toolTip = L10n.tr("新建文件  ⌘N")
         let close = ActionButton("", symbol: "rectangle.portrait.and.arrow.right") { [weak self] in self?.onCloseProject?() }; close.toolTip = L10n.tr("关闭项目，回到起始页"); close.setAccessibilityLabel(L10n.tr("关闭项目"))
         let header = NSStackView(views: [Theme.label(L10n.tr("文件"), size: 12, color: Theme.muted, weight: .semibold), NSView(), search, plus, close]); header.spacing = 2; header.alignment = .centerY
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        let scroll = fileScroll; scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("files")); outline.addTableColumn(column); outline.outlineTableColumn = column
         outline.headerView = nil; outline.rowHeight = 32; outline.indentationPerLevel = 16; outline.intercellSpacing = NSSize(width: 0, height: 2)
         outline.style = .plain; outline.backgroundColor = .clear; outline.focusRingType = .none
@@ -119,36 +123,51 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
         let menu = NSMenu(); menu.delegate = self; outline.menu = menu
         scroll.documentView = outline
 
-        let outlineScroll = NSScrollView(); outlineScroll.drawsBackground = false; outlineScroll.hasVerticalScroller = true; outlineScroll.autohidesScrollers = true
-        let flipped = FlippedView(); outlineStack.orientation = .vertical; outlineStack.spacing = 0; outlineStack.alignment = .leading
+        outlineScroll.drawsBackground = false; outlineScroll.hasVerticalScroller = true; outlineScroll.autohidesScrollers = true
+        let flipped = FlippedView(); outlineStack.orientation = .vertical; outlineStack.spacing = 1; outlineStack.alignment = .leading
+        outlineStack.edgeInsets = NSEdgeInsets(top: 2, left: 0, bottom: 10, right: 0)
         outlineStack.translatesAutoresizingMaskIntoConstraints = false; flipped.addSubview(outlineStack)
         flipped.translatesAutoresizingMaskIntoConstraints = false; outlineScroll.documentView = flipped
         NSLayoutConstraint.activate([
             outlineStack.topAnchor.constraint(equalTo: flipped.topAnchor), outlineStack.leadingAnchor.constraint(equalTo: flipped.leadingAnchor), outlineStack.trailingAnchor.constraint(equalTo: flipped.trailingAnchor), outlineStack.bottomAnchor.constraint(equalTo: flipped.bottomAnchor),
             flipped.leadingAnchor.constraint(equalTo: outlineScroll.contentView.leadingAnchor), flipped.trailingAnchor.constraint(equalTo: outlineScroll.contentView.trailingAnchor), flipped.topAnchor.constraint(equalTo: outlineScroll.contentView.topAnchor)
         ])
-        outlineCard.layer?.masksToBounds = true; outlineCard.pin(outlineScroll)
-        outlineHeight = outlineCard.heightAnchor.constraint(equalToConstant: 0)
+        let outlineIcon = NSImageView(image: Theme.symbol("list.bullet.indent", size: 11, weight: .semibold)!); outlineIcon.contentTintColor = Theme.muted
+        let rule = Chip(fill: Theme.hairline, radius: 0); rule.size(nil, 1); rule.setContentHuggingPriority(.init(1), for: .horizontal)
+        for view in [outlineIcon, Theme.label(L10n.tr("大纲"), size: 12, color: Theme.muted, weight: .semibold), outlineCount, rule] { outlineHeader.addArrangedSubview(view) }
+        outlineHeader.spacing = 6; outlineHeader.alignment = .centerY; outlineHeader.setCustomSpacing(10, after: outlineCount)
+        fileHeight = scroll.heightAnchor.constraint(equalToConstant: 200)
+        NotificationCenter.default.addObserver(self, selector: #selector(filesChanged), name: NSOutlineView.itemDidExpandNotification, object: outline)
+        NotificationCenter.default.addObserver(self, selector: #selector(filesChanged), name: NSOutlineView.itemDidCollapseNotification, object: outline)
 
-        for view in [header, scroll, outlineTitle, outlineCard] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        for view in [header, scroll, outlineHeader, outlineScroll] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: topAnchor, constant: 10), header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18), header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12), header.heightAnchor.constraint(equalToConstant: 30),
             scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4), scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10), scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            outlineTitle.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 12), outlineTitle.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            outlineCard.topAnchor.constraint(equalTo: outlineTitle.bottomAnchor, constant: 6), outlineCard.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10), outlineCard.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            outlineCard.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12), outlineHeight
+            fileHeight,
+            outlineHeader.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 10), outlineHeader.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18), outlineHeader.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14), outlineHeader.heightAnchor.constraint(equalToConstant: 26),
+            outlineScroll.topAnchor.constraint(equalTo: outlineHeader.bottomAnchor, constant: 4), outlineScroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10), outlineScroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            outlineScroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
         ])
         setOutline([], cursorLine: 1)
     }
     required init?(coder: NSCoder) { fatalError() }
-    func load(_ url: URL) { root = FileNode(url); outline.reloadData() }
+    func load(_ url: URL) { root = FileNode(url); outline.reloadData(); needsLayout = true }
+    @objc private func filesChanged() { needsLayout = true }
+    override func layout() {
+        // Files keep the rows they need, up to about half the sidebar when an outline is showing.
+        let available = max(0, bounds.height - 44 - 4)
+        let rows = CGFloat(outline.numberOfRows) * (outline.rowHeight + outline.intercellSpacing.height) + 4
+        fileHeight.constant = outlineItems.isEmpty ? available : max(min(rows, 96, available), min(rows, (available - 40) * 0.5))
+        super.layout()
+    }
     /// Empties the tree when no project is open.
-    func unload() { root = nil; outline.reloadData(); setOutline([], cursorLine: 1) }
+    func unload() { root = nil; outline.reloadData(); setOutline([], cursorLine: 1); needsLayout = true }
     func refresh() {
         guard let root else { return }
         let expanded = (0..<outline.numberOfRows).compactMap { outline.item(atRow: $0) as? FileNode }.filter { outline.isItemExpanded($0) }.map { $0.url.path }
         let selected = (outline.item(atRow: outline.selectedRow) as? FileNode)?.url
-        root.cachedChildren = nil; outline.reloadData()
+        root.cachedChildren = nil; outline.reloadData(); needsLayout = true
         var row = 0
         while row < outline.numberOfRows { if let node = outline.item(atRow: row) as? FileNode, expanded.contains(node.url.path) { outline.expandItem(node) }; row += 1 }
         if let selected { reveal(selected) }
@@ -169,33 +188,82 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     // MARK: Outline card
     func setOutline(_ items: [OutlineItem], cursorLine: Int) {
+        let previous = currentOutline
         outlineItems = items
         outlineStack.arrangedSubviews.forEach { outlineStack.removeArrangedSubview($0); $0.removeFromSuperview() }
-        outlineTitle.isHidden = items.isEmpty; outlineCard.isHidden = items.isEmpty
-        outlineHeight.constant = items.isEmpty ? 0 : min(CGFloat(items.count) * 37 - 1, 223)
+        outlineHeader.isHidden = items.isEmpty; outlineScroll.isHidden = items.isEmpty
+        let sections = items.filter { $0.level == 0 && !$0.number.isEmpty }.count
+        outlineCount.stringValue = sections > 0 ? "\(sections)" : ""
         currentOutline = items.lastIndex { $0.line <= cursorLine } ?? -1
+        // The section that holds the cursor stays emphasised while a subsection is current.
+        let currentSection = currentOutline >= 0 ? items[...currentOutline].lastIndex { $0.level == 0 } : nil
+        currentRow = nil
         for (index, item) in items.enumerated() {
-            if index > 0 {
-                let rule = Chip(fill: Theme.hairline, radius: 0); rule.size(nil, 1)
-                let holder = NSView(); holder.translatesAutoresizingMaskIntoConstraints = false; rule.translatesAutoresizingMaskIntoConstraints = false; holder.addSubview(rule)
-                NSLayoutConstraint.activate([rule.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 28), rule.trailingAnchor.constraint(equalTo: holder.trailingAnchor), rule.topAnchor.constraint(equalTo: holder.topAnchor), rule.bottomAnchor.constraint(equalTo: holder.bottomAnchor)])
-                outlineStack.addArrangedSubview(holder); holder.widthAnchor.constraint(equalTo: outlineStack.widthAnchor).isActive = true
+            if index > 0, item.level == 0 {
+                let gap = NSView(); gap.size(nil, 4); outlineStack.addArrangedSubview(gap)
             }
-            let current = index == currentOutline
-            let row = RowButton(height: 36) { [weak self] in self?.onJump?(item.line) }
-            row.setAccessibilityLabel(item.title)
-            let dot = Chip(fill: current ? Theme.accent : .clear, radius: -1); dot.size(6, 6)
-            let number = Theme.label(item.number, size: 13, color: Theme.muted); number.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular); number.isHidden = item.number.isEmpty
-            let title = Theme.label(item.title, size: 13, color: current ? Theme.text : Theme.soft, weight: current ? .medium : .regular)
-            title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            title.setContentHuggingPriority(.init(1), for: .horizontal)
-            let badge = Theme.label(L10n.tr("当前"), size: 11.5, color: Theme.accent); badge.isHidden = !current
-            badge.setContentCompressionResistancePriority(.required, for: .horizontal)
-            let content = NSStackView(views: [dot, number, title, badge]); content.spacing = 8; content.alignment = .centerY
-            content.setCustomSpacing(10 + CGFloat(item.level) * 12, after: dot)
-            row.pinRow(content, leading: 12, trailing: 12)
+            let row = outlineRow(item, current: index == currentOutline, inCurrentSection: index == currentSection)
             outlineStack.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: outlineStack.widthAnchor).isActive = true
+            if index == currentOutline { currentRow = row }
         }
+        needsLayout = true
+        if currentOutline != previous, let row = currentRow {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, row.superview != nil else { return }
+                self.outlineStack.superview?.layoutSubtreeIfNeeded()
+                row.scrollToVisible(row.bounds.insetBy(dx: 0, dy: -12))
+            }
+        }
+    }
+    private func outlineRow(_ item: OutlineItem, current: Bool, inCurrentSection: Bool) -> NSView {
+        let level = min(item.level, 2)
+        let row = RowButton(height: level == 0 ? 30 : 26) { [weak self] in self?.onJump?(item.line) }
+        row.layer?.cornerRadius = 7; row.layer?.cornerCurve = .continuous
+        row.setAccessibilityLabel(item.number.isEmpty ? item.title : "\(item.number) \(item.title)")
+        if current {
+            let highlight = Chip(fill: Theme.accent.withAlphaComponent(0.13), radius: 7); row.addSubview(highlight)
+            highlight.translatesAutoresizingMaskIntoConstraints = false
+            let bar = Chip(fill: Theme.accent, radius: 1.5); bar.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(bar)
+            NSLayoutConstraint.activate([
+                highlight.leadingAnchor.constraint(equalTo: row.leadingAnchor), highlight.trailingAnchor.constraint(equalTo: row.trailingAnchor), highlight.topAnchor.constraint(equalTo: row.topAnchor), highlight.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+                bar.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 3), bar.widthAnchor.constraint(equalToConstant: 3), bar.topAnchor.constraint(equalTo: row.topAnchor, constant: 7), bar.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -7)
+            ])
+        }
+        // Nested headings hang from a thin guide under their section's marker.
+        for depth in 0..<level {
+            let guide = Chip(fill: Theme.hairline, radius: 0); guide.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(guide)
+            NSLayoutConstraint.activate([guide.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 22 + CGFloat(depth) * 16), guide.widthAnchor.constraint(equalToConstant: 1), guide.topAnchor.constraint(equalTo: row.topAnchor), guide.bottomAnchor.constraint(equalTo: row.bottomAnchor)])
+        }
+        let marker: NSView
+        if item.number.isEmpty || level == 0 && item.title == L10n.tr("标题") {
+            // Title, abstract and starred headings get a glyph instead of a number.
+            let symbol = item.title == L10n.tr("标题") ? "textformat" : item.title == "Abstract" ? "text.quote" : level == 0 ? "number" : "circle.fill"
+            let icon = NSImageView(image: Theme.symbol(symbol, size: level == 0 ? 11 : 5, weight: .semibold)!)
+            icon.contentTintColor = current ? Theme.accent : level == 0 ? Theme.indigo : Theme.faint
+            let holder = NSView(); holder.size(level == 0 ? 24 : 12, 18); icon.translatesAutoresizingMaskIntoConstraints = false; holder.addSubview(icon)
+            NSLayoutConstraint.activate([icon.centerXAnchor.constraint(equalTo: holder.centerXAnchor), icon.centerYAnchor.constraint(equalTo: holder.centerYAnchor)])
+            marker = holder
+        } else if level == 0 {
+            let number = Theme.label(item.number, size: 11, color: current || inCurrentSection ? .white : Theme.accent, weight: .semibold)
+            number.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold); number.alignment = .center
+            let chip = Chip(fill: current || inCurrentSection ? Theme.accent : Theme.accent.withAlphaComponent(0.13), radius: 5)
+            chip.size(nil, 18); chip.widthAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true; chip.pinRow(number, leading: 5, trailing: 5)
+            marker = chip
+        } else {
+            let number = Theme.label(item.number, size: 11.5, color: current ? Theme.accent : Theme.faint)
+            number.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
+            marker = number
+        }
+        marker.setContentCompressionResistancePriority(.required, for: .horizontal); marker.setContentHuggingPriority(.required, for: .horizontal)
+        let size: CGFloat = level == 0 ? 13 : level == 1 ? 12.5 : 12
+        let color = current ? Theme.accent : level == 0 ? Theme.text : level == 1 ? Theme.soft : Theme.muted
+        let weight: NSFont.Weight = current || level == 0 ? .semibold : .regular
+        let title = Theme.label(item.title.isEmpty ? L10n.tr("（无标题）") : item.title, size: size, color: color, weight: weight)
+        title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        title.setContentHuggingPriority(.init(1), for: .horizontal); title.toolTip = item.title
+        let content = NSStackView(views: [marker, title]); content.spacing = level == 0 ? 8 : 6; content.alignment = .centerY
+        row.pinRow(content, leading: level == 0 ? 10 : 30 + CGFloat(level - 1) * 16, trailing: 10)
+        return row
     }
     /// Moves the "current" marker when the cursor enters another section.
     func updateOutline(cursorLine: Int) {
