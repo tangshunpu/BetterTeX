@@ -591,6 +591,8 @@ extension LineRuler {
 final class ChangeDetailView: NSView {
     /// The size that shows everything up to `maxHeight`, for sizing a popover.
     private(set) var preferredSize = NSSize.zero
+    private let scroll = NSScrollView()
+    private var body: NSTextView!
     init(segments: [WordDiff.Segment], lines: String, hint: String?, width: CGFloat, maxHeight: CGFloat, fontSize: CGFloat) {
         super.init(frame: .zero)
         let authors = AgentProvider.allCases.filter { provider in segments.contains { $0.author == provider } }
@@ -618,10 +620,11 @@ final class ChangeDetailView: NSView {
         let divider = NSBox(); divider.boxType = .separator
 
         // The text view wraps at the scroll view's width, so it reflows when a window is resized.
-        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.scrollerStyle = .overlay
-        let body = NSTextView(frame: NSRect(x: 0, y: 0, width: width, height: 10))
+        scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true; scroll.scrollerStyle = .overlay; scroll.horizontalScrollElasticity = .none
+        let body = NSTextView(frame: NSRect(x: 0, y: 0, width: width, height: 10)); self.body = body
         body.isEditable = false; body.isSelectable = true; body.drawsBackground = false
-        body.isVerticallyResizable = true; body.isHorizontallyResizable = false; body.autoresizingMask = [.width]
+        body.isVerticallyResizable = true; body.isHorizontallyResizable = false; body.autoresizingMask = []
         body.minSize = NSSize(width: 0, height: 0); body.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
         body.textContainerInset = NSSize(width: 14, height: 12)
         body.textContainer?.lineFragmentPadding = 0; body.textContainer?.widthTracksTextView = true
@@ -641,9 +644,28 @@ final class ChangeDetailView: NSView {
         ])
         preferredSize = NSSize(width: width, height: headerHeight + 1 + min(textHeight, maxHeight))
         frame.size = preferredSize
+        wantsLayer = true
         setAccessibilityLabel(title)
     }
     required init?(coder: NSCoder) { fatalError() }
+    // An opaque card: the popover's translucent material let the editor's text show through.
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = Theme.canvas.cgColor }
+    /// The text always spans exactly the visible width and never scrolls sideways, however the
+    /// popover or window resizes the view on the way in.
+    override func layout() {
+        super.layout()
+        let width = scroll.contentSize.width
+        guard width > 0, let body, let container = body.textContainer, let layout = body.layoutManager else { return }
+        if abs(body.frame.width - width) > 0.5 {
+            container.containerSize = NSSize(width: width - body.textContainerInset.width * 2, height: .greatestFiniteMagnitude)
+            layout.ensureLayout(for: container)
+            let height = max(scroll.contentSize.height, ceil(layout.usedRect(for: container).height) + body.textContainerInset.height * 2)
+            body.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        }
+        let clip = scroll.contentView
+        if clip.bounds.origin.x != 0 { clip.scroll(to: NSPoint(x: 0, y: clip.bounds.origin.y)); scroll.reflectScrolledClipView(clip) }
+    }
 
     static func words(_ segments: [WordDiff.Segment], _ kind: WordDiff.Kind) -> Int {
         segments.filter { $0.kind == kind }.reduce(0) { $0 + WordDiff.tokenCount($1.text) }
