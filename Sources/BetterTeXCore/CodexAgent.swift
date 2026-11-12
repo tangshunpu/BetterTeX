@@ -39,6 +39,8 @@ public enum CodexEvent: Equatable {
     case item(CodexItem)
     case turnCompleted(inputTokens: Int, outputTokens: Int)
     case turnFailed(String)
+    case contextUsage(AgentContextUsage?)
+    case rateLimits(AgentQuotaSnapshot)
 
     public static func parse(line: String) -> CodexEvent? {
         guard line.hasPrefix("{"), let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any], let type = object["type"] as? String else { return nil }

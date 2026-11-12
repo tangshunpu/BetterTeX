@@ -17,6 +17,16 @@ final class AgentChatView: NSView {
     var onChange: (() -> Void)?
     /// Receives Codex's own start-up warnings (configuration notices), which stay out of the conversation.
     var onLog: ((String) -> Void)?
+    var onUsageChange: (() -> Void)?
+    private(set) var contextUsage: AgentContextUsage?
+    private(set) var quota: AgentQuotaSnapshot?
+    private var codexHome: URL?
+    private let usageQueue = DispatchQueue(label: "dev.bettertex.agent-usage", qos: .utility)
+    private let usageReader = CodexSessionUsageReader()
+    private var readingUsage = false
+    private var usageReadPending = false
+    private var lastUsageRead = Date.distantPast
+    private var usageGeneration = UUID()
     private var turnStarted = false
     private(set) var running = false
     private(set) var thread: String?
@@ -84,6 +94,7 @@ final class AgentChatView: NSView {
         } catch { append("s\(UUID().uuidString)", .status(error.localizedDescription, failed: true)); return false }
         turnNumber += 1; let number = turnNumber; turnStarted = false
         self.directory = directory
+        codexHome = URL(fileURLWithPath: environment["CODEX_HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
         append("u\(number)", .user(display))
         let turn = token; self.turn = turn; setRunning(true)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -93,6 +104,7 @@ final class AgentChatView: NSView {
             DispatchQueue.main.async {
                 guard let self, self.turn === turn else { return }
                 self.turn = nil; self.cancelTurn = nil; self.setRunning(false)
+                self.refreshContextUsage(force: true)
                 switch result {
                 case .failure(let error): self.append("f\(number)", .status(error.localizedDescription, failed: true))
                 case .success(let outcome):
@@ -114,6 +126,9 @@ final class AgentChatView: NSView {
     /// Forgets the conversation; the next prompt starts a new Codex thread.
     func reset() {
         cancelTurn?(); cancelTurn = nil; turn = nil; thread = nil; running = false
+        ticker?.invalidate(); ticker = nil
+        usageGeneration = UUID(); readingUsage = false; usageReadPending = false; lastUsageRead = .distantPast
+        contextUsage = nil; quota = nil; onUsageChange?()
         entries.removeAll(); order.removeAll(); rows.removeAll(); expanded.removeAll(); notices.removeAll()
         stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
         onChange?()
@@ -127,7 +142,35 @@ final class AgentChatView: NSView {
         let seconds = Int(Date().timeIntervalSince(started))
         return seconds < 60 ? L10n.tr("\(seconds) 秒") : L10n.tr("\(seconds / 60) 分 \(seconds % 60) 秒")
     }
-    private func refreshWorking() { workingLabel.stringValue = running ? "\(activity)  \(elapsed)" : activity }
+    private func refreshWorking() {
+        workingLabel.stringValue = running ? "\(activity)  \(elapsed)" : activity
+        if running { refreshContextUsage() }
+    }
+    func configureUsage(environment: [String: String]) {
+        codexHome = URL(fileURLWithPath: environment["CODEX_HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
+    }
+    /// Poll only this thread, off the UI thread, while it is running or on explicit refresh.
+    func refreshContextUsage(force: Bool = false) {
+        guard provider == .codex, let thread, let codexHome else { return }
+        if readingUsage { if force { usageReadPending = true }; return }
+        guard force || Date().timeIntervalSince(lastUsageRead) >= 2 else { return }
+        readingUsage = true; lastUsageRead = Date()
+        let generation = usageGeneration, reader = usageReader
+        usageQueue.async { [weak self] in
+            let snapshot = reader.read(thread: thread, home: codexHome)
+            DispatchQueue.main.async {
+                guard let self, self.usageGeneration == generation, self.thread == thread else { return }
+                self.readingUsage = false
+                defer {
+                    if self.usageReadPending { self.usageReadPending = false; self.refreshContextUsage(force: true) }
+                }
+                guard let snapshot else { return }
+                if snapshot.hasContextUpdate { self.contextUsage = snapshot.context }
+                if let quota = snapshot.quota, quota.observedAt > (self.quota?.observedAt ?? .distantPast) { self.quota = quota }
+                self.onUsageChange?()
+            }
+        }
+    }
     private func setRunning(_ value: Bool) {
         running = value
         ticker?.invalidate(); ticker = nil
@@ -141,7 +184,7 @@ final class AgentChatView: NSView {
     }
     private func handle(_ event: CodexEvent, turn number: Int) {
         switch event {
-        case .threadStarted(let id): thread = id
+        case .threadStarted(let id): thread = id; refreshContextUsage(force: true)
         case .turnStarted: turnStarted = true
         case .item(let item):
             if item.kind == .notice {
@@ -158,6 +201,8 @@ final class AgentChatView: NSView {
             func short(_ value: Int) -> String { value >= 1000 ? String(format: "%.1fk", Double(value) / 1000) : "\(value)" }
             append("d\(number)", .status(L10n.tr("完成 · \(elapsed) · 输入 \(short(input)) / 输出 \(short(output)) tokens"), failed: false))
         case .turnFailed(let message): append("d\(number)", .status(message, failed: true))
+        case .contextUsage(let update): contextUsage = update?.merging(contextUsage); onUsageChange?()
+        case .rateLimits(let snapshot): quota = snapshot; onUsageChange?()
         }
     }
 

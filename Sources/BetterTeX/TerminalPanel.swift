@@ -67,6 +67,12 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private var includeContext = true
     private let contextChip = Chip(fill: Theme.fill, radius: -1)
     private let contextLabel = NSTextField(labelWithString: "")
+    let usageView = AgentUsageView(frame: .zero)
+    private var quotaSnapshot: AgentQuotaSnapshot?
+    private var quotaClient: CodexQuotaClient?
+    private var quotaTimer: Timer?
+    private var lastQuotaAttempt = Date.distantPast
+    private var quotaFailed = false
     var terminals: [String: AdaptiveTerminal] = [:]
     var active = "Agent"
     var project: URL?
@@ -123,7 +129,11 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         // While a CLI session is on screen it has its own prompt, so the card shrinks to this row.
         compactAttach = ActionButton(L10n.tr("加入 CLI 输入"), symbol: "plus", style: .tinted) { [weak self] in self?.attachContext() }
         compactAttach.toolTip = L10n.tr("把当前文件 / 选区加入 CLI 的输入行"); compactAttach.isHidden = true
-        let contextRow = NSStackView(views: [contextChip, NSView(), compactAttach]); contextRow.spacing = 6; contextRow.alignment = .centerY
+        contextLabel.lineBreakMode = .byTruncatingMiddle
+        contextLabel.maximumNumberOfLines = 1
+        contextLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let contextRow = NSStackView(views: [contextChip, NSView(), usageView, compactAttach]); contextRow.spacing = 6; contextRow.alignment = .centerY
+        usageView.onRefresh = { [weak self] in self?.refreshUsage(force: true) }
         composer.isRichText = false; composer.drawsBackground = false; composer.font = .systemFont(ofSize: 13.5); composer.textColor = Theme.text
         composer.insertionPointColor = Theme.accent; composer.textContainerInset = NSSize(width: 0, height: 2); composer.textContainer?.lineFragmentPadding = 0
         composer.isVerticallyResizable = true; composer.isHorizontallyResizable = false; composer.autoresizingMask = [.width]
@@ -145,10 +155,13 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             let name = view.provider.rawValue
             view.onOpenFile = { [weak self] in self?.onOpenFile?($0) }
             view.onLog = { [weak self] in self?.append("\n\(name)\n" + $0 + "\n") }
+            view.onUsageChange = { [weak self] in self?.updateUsage() }
             view.onChange = { [weak self, weak view] in
                 guard let self, let view, self.activeChat === view else { self?.updateRail(); return }
                 self.showChatOrEmpty(); self.updateRail()
                 self.hint.stringValue = view.running ? L10n.tr("\(name) 正在工作 · 可在对话里点停止") : self.idleHint(view.provider)
+                self.updateUsage()
+                if !view.running { self.refreshUsage() }
             }
         }
         let toolRow = NSStackView(views: [attach, modelButton, effortButton, sandboxButton, toolSpacer, send]); toolRow.spacing = 2; toolRow.alignment = .centerY
@@ -255,6 +268,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             let range = lines.lowerBound == lines.upperBound ? ":\(lines.lowerBound)" : ":\(lines.lowerBound)-\(lines.upperBound)"
             text.append(NSAttributedString(string: range, attributes: [.foregroundColor: Theme.muted, .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)].merging(off) { $1 }))
         }
+        let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingMiddle
+        text.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: text.length))
         contextLabel.attributedStringValue = text
         let what = lines == nil ? L10n.tr("当前文件") : L10n.tr("所选的 \(lines!.count) 行源码")
         contextChip.toolTip = includeContext ? L10n.tr("发送时附带\(what) · 点按以取消") : L10n.tr("发送时不附带上下文 · 点按以附带\(what)")
@@ -312,7 +327,46 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         layout.ensureLayout(for: container)
         composerHeight.constant = min(max(22, layout.usedRect(for: container).height + 4), 112)
     }
-    func configure(project: URL, tools: Toolchain) { self.project = project; self.tools = tools }
+    func configure(project: URL, tools: Toolchain) {
+        quotaClient?.cancel(); quotaClient = nil; quotaSnapshot = nil; lastQuotaAttempt = .distantPast
+        self.project = project; self.tools = tools
+        chat.configureUsage(environment: tools.environment); claudeChat.configureUsage(environment: tools.environment)
+        quotaTimer?.invalidate()
+        quotaTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            guard let self else { return }; self.updateUsage()
+            if self.window?.isVisible == true, self.rail.isHidden, self.activeChat != nil { self.refreshUsage() }
+        }
+        refreshUsage()
+    }
+    private func updateUsage() {
+        guard let chat = activeChat else { return }
+        let quota: AgentQuotaSnapshot?
+        if chat.provider == .codex {
+            quota = [quotaSnapshot, chat.quota].compactMap { $0 }.max { $0.observedAt < $1.observedAt }
+        } else { quota = chat.quota }
+        usageView.update(provider: chat.provider, context: chat.contextUsage, quota: quota,
+                         refreshing: chat.provider == .codex && quotaClient != nil, failed: chat.provider == .codex && quotaFailed)
+    }
+    private func refreshUsage(force: Bool = false) {
+        activeChat?.refreshContextUsage(force: force)
+        guard activeChat?.provider == .codex, quotaClient == nil, force || Date().timeIntervalSince(lastQuotaAttempt) >= 60,
+              force || window?.isVisible == true,
+              let project, let tools, let executable = tools["codex"] else { updateUsage(); return }
+        let client = CodexQuotaClient(); quotaClient = client; lastQuotaAttempt = Date(); quotaFailed = false; updateUsage()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = Result { try client.read(executable: executable, environment: tools.environment, directory: project) }
+            DispatchQueue.main.async {
+                guard let self, self.quotaClient === client else { return }
+                self.quotaClient = nil
+                switch result {
+                case .success(let snapshot): self.quotaSnapshot = snapshot; self.quotaFailed = false
+                case .failure: self.quotaFailed = true
+                }
+                self.updateUsage()
+            }
+        }
+    }
+    deinit { quotaTimer?.invalidate(); quotaClient?.cancel() }
     /// The conversation tab shows the start page until the first message.
     private func showChatOrEmpty() {
         guard let view = activeChat else { return }
@@ -396,7 +450,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         content.subviews.forEach { $0.removeFromSuperview() }
         if let view = activeChat {
             selectedProvider = view.provider; updateModelButton(); showChatOrEmpty()
-            hint.stringValue = view.running ? L10n.tr("\(view.provider.rawValue) 正在工作 · 可在对话里点停止") : idleHint(view.provider); return
+            hint.stringValue = view.running ? L10n.tr("\(view.provider.rawValue) 正在工作 · 可在对话里点停止") : idleHint(view.provider)
+            refreshUsage(); return
         }
         if name == "Output" { content.pin(logScroll); hint.stringValue = L10n.tr("编译与 Git 输出 · 双击错误定位"); return }
         guard let project, let tools else { showEmpty(); onError?(L10n.tr("正在检测本机工具，请稍候。")); return }
@@ -590,6 +645,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         hint.stringValue = L10n.tr("会话已结束 · 点击标签重新启动")
     }
     func stopAll() {
+        quotaTimer?.invalidate(); quotaTimer = nil; quotaClient?.cancel(); quotaClient = nil
+        quotaSnapshot = nil; quotaFailed = false; project = nil; tools = nil
         for terminal in terminals.values { terminal.processDelegate = nil; terminal.terminate() }
         terminals.removeAll(); chat.reset(); claudeChat.reset(); logView.string = ""
         attachedContext = nil; includeContext = true; setComposer(""); updateContextChip(); select("Agent")

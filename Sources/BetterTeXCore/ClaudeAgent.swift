@@ -47,14 +47,26 @@ public final class ClaudeStream {
     private var streamingMessage = "message"
     private var open: [Int: CodexItem] = [:]
     private var partialIDs: [String: [String]] = [:]
+    private var usageModel: String?
+    private var lastInputTokens: Int?
+    private var contextWindows: [String: Int] = [:]
     public init(root: String? = nil) { self.root = root.map { $0.hasSuffix("/") ? $0 : $0 + "/" } }
 
     public func parse(line: String) -> [CodexEvent] {
         guard line.hasPrefix("{"), let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any], let type = object["type"] as? String else { return [] }
         switch type {
         case "system":
+            guard object["parent_tool_use_id"] as? String == nil else { return [] }
+            if object["subtype"] as? String == "compact_boundary" {
+                lastInputTokens = nil
+                return [.contextUsage(nil)]
+            }
             guard object["subtype"] as? String == "init", let session = object["session_id"] as? String else { return [] }
+            usageModel = object["model"] as? String
             return [.threadStarted(session), .turnStarted]
+        case "rate_limit_event":
+            guard let info = object["rate_limit_info"] as? [String: Any], let quota = AgentQuotaSnapshot.claude(info) else { return [] }
+            return [.rateLimits(quota)]
         case "stream_event":
             // Sub-agent chatter stays out of the conversation; only its tool card in the parent shows.
             guard object["parent_tool_use_id"] as? String == nil, let event = object["event"] as? [String: Any] else { return [] }
@@ -62,7 +74,8 @@ public final class ClaudeStream {
         case "assistant":
             guard object["parent_tool_use_id"] as? String == nil, let message = object["message"] as? [String: Any] else { return [] }
             let messageID = message["id"] as? String ?? "message"
-            return (message["content"] as? [[String: Any]] ?? []).compactMap { block in
+            let usage = contextUsage(message)
+            let entries: [CodexEvent] = (message["content"] as? [[String: Any]] ?? []).compactMap { block in
                 switch block["type"] as? String {
                 case "text": return .item(CodexItem(id: finalID(messageID, "t"), kind: .message, text: block["text"] as? String ?? ""))
                 case "thinking": return .item(CodexItem(id: finalID(messageID, "r"), kind: .reasoning, text: block["thinking"] as? String ?? ""))
@@ -72,6 +85,7 @@ public final class ClaudeStream {
                 default: return nil
                 }
             }
+            return usage + entries
         case "user":
             guard object["parent_tool_use_id"] as? String == nil, let message = object["message"] as? [String: Any], let blocks = message["content"] as? [[String: Any]] else { return [] }
             let structured = object["tool_use_result"] as? [String: Any]
@@ -91,13 +105,24 @@ public final class ClaudeStream {
                 items[id] = item; return .item(item)
             }
         case "result":
+            guard object["parent_tool_use_id"] as? String == nil else { return [] }
+            if let models = object["modelUsage"] as? [String: [String: Any]] {
+                for (model, usage) in models {
+                    if let size = integer(usage["contextWindow"]), size > 0 { contextWindows[model] = size }
+                }
+            }
+            // Result usage is cumulative across tools and subagents. Only use its capacity.
+            let context: [CodexEvent]
+            if let model = usageModel, let size = contextWindows[model], let used = lastInputTokens {
+                context = [.contextUsage(.init(usedTokens: used, limitTokens: size, model: model))]
+            } else { context = [] }
             if object["is_error"] as? Bool == true || (object["subtype"] as? String ?? "success") != "success" {
                 let message = object["result"] as? String ?? ""
-                return [.turnFailed(message.isEmpty ? L10n.tr("这一轮没有完成（\(object["subtype"] as? String ?? "error")）。") : message)]
+                return context + [.turnFailed(message.isEmpty ? L10n.tr("这一轮没有完成（\(object["subtype"] as? String ?? "error")）。") : message)]
             }
             let usage = object["usage"] as? [String: Any] ?? [:]
             let input = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].reduce(0) { $0 + (usage[$1] as? Int ?? 0) }
-            return [.turnCompleted(inputTokens: input, outputTokens: usage["output_tokens"] as? Int ?? 0)]
+            return context + [.turnCompleted(inputTokens: input, outputTokens: usage["output_tokens"] as? Int ?? 0)]
         default: return []
         }
     }
@@ -107,6 +132,7 @@ public final class ClaudeStream {
         switch event["type"] as? String {
         case "message_start":
             streamingMessage = (event["message"] as? [String: Any])?["id"] as? String ?? "message"; open.removeAll()
+            return contextUsage(event["message"] as? [String: Any] ?? [:])
         case "content_block_start":
             guard let index = event["index"] as? Int, let kind = (event["content_block"] as? [String: Any])?["type"] as? String, kind == "text" || kind == "thinking" else { return [] }
             blocks += 1
@@ -121,6 +147,15 @@ public final class ClaudeStream {
         default: break
         }
         return []
+    }
+    private func contextUsage(_ message: [String: Any]) -> [CodexEvent] {
+        guard let usage = message["usage"] as? [String: Any], let input = integer(usage["input_tokens"]) else { return [] }
+        let counts = [input, integer(usage["cache_creation_input_tokens"]) ?? 0, integer(usage["cache_read_input_tokens"]) ?? 0]
+        var total = 0
+        for count in counts { let sum = total.addingReportingOverflow(count); guard !sum.overflow else { return [] }; total = sum.partialValue }
+        usageModel = message["model"] as? String ?? usageModel; lastInputTokens = total
+        // Match Claude's status line: input + cache reads + cache writes, excluding output.
+        return [.contextUsage(.init(usedTokens: total, limitTokens: usageModel.flatMap { contextWindows[$0] }, model: usageModel))]
     }
     /// The id for a finished block: the one its partial version used, when it was streamed.
     private func finalID(_ message: String, _ suffix: String) -> String {
