@@ -5,12 +5,14 @@
 # BetterTeX
 
 **A native LaTeX workspace for macOS.**<br>
-Write, compile and preview in one window — with Overleaf sync and your coding agents built in.
+Write, compile and preview in one window — with Overleaf sync and your coding agents built in.<br>
+Word-level jumps between source and PDF, in a **2.8 MB** download.
 
 [![Release](https://img.shields.io/badge/release-v0.1.0--alpha.4-0A84FF?style=flat-square)](https://github.com/tangshunpu/BetterTeX/releases)
 [![Platform](https://img.shields.io/badge/macOS-13%2B-1C1C1E?style=flat-square&logo=apple&logoColor=white)](#install)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-8E8E93?style=flat-square)](#install)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?style=flat-square&logo=swift&logoColor=white)](https://swift.org)
+[![Download size](https://img.shields.io/badge/download-2.8%20MB-FF9F0A?style=flat-square)](https://github.com/tangshunpu/BetterTeX/releases)
 [![License](https://img.shields.io/badge/license-MIT-30D158?style=flat-square)](LICENSE)
 
 [**Download**](https://github.com/tangshunpu/BetterTeX/releases) · [简体中文](README.zh-CN.md) · [User guide (中文)](docs/guide.zh-CN.md)
@@ -23,16 +25,25 @@ Write, compile and preview in one window — with Overleaf sync and your coding 
 
 <img src="docs/images/dev-summary-2026-11-12.png" alt="BetterTeX highlights: structure highlighting, word-level sync, AI agent, word-level diff, smart compile, one-click Overleaf and smart completion">
 
+### Highlights
+
+- 🎯 **Two-way jump, down to the word.** `⌘`-click the PDF to land on the exact character in your source; `⌘`-click the source to mark that word on the page. It keeps landing in the right place after edits you have not built yet.
+- 🪶 **2.8 MB.** The whole app is a 2.8 MB download — native Swift + AppKit + PDFKit, no Electron and no bundled browser.
+- 🧭 **Structure you can see.** Sections, figures and tables are marked in the editor and gutter, with a matching outline under the file list.
+- 🔍 **Word-level diff.** Hover the gutter change strip to see exactly which words changed; click for the full detail.
+- ⚡ **Smart compile.** Live compile waits until an edit is finished and meaningful, so half-typed environments do not trigger a build.
+- 🤖 **Agents that point at your paper.** Codex and Claude Code replies typeset LaTeX and link to source lines and PDF pages you can jump to.
+
 | | |
 | --- | --- |
 | ✍️ **Editor** | Syntax colouring, outline, command / citation / path completion, and full figure, table and list templates with matching `\end` |
-| ⚡ **Live preview** | Auto-compile with latexmk, pdfLaTeX, XeLaTeX or LuaLaTeX; SyncTeX in both directions |
+| ⚡ **Live preview** | Auto-compile with latexmk, pdfLaTeX, XeLaTeX or LuaLaTeX; `⌘`-click to jump between source and PDF, accurate to the word |
 | 🗂️ **Project home** | Local and Overleaf projects in one searchable list — click to open |
 | 🍃 **Overleaf sync** | Real-time or interval sync, collaborator cursors, comments |
 | 🤖 **Agents** | Native conversations with Codex and Claude Code, with diffs and session history |
 | 🔀 **Git** | Pull, commit and push without leaving the window |
 | 🖼️ **Quick insert** | Drop or paste an image and get a ready-made `figure` |
-| 🪶 **Native** | Swift + AppKit + PDFKit. No Electron |
+| 🪶 **Native** | Swift + AppKit + PDFKit. No Electron — a 2.8 MB download |
 | 🌐 **Languages** | English and Simplified Chinese; choose System Default or a language in **BetterTeX → Settings…** (`⌘,`), then reopen the app |
 | ⬇️ **Updates** | GitHub Release notices preserve editor focus; choose to download, verify the publisher's Ed25519 signature, install and restart. Automatic checks and prerelease options are in Settings |
 
