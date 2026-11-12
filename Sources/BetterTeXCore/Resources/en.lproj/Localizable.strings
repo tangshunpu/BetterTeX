@@ -705,3 +705,14 @@
 "字符串缩写" = "String abbreviation";
 "导言" = "Preamble";
 "注释" = "Comment";
+"思考过程" = "thought";
+"读取文件" = "read files";
+"搜索代码" = "searched code";
+"搜索网页" = "searched the web";
+"运行命令" = "ran commands";
+"编辑文件" = "edited files";
+"调用工具" = "used tools";
+"、" = ", ";
+"%1$@ 个失败" = "%1$@ failed";
+"正在读取文件…" = "Reading files…";
+"正在搜索…" = "Searching…";

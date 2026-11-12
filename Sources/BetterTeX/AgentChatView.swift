@@ -40,6 +40,12 @@ final class AgentChatView: NSView {
     private var order: [String] = []
     private var rows: [String: NSView] = [:]
     private var expanded = Set<String>()
+    /// Tool rows the user opened or closed by hand; the rest follow their default (collapsed).
+    private var disclosed: [String: Bool] = [:]
+    /// Consecutive tool calls share one summary row ("Read files, ran commands"); these map an item to
+    /// its group and a group to its items, in order.
+    private var groupOf: [String: String] = [:]
+    private var groupMembers: [String: [String]] = [:]
     private var notices = Set<String>()
     /// Identity of the turn in flight, and how to cancel it.
     private var turn: AnyObject?
@@ -129,7 +135,7 @@ final class AgentChatView: NSView {
         ticker?.invalidate(); ticker = nil
         usageGeneration = UUID(); readingUsage = false; usageReadPending = false; lastUsageRead = .distantPast
         contextUsage = nil; quota = nil; onUsageChange?()
-        entries.removeAll(); order.removeAll(); rows.removeAll(); expanded.removeAll(); notices.removeAll()
+        entries.removeAll(); order.removeAll(); rows.removeAll(); expanded.removeAll(); disclosed.removeAll(); groupOf.removeAll(); groupMembers.removeAll(); notices.removeAll()
         stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
         onChange?()
     }
@@ -207,17 +213,33 @@ final class AgentChatView: NSView {
     }
 
     // MARK: Rows
+    private func groupable(_ entry: Entry) -> Bool {
+        guard case .item(let item) = entry else { return false }
+        return [.toolCall, .webSearch, .command, .fileChange, .reasoning].contains(item.kind)
+    }
     private func append(_ key: String, _ entry: Entry) {
-        let isNew = entries[key] == nil
+        let isNew = entries[key] == nil, previous = order.last
         entries[key] = entry; if isNew { order.append(key) }
-        let view = row(for: key, entry)
+        // A tool call joins the group of the row right above it, or starts a new one.
+        var rowKey = key
+        if groupable(entry) {
+            if let group = groupOf[key] { rowKey = group }
+            else {
+                let group = previous.flatMap { groupOf[$0] } ?? "g." + key
+                groupOf[key] = group; groupMembers[group, default: []].append(key); rowKey = group
+            }
+        }
+        let view = rowKey == key ? row(for: key, entry) : groupRow(rowKey)
+        place(rowKey, view)
+        if isNew { if order.count == 1 { onChange?() }; scrollToEnd() }
+    }
+    private func place(_ key: String, _ view: NSView) {
         if let old = rows[key], let index = stack.arrangedSubviews.firstIndex(of: old) {
             stack.removeArrangedSubview(old); old.removeFromSuperview(); stack.insertArrangedSubview(view, at: index)
         } else if running, let index = stack.arrangedSubviews.firstIndex(of: working) { stack.insertArrangedSubview(view, at: index) }
         else { stack.addArrangedSubview(view) }
         view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -Self.inset * 2).isActive = true
         rows[key] = view
-        if isNew { if order.count == 1 { onChange?() }; scrollToEnd() }
     }
     private func scrollToEnd() {
         DispatchQueue.main.async { [weak self] in
@@ -269,18 +291,122 @@ final class AgentChatView: NSView {
     // MARK: Claude Code styling
     // The Claude tab follows the Claude Code extension: a timeline of bulleted entries, each tool
     // named with its argument, results hanging beneath, and edits shown as coloured diffs.
-    private static let claude = NSColor(hex: 0xD97757)
-    private func timeline(_ color: NSColor, running: Bool = false, _ content: NSView) -> NSView {
+    /// A row with a small glyph in the gutter: what kind of step it is, red when it failed, a spinner while it runs.
+    private func timeline(_ color: NSColor, running: Bool = false, symbol: String, _ content: NSView) -> NSView {
         let marker: NSView
         if running { let spinner = NSProgressIndicator(); spinner.style = .spinning; spinner.controlSize = .mini; spinner.startAnimation(nil); spinner.size(11, 11); marker = spinner }
-        else { let dot = Chip(fill: color, radius: -1); dot.size(7, 7); marker = dot }
-        let gutter = NSView(); gutter.size(14, 18); marker.translatesAutoresizingMaskIntoConstraints = false; gutter.addSubview(marker)
-        NSLayoutConstraint.activate([marker.centerXAnchor.constraint(equalTo: gutter.centerXAnchor), marker.topAnchor.constraint(equalTo: gutter.topAnchor, constant: running ? 3 : 5.5)])
+        else { let image = NSImageView(image: Theme.symbol(symbol, size: 11.5, weight: .regular) ?? NSImage()); image.contentTintColor = color; image.size(16, 16); marker = image }
+        let gutter = NSView(); gutter.size(16, 22); marker.translatesAutoresizingMaskIntoConstraints = false; gutter.addSubview(marker)
+        NSLayoutConstraint.activate([marker.centerXAnchor.constraint(equalTo: gutter.centerXAnchor), marker.centerYAnchor.constraint(equalTo: gutter.centerYAnchor)])
         content.setContentHuggingPriority(.init(1), for: .horizontal)
-        let line = NSStackView(views: [gutter, content]); line.spacing = 6; line.alignment = .top
+        let line = NSStackView(views: [gutter, content]); line.spacing = 4; line.alignment = .top; line.distribution = .fill
         return line
     }
-    private func statusColor(_ status: CodexItem.Status) -> NSColor { status == .failed ? Theme.red : Theme.green }
+    private func statusColor(_ status: CodexItem.Status) -> NSColor { status == .failed ? Theme.red : Theme.muted }
+    /// The glyph for one step: a terminal for commands, a pencil for edits, a page for reads.
+    private func symbol(for item: CodexItem) -> String {
+        switch item.kind {
+        case .command: return "terminal"
+        case .fileChange: return "pencil"
+        case .webSearch: return "globe"
+        case .reasoning: return "brain"
+        case .todo: return "checklist"
+        case .notice: return "exclamationmark.triangle"
+        case .message: return "text.bubble"
+        case .toolCall:
+            switch verb(for: item) {
+            case .read: return "doc.text"
+            case .search: return "magnifyingglass"
+            default: return "wrench.and.screwdriver"
+            }
+        }
+    }
+    private enum Verb: Int, CaseIterable { case think, read, search, web, run, edit, tool }
+    private func verb(for item: CodexItem) -> Verb {
+        switch item.kind {
+        case .command: return .run
+        case .fileChange: return .edit
+        case .webSearch: return .web
+        case .reasoning: return .think
+        default:
+            let tool = item.text.components(separatedBy: " · ")[0].lowercased()
+            if ["read", "notebookread", "read_file", "view"].contains(tool) { return .read }
+            if ["grep", "glob", "ls", "search", "list_files", "find"].contains(tool) { return .search }
+            return .tool
+        }
+    }
+    private func phrase(_ verb: Verb) -> String {
+        switch verb {
+        case .think: return L10n.tr("思考过程")
+        case .read: return L10n.tr("读取文件")
+        case .search: return L10n.tr("搜索代码")
+        case .web: return L10n.tr("搜索网页")
+        case .run: return L10n.tr("运行命令")
+        case .edit: return L10n.tr("编辑文件")
+        case .tool: return L10n.tr("调用工具")
+        }
+    }
+    /// What a running step is doing, for the group's header.
+    private func activity(_ item: CodexItem) -> String {
+        switch verb(for: item) {
+        case .think: return L10n.tr("\(name) 正在思考…")
+        case .read: return L10n.tr("正在读取文件…")
+        case .search, .web: return L10n.tr("正在搜索…")
+        case .run: return L10n.tr("正在运行命令…")
+        case .edit: return L10n.tr("正在修改文件…")
+        case .tool: return L10n.tr("\(name) 正在工作…")
+        }
+    }
+    /// One quiet line for a run of steps: "Read files, ran commands", with a chevron to list them.
+    /// A lone step skips the summary and shows its own row.
+    private func groupRow(_ group: String) -> NSView {
+        let keys = groupMembers[group] ?? []
+        if keys.count == 1, let key = keys.first, let entry = entries[key] { return row(for: key, entry) }
+        let items = keys.compactMap { key -> CodexItem? in if case .item(let item) = entries[key] { return item }; return nil }
+        let live = items.last { $0.status == .running }, failures = items.filter { $0.status == .failed }.count
+        let open = isOpen(group)
+        let verbs = Set(items.map(verb(for:)))
+        var text: String
+        if let live { text = activity(live) }
+        else {
+            // Thinking is only named when it is all the group did.
+            let named = verbs.count > 1 ? verbs.subtracting([.think]) : verbs
+            text = Verb.allCases.filter(named.contains).map(phrase).joined(separator: L10n.tr("、"))
+            text = text.prefix(1).uppercased() + text.dropFirst()
+        }
+        let icon: NSView
+        if live != nil { let spinner = NSProgressIndicator(); spinner.style = .spinning; spinner.controlSize = .mini; spinner.startAnimation(nil); spinner.size(12, 12); icon = spinner }
+        else {
+            let main = verbs.subtracting([.think])
+            let name = main.count == 1 ? symbol(for: items.first { verb(for: $0) == main.first! }!) : main.isEmpty ? "brain" : "wrench.and.screwdriver"
+            let image = NSImageView(image: Theme.symbol(name, size: 11.5, weight: .regular) ?? NSImage()); image.contentTintColor = Theme.muted; image.size(16, 16); icon = image
+        }
+        let gutter = NSView(); gutter.size(16, 16); icon.translatesAutoresizingMaskIntoConstraints = false; gutter.addSubview(icon)
+        NSLayoutConstraint.activate([icon.centerXAnchor.constraint(equalTo: gutter.centerXAnchor), icon.centerYAnchor.constraint(equalTo: gutter.centerYAnchor)])
+        let label = Theme.label(text, size: 13, color: Theme.muted); label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        var parts: [NSView] = [gutter, label]
+        if failures > 0 { parts.append(Theme.label(L10n.tr("\(failures) 个失败"), size: 12, color: Theme.red, weight: .medium)) }
+        let chevron = NSImageView(image: Theme.symbol(open ? "chevron.down" : "chevron.right", size: 9, weight: .semibold)!); chevron.contentTintColor = Theme.faint; chevron.size(12, 12)
+        parts.append(chevron)
+        let line = NSStackView(views: parts); line.spacing = 4; line.alignment = .centerY
+        let header = RowButton(height: 24) { [weak self] in self?.toggle(group, from: open) }
+        header.layer?.cornerRadius = 6; header.layer?.cornerCurve = .continuous
+        header.pinRow(line, leading: 0, trailing: 6)
+        header.setAccessibilityLabel(text); header.setAccessibilityExpanded(open)
+        // The header hugs its text, so the hover highlight sits under the words, not the whole width.
+        let top = NSStackView(views: [header, NSView()]); top.distribution = .fill; header.setContentHuggingPriority(.required, for: .horizontal)
+        guard open else { return top }
+        // Opened, the steps hang off a hairline under the icon.
+        let steps = column(keys.compactMap { key in entries[key].map { row(for: key, $0) } }, spacing: 6)
+        let rail = Chip(fill: Theme.hairline, radius: 0); rail.size(1, nil)
+        let body = NSView(); [rail, steps].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; body.addSubview($0) }
+        NSLayoutConstraint.activate([
+            rail.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 7.5), rail.topAnchor.constraint(equalTo: body.topAnchor), rail.bottomAnchor.constraint(equalTo: body.bottomAnchor),
+            steps.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 18), steps.trailingAnchor.constraint(equalTo: body.trailingAnchor), steps.topAnchor.constraint(equalTo: body.topAnchor), steps.bottomAnchor.constraint(equalTo: body.bottomAnchor)
+        ])
+        return column([top, body], spacing: 4)
+    }
     /// "Read  sections/intro.tex": the tool in bold, its argument in quiet monospace.
     private func toolTitle(_ tool: String, _ argument: String) -> NSTextField {
         let text = NSMutableAttributedString(string: tool, attributes: [.font: NSFont.systemFont(ofSize: 12.5, weight: .semibold), .foregroundColor: Theme.text])
@@ -291,6 +417,67 @@ final class AgentChatView: NSView {
     private func hanging(_ text: String, failed: Bool = false) -> NSTextField {
         let label = wrapped(plain("⎿  " + text, size: 11.5, color: failed ? Theme.red : Theme.muted)); label.maximumNumberOfLines = 4; label.cell?.truncatesLastVisibleLine = true
         return label
+    }
+    // MARK: Collapsible tool rows
+    /// Tool calls start folded to a single line; failures open so the error is in view.
+    private func isOpen(_ key: String, default value: Bool = false) -> Bool { disclosed[key] ?? value }
+    private func toggle(_ key: String, from open: Bool) {
+        if groupMembers[key] != nil { disclosed[key] = !open; place(key, groupRow(key)); return }
+        guard let entry = entries[key] else { return }
+        disclosed[key] = !open; append(key, entry)
+    }
+    /// One line: tool, argument (truncated), a quiet summary and a chevron. Clicking it folds the body.
+    private func disclosure(_ key: String, open: Bool, tool: String, argument: String, summary: NSAttributedString? = nil, hasBody: Bool, trailing: [NSView] = []) -> NSView {
+        let text = NSMutableAttributedString(string: tool, attributes: [.font: NSFont.systemFont(ofSize: 12.5, weight: .medium), .foregroundColor: Theme.soft])
+        let flat = argument.replacingOccurrences(of: "\n", with: " ⏎ ")
+        if !flat.isEmpty { text.append(NSAttributedString(string: "  " + flat, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular), .foregroundColor: Theme.muted])) }
+        let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
+        text.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: text.length))
+        let title = NSTextField(labelWithAttributedString: text)
+        title.cell?.wraps = false; title.usesSingleLineMode = true; title.lineBreakMode = .byTruncatingTail; title.maximumNumberOfLines = 1; title.toolTip = argument.isEmpty ? nil : argument
+        title.setContentCompressionResistancePriority(.init(1), for: .horizontal); title.setContentHuggingPriority(.init(1), for: .horizontal)
+        var views: [NSView] = [title]
+        if let summary {
+            let label = NSTextField(labelWithAttributedString: summary); label.setContentCompressionResistancePriority(.required, for: .horizontal); label.setContentHuggingPriority(.required, for: .horizontal)
+            views.append(label)
+        }
+        if hasBody {
+            let chevron = NSImageView(image: Theme.symbol(open ? "chevron.down" : "chevron.right", size: 9, weight: .bold)!)
+            chevron.contentTintColor = Theme.faint; chevron.size(12, 12); views.append(chevron)
+        }
+        let line = NSStackView(views: views); line.spacing = 6; line.alignment = .centerY; line.distribution = .fill
+        guard hasBody else {
+            let row = NSStackView(views: [line] + trailing); row.spacing = 4; row.alignment = .centerY; row.distribution = .fill; row.size(nil, 20)
+            return row
+        }
+        let button = RowButton(height: 22) { [weak self] in self?.toggle(key, from: open) }
+        button.layer?.cornerRadius = 6; button.layer?.cornerCurve = .continuous
+        button.pinRow(line, leading: 5, trailing: 6)
+        button.setAccessibilityLabel(tool + (flat.isEmpty ? "" : " " + flat)); button.setAccessibilityExpanded(open)
+        button.setContentHuggingPriority(.init(1), for: .horizontal)
+        guard !trailing.isEmpty else { return button }
+        let row = NSStackView(views: [button] + trailing); row.spacing = 2; row.alignment = .centerY; row.distribution = .fill
+        return row
+    }
+    /// "12 行" in the faint summary style, or the exit code in red.
+    private func summary(_ text: String, color: NSColor = Theme.faint) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium), .foregroundColor: color])
+    }
+    private func diffSummary(_ diff: String) -> NSAttributedString? {
+        let lines = diff.components(separatedBy: "\n")
+        let added = lines.filter { $0.hasPrefix("+") && !$0.hasPrefix("+++") }.count, removed = lines.filter { $0.hasPrefix("-") && !$0.hasPrefix("---") }.count
+        guard added + removed > 0 else { return nil }
+        let result = NSMutableAttributedString()
+        if added > 0 { result.append(summary("+\(added)", color: Theme.adaptive(0x1A7F37, 0x7EE787))) }
+        if removed > 0 { result.append(summary((added > 0 ? " " : "") + "−\(removed)", color: Theme.adaptive(0xCF222E, 0xFF9A93))) }
+        return result
+    }
+    /// Bodies sit a little in from the header so they read as belonging to it.
+    private func indented(_ view: NSView) -> NSView {
+        let holder = NSView(); view.translatesAutoresizingMaskIntoConstraints = false; holder.addSubview(view)
+        NSLayoutConstraint.activate([view.topAnchor.constraint(equalTo: holder.topAnchor), view.bottomAnchor.constraint(equalTo: holder.bottomAnchor), view.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 5), view.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor)])
+        if !(view is ActionButton) { view.trailingAnchor.constraint(equalTo: holder.trailingAnchor).isActive = true }
+        return holder
     }
     private func box(_ content: NSView) -> NSView {
         let box = Chip(fill: Theme.fillSoft, radius: 7)
@@ -354,20 +541,25 @@ final class AgentChatView: NSView {
         case .item(let item):
             let running = item.status == .running
             switch item.kind {
-            case .message: return timeline(running ? Self.claude : Theme.text, rich(item.text.trimmingCharacters(in: .newlines)))
+            case .message: return rich(item.text.trimmingCharacters(in: .newlines))
             case .reasoning:
                 let font = NSFontManager.shared.convert(NSFont.systemFont(ofSize: 12), toHaveTrait: .italicFontMask)
                 let lines = item.text.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n")
+                // Live thinking shows its tail; once done it folds to its first line.
+                let open = isOpen(key, default: running)
+                let header = disclosure(key, open: open, tool: L10n.tr("思考"), argument: open ? "" : (lines.first ?? ""), hasBody: true)
+                guard open else { return timeline(Theme.faint, running: running, symbol: "brain", header) }
                 let (shown, toggle) = clipped(lines, key: key, collapsed: 3, tail: running)
                 let label = wrapped(NSAttributedString(string: shown.joined(separator: "\n"), attributes: [.font: font, .foregroundColor: Theme.muted]))
-                return timeline(Theme.faint, running: running, column([toolTitle(L10n.tr("思考"), ""), label] + (toggle.map { [$0] } ?? []), spacing: 3))
-            case .notice: return timeline(Theme.orange, wrapped(plain(item.text, size: 11.5, color: Theme.orange)))
+                return timeline(Theme.faint, running: running, symbol: "brain", column([header, indented(label)] + (toggle.map { [indented($0)] } ?? []), spacing: 3))
+            case .notice: return timeline(Theme.orange, symbol: "exclamationmark.triangle", wrapped(plain(item.text, size: 11.5, color: Theme.orange)))
             case .toolCall, .webSearch:
                 let parts = item.text.components(separatedBy: " · ")
                 let tool = item.kind == .webSearch ? "Web" : parts[0], argument = item.kind == .webSearch ? item.text : parts.dropFirst().joined(separator: " · ")
-                var views: [NSView] = [toolTitle(tool, argument)]
-                if !item.detail.isEmpty { views.append(hanging(item.detail, failed: item.status == .failed)) }
-                return timeline(statusColor(item.status), running: running, column(views, spacing: 2))
+                let failed = item.status == .failed, open = isOpen(key, default: failed)
+                var views: [NSView] = [disclosure(key, open: open, tool: tool, argument: argument, hasBody: !item.detail.isEmpty)]
+                if open, !item.detail.isEmpty { views.append(indented(hanging(item.detail, failed: failed))) }
+                return timeline(statusColor(item.status), running: running, symbol: symbol(for: item), column(views, spacing: 2))
             case .todo:
                 let text = NSMutableAttributedString()
                 let lines = item.detail.components(separatedBy: "\n")
@@ -377,36 +569,41 @@ final class AgentChatView: NSView {
                     else if line.hasPrefix("▸") { attributes[.foregroundColor] = Theme.text; attributes[.font] = NSFont.systemFont(ofSize: 12.5, weight: .semibold) }
                     text.append(NSAttributedString(string: line + (index < lines.count - 1 ? "\n" : ""), attributes: attributes))
                 }
-                return timeline(statusColor(item.status), running: running, column([toolTitle(L10n.tr("待办"), ""), wrapped(text)], spacing: 3))
+                return timeline(statusColor(item.status), running: running, symbol: symbol(for: item), column([toolTitle(L10n.tr("待办"), ""), wrapped(text)], spacing: 3))
             case .command:
-                var views: [NSView] = [toolTitle("Bash", item.text)]
                 let output = item.detail.trimmingCharacters(in: .newlines)
-                if !output.isEmpty {
-                    let (shown, toggle) = clipped(output.components(separatedBy: "\n"), key: key, collapsed: 4, tail: true)
-                    views.append(box(wrapped(plain(shown.joined(separator: "\n"), size: 11, color: item.status == .failed ? Theme.red : Theme.muted, mono: true))))
-                    if let toggle { views.append(toggle) }
+                let lines = output.isEmpty ? [] : output.components(separatedBy: "\n")
+                let failed = item.status == .failed, open = isOpen(key, default: failed)
+                var note: NSAttributedString?
+                if let code = item.exitCode, code != 0 { note = summary(L10n.tr("退出码 \(code)"), color: Theme.red) }
+                else if lines.count > 1 { note = summary(L10n.tr("\(lines.count) 行")) }
+                var views: [NSView] = [disclosure(key, open: open, tool: "Bash", argument: item.text, summary: note, hasBody: !lines.isEmpty)]
+                if open, !lines.isEmpty {
+                    let (shown, toggle) = clipped(lines, key: key, collapsed: 12, tail: true)
+                    views.append(indented(box(wrapped(plain(shown.joined(separator: "\n"), size: 11, color: failed ? Theme.red : Theme.muted, mono: true)))))
+                    if let toggle { views.append(indented(toggle)) }
                 }
-                return timeline(statusColor(item.status), running: running, column(views, spacing: 4))
+                return timeline(statusColor(item.status), running: running, symbol: symbol(for: item), column(views, spacing: 4))
             case .fileChange:
                 let change = item.detail.components(separatedBy: "\n")[0]
                 let parts = change.components(separatedBy: "  "); let path = parts.dropFirst().joined(separator: "  ")
                 let relative = directory.map { path.hasPrefix($0.path + "/") ? String(path.dropFirst($0.path.count + 1)) : path } ?? path
-                let open = ActionButton(relative, symbol: "arrow.up.forward", style: .plain) { [weak self] in
+                let reveal = ActionButton("", symbol: "arrow.up.forward.square", style: .plain) { [weak self] in
                     guard let self, let directory = self.directory else { return }
                     self.onOpenFile?(path.hasPrefix("/") ? URL(fileURLWithPath: path) : directory.appendingPathComponent(path))
                 }
-                open.toolTip = L10n.tr("在编辑器中打开 \(path)"); open.cell?.lineBreakMode = .byTruncatingMiddle; open.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-                let title = Theme.label(parts.first == L10n.tr("写入") ? "Write" : "Edit", size: 12.5, weight: .semibold); title.setContentCompressionResistancePriority(.required, for: .horizontal)
-                let header = NSStackView(views: [title, open, NSView()]); header.spacing = 4; header.alignment = .centerY
-                var views: [NSView] = [header]
-                if !item.diff.isEmpty {
-                    let (shown, toggle) = clipped(item.diff.components(separatedBy: "\n"), key: key, collapsed: 12, tail: false)
-                    views.append(box(wrapped(diffText(shown)))); if let toggle { views.append(toggle) }
+                reveal.toolTip = L10n.tr("在编辑器中打开 \(path)"); reveal.setAccessibilityLabel(reveal.toolTip); reveal.setContentHuggingPriority(.required, for: .horizontal)
+                let reason = item.detail.components(separatedBy: "\n").dropFirst().joined(separator: "\n")
+                let failed = item.status == .failed, expandedRow = isOpen(key, default: failed)
+                let tool = parts.first == L10n.tr("写入") ? "Write" : "Edit"
+                var views: [NSView] = [disclosure(key, open: expandedRow, tool: tool, argument: relative, summary: diffSummary(item.diff), hasBody: !item.diff.isEmpty || (failed && !reason.isEmpty), trailing: [reveal])]
+                if expandedRow, !item.diff.isEmpty {
+                    let (shown, toggle) = clipped(item.diff.components(separatedBy: "\n"), key: key, collapsed: 16, tail: false)
+                    views.append(indented(box(wrapped(diffText(shown))))); if let toggle { views.append(indented(toggle)) }
                 }
                 // A failed or denied edit explains itself on the lines after the path.
-                let reason = item.detail.components(separatedBy: "\n").dropFirst().joined(separator: "\n")
-                if item.status == .failed, !reason.isEmpty { views.append(hanging(reason, failed: true)) }
-                return timeline(statusColor(item.status), running: running, column(views, spacing: 4))
+                if expandedRow, failed, !reason.isEmpty { views.append(indented(hanging(reason, failed: true))) }
+                return timeline(statusColor(item.status), running: running, symbol: symbol(for: item), column(views, spacing: 4))
             }
         }
     }
@@ -455,20 +652,15 @@ final class AgentChatView: NSView {
                 if let code = item.exitCode, code != 0 { header.append(Theme.label(L10n.tr("退出码 \(code)"), size: 11, color: Theme.red)) }
                 let output = item.detail.trimmingCharacters(in: .newlines)
                 let lines = output.isEmpty ? [] : output.components(separatedBy: "\n")
-                let open = expanded.contains(key)
-                if lines.count > 4 {
-                    let toggle = ActionButton(open ? L10n.tr("收起") : L10n.tr("\(lines.count) 行"), symbol: open ? "chevron.up" : "chevron.down", style: .plain) { [weak self] in
-                        guard let self, let entry = self.entries[key] else { return }
-                        if self.expanded.contains(key) { self.expanded.remove(key) } else { self.expanded.insert(key) }
-                        self.append(key, entry)
-                    }
-                    header.append(toggle)
+                // Output stays folded behind the line count; a failed command opens to show it.
+                let open = isOpen(key, default: item.status == .failed)
+                if !lines.isEmpty {
+                    let toggle = ActionButton(L10n.tr("\(lines.count) 行"), symbol: open ? "chevron.down" : "chevron.right", style: .plain) { [weak self] in self?.toggle(key, from: open) }
+                    toggle.setAccessibilityExpanded(open); header.append(toggle)
                 }
                 let top = NSStackView(views: header); top.spacing = 7; top.alignment = .centerY
-                guard !lines.isEmpty else { return card(top) }
-                // Collapsed, a long output shows its tail; expanded, up to 400 lines.
-                let shown = open ? lines.suffix(400) : lines.suffix(4)
-                return card(column([top, wrapped(plain(shown.joined(separator: "\n"), size: 11, color: Theme.muted, mono: true))]))
+                guard open, !lines.isEmpty else { return card(top) }
+                return card(column([top, wrapped(plain(lines.suffix(400).joined(separator: "\n"), size: 11, color: item.status == .failed ? Theme.red : Theme.muted, mono: true))]))
             }
         }
     }
