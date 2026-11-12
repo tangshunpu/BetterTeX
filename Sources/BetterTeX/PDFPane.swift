@@ -7,8 +7,15 @@ final class SyncedPDFView: PDFView {
     var onResize: (() -> Void)?
     var onCommandClick: (() -> Void)?
     var onEscape: (() -> Void)?
-    /// A pinch or ⌘+ / ⌘− — the only scale changes that count as the user choosing a zoom.
-    var onUserZoom: (() -> Void)?
+    /// A zoom the user asked for (⌘-scroll, pinch, ⌘+ / ⌘−): the factor and, for pointer gestures, the point to keep still.
+    var onZoom: ((CGFloat, NSPoint?) -> Void)?
+    /// Scroll-wheel ticks and trackpad swipes as a zoom factor; moving away from you zooms in, as in Word.
+    static func zoomFactor(for event: NSEvent) -> CGFloat {
+        var delta = event.scrollingDeltaY
+        if event.isDirectionInvertedFromDevice { delta = -delta }
+        let factor = exp(delta * (event.hasPreciseScrollingDeltas ? 0.006 : 0.08))
+        return min(1.6, max(1 / 1.6, factor))
+    }
     override func setFrameSize(_ newSize: NSSize) {
         let changed = newSize != frame.size
         super.setFrameSize(newSize); if changed { onResize?() }
@@ -18,9 +25,27 @@ final class SyncedPDFView: PDFView {
         // The inner scroll view settles during layout; fit again once it has, then once more after the pass.
         onResize?(); DispatchQueue.main.async { [weak self] in self?.onResize?() }
     }
-    override func magnify(with event: NSEvent) { onUserZoom?(); super.magnify(with: event) }
-    override func zoomIn(_ sender: Any?) { onUserZoom?(); super.zoomIn(sender) }
-    override func zoomOut(_ sender: Any?) { onUserZoom?(); super.zoomOut(sender) }
+    override func scrollWheel(with event: NSEvent) {
+        guard event.modifierFlags.contains(.command), let onZoom else { super.scrollWheel(with: event); return }
+        onZoom(Self.zoomFactor(for: event), convert(event.locationInWindow, from: nil))
+    }
+    override func magnify(with event: NSEvent) {
+        guard let onZoom else { super.magnify(with: event); return }
+        onZoom(1 + event.magnification, convert(event.locationInWindow, from: nil))
+    }
+    override func zoomIn(_ sender: Any?) { if let onZoom { onZoom(1.25, nil) } else { super.zoomIn(sender) } }
+    override func zoomOut(_ sender: Any?) { if let onZoom { onZoom(1 / 1.25, nil) } else { super.zoomOut(sender) } }
+    /// Sets the scale while the page point under `anchor` stays under it.
+    func setScale(_ scale: CGFloat, keeping anchor: NSPoint?) {
+        guard let anchor, let page = page(for: anchor, nearest: true), let clip = documentView?.enclosingScrollView?.contentView else { scaleFactor = scale; return }
+        let pagePoint = convert(anchor, to: page)
+        scaleFactor = scale; layoutDocumentView()
+        let moved = convert(pagePoint, from: page)
+        let before = clip.convert(anchor, from: self), after = clip.convert(moved, from: self)
+        var origin = clip.bounds.origin; origin.x += after.x - before.x; origin.y += after.y - before.y
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+        documentView?.enclosingScrollView?.reflectScrolledClipView(clip)
+    }
     override func cancelOperation(_ sender: Any?) { if let onEscape { onEscape() } else { super.cancelOperation(sender) } }
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.command) {
@@ -71,6 +96,10 @@ final class PDFPane: Surface {
     var onReadingMode: ((Bool) -> Void)?
     private(set) var zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode.v2") ?? "") ?? .fitWidth { didSet { updateFitButton() } }
     private var fitButton: ActionButton!
+    /// Pages in rows: shown when zoomed out past two pages across, or for "show all pages".
+    let grid = PDFPageGrid()
+    private(set) var gridVisible = false
+    private var gridButton: ActionButton!
     private var applyingZoom = false
     private(set) var readingMode = false
     private var readingButton: ActionButton!
@@ -128,16 +157,22 @@ final class PDFPane: Surface {
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         fitButton = ActionButton("", symbol: "arrow.left.and.right.square") { [weak self] in self?.setZoomMode(.fitWidth) }
         fitButton.toolTip = L10n.tr("适合宽度"); fitButton.setAccessibilityLabel(L10n.tr("适合宽度")); updateFitButton()
-        for view in [stateChip, spacer, autoLabel, autoSwitch, Theme.divider(), reveal, readingButton!, fitButton!, zoom, export] { header.addControl(view) }
+        gridButton = ActionButton("", symbol: "square.grid.2x2") { [weak self] in guard let self else { return }; self.showAllPages(!self.gridVisible) }
+        gridButton.setAccessibilityLabel(L10n.tr("显示所有页面")); updateGridButton()
+        for view in [stateChip, spacer, autoLabel, autoSwitch, Theme.divider(), reveal, readingButton!, gridButton!, fitButton!, zoom, export] { header.addControl(view) }
         header.menuActions = [
             (L10n.tr("在 PDF 中定位"), "scope", { [weak self] in self?.onReveal?() }),
             (L10n.tr("适合宽度"), "arrow.left.and.right", { [weak self] in self?.setZoomMode(.fitWidth) }),
             (L10n.tr("适合整页"), "arrow.up.left.and.arrow.down.right", { [weak self] in self?.setZoomMode(.fitPage) }),
             (L10n.tr("阅读模式"), "book", { [weak self] in guard let self else { return }; self.onReadingMode?(!self.readingMode) }),
+            (L10n.tr("显示所有页面"), "square.grid.2x2", { [weak self] in guard let self else { return }; self.showAllPages(!self.gridVisible) }),
             (L10n.tr("导出 PDF…"), "arrow.down.to.line", { [weak self] in self?.onExport?() })
         ]
         pdfView.onResize = { [weak self] in self?.applyZoom() }
-        pdfView.onUserZoom = { [weak self] in guard let self, self.zoomMode != .manual else { return }; self.zoomMode = .manual; if !self.readingMode { UserDefaults.standard.set(ZoomMode.manual.rawValue, forKey: "pdf.zoomMode.v2") } }
+        pdfView.onZoom = { [weak self] factor, anchor in self?.userZoom(factor, anchor: anchor) }
+        grid.onZoom = { [weak self] factor in self?.userZoom(factor, anchor: nil) }
+        grid.onOpenPage = { [weak self] in self?.leaveGrid(at: $0) }
+        grid.onEscape = { [weak self] in guard let self else { return }; self.leaveGrid(at: self.grid.currentPage) }
         // Jumping to the source needs the editor, so it ends reading mode.
         pdfView.onCommandClick = { [weak self] in guard let self, self.readingMode else { return }; self.onReadingMode?(false) }
         pdfView.onEscape = { [weak self] in guard let self, self.readingMode else { return }; self.onReadingMode?(false) }
@@ -162,10 +197,12 @@ final class PDFPane: Surface {
         empty.setCustomSpacing(12, after: empty.arrangedSubviews.last!); empty.addArrangedSubview(shortcuts)
         pageLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         pageChip.size(nil, 26); pageChip.pinRow(pageLabel, leading: 12, trailing: 12); pageChip.isHidden = true
-        for view in [header, pdfView, empty, pageChip, progressBar] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        grid.isHidden = true
+        for view in [header, pdfView, grid, empty, pageChip, progressBar] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: topAnchor), header.leadingAnchor.constraint(equalTo: leadingAnchor), header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), header.heightAnchor.constraint(equalToConstant: 46),
             pdfView.topAnchor.constraint(equalTo: header.bottomAnchor), pdfView.leadingAnchor.constraint(equalTo: leadingAnchor), pdfView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), pdfView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            grid.topAnchor.constraint(equalTo: header.bottomAnchor), grid.leadingAnchor.constraint(equalTo: leadingAnchor), grid.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), grid.bottomAnchor.constraint(equalTo: bottomAnchor),
             empty.centerXAnchor.constraint(equalTo: centerXAnchor), empty.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 23),
             progressBar.topAnchor.constraint(equalTo: header.bottomAnchor), progressBar.leadingAnchor.constraint(equalTo: leadingAnchor), progressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), progressBar.heightAnchor.constraint(equalToConstant: 2),
             pageChip.centerXAnchor.constraint(equalTo: centerXAnchor), pageChip.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16)
@@ -183,6 +220,7 @@ final class PDFPane: Surface {
         revealButton.isHidden = bounds.width < 260
         readingButton.isHidden = bounds.width < 230
         fitButton.isHidden = bounds.width < 250
+        gridButton.isHidden = bounds.width < 270
         zoomChip.isHidden = bounds.width < 200
         super.layout()
     }
@@ -210,13 +248,108 @@ final class PDFPane: Surface {
     func setZoomMode(_ mode: ZoomMode) {
         zoomMode = mode; UserDefaults.standard.set(mode.rawValue, forKey: "pdf.zoomMode.v2"); applyZoom()
     }
-    private func zoom(by factor: CGFloat) { setManualScale(pdfView.scaleFactor * factor) }
+    private func zoom(by factor: CGFloat) { userZoom(factor, anchor: nil) }
     private func setManualScale(_ scale: CGFloat) {
-        setZoomMode(.manual); pdfView.scaleFactor = max(pdfView.minScaleFactor, min(pdfView.maxScaleFactor, scale))
+        if gridVisible { leaveGrid(at: grid.currentPage) }
+        applyUserScale(scale, anchor: nil)
+    }
+
+    // MARK: Zoom and page layout
+
+    /// Width of the first page at 100 %, the yardstick for how many pages fit across.
+    private var basePageWidth: CGFloat {
+        guard let page = pdfView.document?.page(at: 0) else { return 612 }
+        let size = page.bounds(for: .cropBox).size
+        return max(1, page.rotation % 180 != 0 ? size.height : size.width)
+    }
+    private var viewportWidth: CGFloat { gridVisible ? grid.bounds.width : pdfView.bounds.width }
+    private var currentPageIndex: Int { pdfView.currentPage.flatMap { pdfView.document?.index(for: $0) } ?? 0 }
+    private func markManual() {
+        zoomMode = .manual
+        if !readingMode { UserDefaults.standard.set(ZoomMode.manual.rawValue, forKey: "pdf.zoomMode.v2") }
+    }
+    /// ⌘-scroll, pinch, ⌘+ / ⌘− and the zoom buttons all come here.
+    func userZoom(_ factor: CGFloat, anchor: NSPoint?) {
+        guard pdfView.document != nil, factor.isFinite, factor > 0 else { return }
+        if gridVisible { setGridPageWidth(grid.pageWidth * factor); return }
+        applyUserScale(pdfView.scaleFactor * factor, anchor: anchor)
+    }
+    /// Like a word processor: one page across while it fills the width, two side by side once both fit,
+    /// and a grid of pages once three or more fit.
+    private func applyUserScale(_ requested: CGFloat, anchor: NSPoint?) {
+        guard pdfView.document != nil else { return }
+        let scale = max(0.05, min(pdfView.maxScaleFactor, requested))
+        markManual()
+        let columns = PDFPageGrid.columns(pageWidth: basePageWidth * scale, in: viewportWidth)
+        if columns >= 3 { showGrid(pageWidth: basePageWidth * scale, focus: currentPageIndex); return }
+        let mode: PDFDisplayMode = columns == 2 ? .twoUpContinuous : .singlePageContinuous
+        let shown = max(pdfView.minScaleFactor, scale)
+        if pdfView.displayMode != mode {
+            let page = pdfView.currentPage
+            pdfView.displayMode = mode; pdfView.layoutDocumentView(); pdfView.scaleFactor = shown
+            if let page { pdfView.go(to: page) }
+        } else {
+            pdfView.setScale(shown, keeping: anchor)
+        }
+    }
+    private func setGridPageWidth(_ requested: CGFloat) {
+        let width = max(60, min(2000, requested))
+        if PDFPageGrid.columns(pageWidth: width, in: viewportWidth) <= 2 {
+            // Zoomed back in far enough: hand over to the PDF view at the same size, on the same page.
+            let page = grid.firstVisiblePage
+            hideGrid()
+            if let target = pdfView.document?.page(at: page) { pdfView.go(to: target) }
+            applyUserScale(width / basePageWidth, anchor: nil)
+            return
+        }
+        grid.pageWidth = width; updateZoomLabel()
+    }
+    private func showGrid(pageWidth: CGFloat, focus: Int) {
+        if grid.document !== pdfView.document { grid.document = pdfView.document }
+        grid.pageWidth = pageWidth; grid.currentPage = focus
+        if !gridVisible {
+            gridVisible = true; grid.isHidden = false; pdfView.isHidden = true; pageChip.isHidden = true
+            grid.scrollToPage(focus); window?.makeFirstResponder(grid)
+        }
+        updateGridButton(); updateZoomLabel()
+    }
+    private func hideGrid() {
+        guard gridVisible else { return }
+        gridVisible = false; grid.isHidden = true; pdfView.isHidden = false; pageChip.isHidden = pdfView.document == nil; updateGridButton()
+    }
+    /// Every page at once, as large as still fits the pane.
+    func showAllPages(_ on: Bool) {
+        guard let document = pdfView.document, document.pageCount > 0 else { return }
+        guard on else { leaveGrid(at: grid.currentPage); return }
+        let first = document.page(at: 0)!.bounds(for: .cropBox).size
+        let aspect = first.width > 0 ? first.height / first.width : 1.294
+        let size = gridVisible ? grid.bounds.size : pdfView.bounds.size
+        markManual()
+        showGrid(pageWidth: PDFPageGrid.widthShowingAll(count: document.pageCount, aspect: aspect, in: size), focus: currentPageIndex)
+    }
+    /// Leaves the grid onto `index`, fitted to the width (facing pages in reading mode).
+    func leaveGrid(at index: Int) {
+        hideGrid()
+        pdfView.displayMode = readingMode ? .twoUpContinuous : .singlePageContinuous
+        if readingMode { zoomMode = .fitWidth } else { setZoomMode(.fitWidth) }
+        pdfView.layoutDocumentView(); applyZoom()
+        if let page = pdfView.document?.page(at: index) { pdfView.go(to: page) }
+        window?.makeFirstResponder(pdfView); pageChanged(); updateZoomLabel()
+    }
+    private func updateGridButton() {
+        guard let gridButton else { return }
+        gridButton.contentTintColor = gridVisible ? Theme.accent : Theme.muted
+        gridButton.image = Theme.symbol(gridVisible ? "square.grid.2x2.fill" : "square.grid.2x2", size: 15, weight: .medium, description: L10n.tr("显示所有页面"))
+        gridButton.toolTip = gridVisible ? L10n.tr("返回单页  Esc") : L10n.tr("显示所有页面")
+        gridButton.setAccessibilityValue(gridVisible)
+    }
+    private func updateZoomLabel() {
+        let scale = gridVisible ? grid.pageWidth / basePageWidth : pdfView.scaleFactor
+        zoomLabel.stringValue = "\(Int((scale * 100).rounded()))%"
     }
     /// Scales the page to the pane's width (or whole page) for the fitting modes.
     func applyZoom() {
-        guard zoomMode != .manual, let scale = fittingScale(), abs(scale - pdfView.scaleFactor) > 0.001 else { return }
+        guard !gridVisible, zoomMode != .manual, let scale = fittingScale(), abs(scale - pdfView.scaleFactor) > 0.001 else { return }
         applyingZoom = true; pdfView.scaleFactor = scale; applyingZoom = false
     }
     private func fittingScale() -> CGFloat? {
@@ -239,6 +372,7 @@ final class PDFPane: Surface {
     }
     /// Reading mode shows facing pages fitted to the width; the workspace hides the other panes.
     func setReadingMode(_ on: Bool) {
+        hideGrid()
         readingMode = on
         readingButton.image = Theme.symbol(on ? "book.fill" : "book", size: 15, weight: .medium, description: L10n.tr("阅读模式"))
         readingButton.contentTintColor = on ? Theme.accent : Theme.muted
@@ -251,9 +385,7 @@ final class PDFPane: Surface {
         if let page { pdfView.go(to: page) }
         if on { window?.makeFirstResponder(pdfView) }
     }
-    @objc private func scaleChanged() {
-        zoomLabel.stringValue = "\(Int((pdfView.scaleFactor * 100).rounded()))%"
-    }
+    @objc private func scaleChanged() { if !gridVisible { updateZoomLabel() } }
     func load(_ url: URL) {
         // Read bytes so PDFKit cannot keep a mapped file alive while TeX rewrites it.
         guard let data = try? Data(contentsOf: url) else { return }
@@ -271,12 +403,14 @@ final class PDFPane: Surface {
             else { pdfView.go(to: page) }
         }
         if zoomMode == .manual { pdfView.scaleFactor = scale } else { applyZoom() }
+        if gridVisible { grid.document = document; grid.currentPage = min(grid.currentPage, max(0, document.pageCount - 1)) }
         pageChanged(); scaleChanged()
     }
-    func clear() { pageStreams = [:]; highlights = []; loadedData = nil; pdfView.document = nil; empty.isHidden = false; pageChip.isHidden = true; state = .none }
+    func clear() { hideGrid(); grid.document = nil; pageStreams = [:]; highlights = []; loadedData = nil; pdfView.document = nil; empty.isHidden = false; pageChip.isHidden = true; state = .none }
     @objc func pageChanged() {
         guard let doc = pdfView.document, let page = pdfView.currentPage else { return }
-        pageLabel.stringValue = L10n.tr("第 \(doc.index(for: page) + 1) 页，共 \(doc.pageCount) 页"); pageChip.isHidden = false
+        pageLabel.stringValue = L10n.tr("第 \(doc.index(for: page) + 1) 页，共 \(doc.pageCount) 页"); pageChip.isHidden = gridVisible
+        if !gridVisible { grid.currentPage = doc.index(for: page) }
     }
     // MARK: Source ↔ PDF
 
@@ -290,6 +424,8 @@ final class PDFPane: Surface {
     /// `sentence` around it. SyncTeX boxes for the source line say where to look first.
     /// Returns the 1-based page, or nil when the text could not be found.
     func reveal(source: TextStream, cursor: Int, sentence: ClosedRange<Int>?, boxes: [SyncBox]) -> Int? {
+        // A jump needs the page itself, not the grid.
+        if gridVisible { leaveGrid(at: grid.currentPage) }
         guard let document = pdfView.document, document.pageCount > 0 else { return nil }
         let hintPages = Array(Set(boxes.map { $0.page - 1 })).filter { $0 >= 0 && $0 < document.pageCount }.sorted()
         func penalty(page index: Int) -> (Int) -> Double {
@@ -405,6 +541,7 @@ final class PDFPane: Surface {
 
     @_optimize(none)
     func goTo(_ location: PDFLocation) {
+        if gridVisible { leaveGrid(at: location.page - 1) }
         guard let page = pdfView.document?.page(at: location.page - 1) else { return }
         clearHighlights()
         let media = page.bounds(for: .mediaBox)

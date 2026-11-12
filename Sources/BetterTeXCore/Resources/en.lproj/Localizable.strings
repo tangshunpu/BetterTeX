@@ -755,3 +755,5 @@
 "打开 %1$@" = "Open %1$@";
 "检查英文语法与拼写" = "Check English grammar and spelling";
 "在本机离线运行，跳过命令、公式和注释。波浪线标出问题，右键查看建议。" = "Runs offline on this Mac and skips commands, math and comments. Problems get a wavy underline; right-click for suggestions.";
+"显示所有页面" = "Show All Pages";
+"返回单页  Esc" = "Back to Page  Esc";
