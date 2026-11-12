@@ -81,6 +81,7 @@ final class CodeTextView: NSTextView {
             setSelectedRange(NSRange(location: position, length: 0))
         }
         let menu = NSMenu(); menu.autoenablesItems = false; menu.allowsContextMenuPlugIns = false
+        addGrammarItems(to: menu, at: position)
         if let context = sourceContext?(), context.canProofread {
             if onAttachContext != nil {
                 menu.addItem(ClosureMenuItem(L10n.tr("加入 Agent 上下文"), symbol: "text.badge.plus") { [weak self] in self?.onAttachContext?(context) })
@@ -116,6 +117,47 @@ final class CodeTextView: NSTextView {
         edit(L10n.tr("粘贴"), #selector(paste(_:)), "v", enabled: isEditable && canPaste)
         edit(L10n.tr("全选"), #selector(selectAll(_:)), "a", enabled: !string.isEmpty)
         return menu
+    }
+    // MARK: Grammar
+    /// Problems from the last grammar check, kept in place while typing until the next one arrives.
+    var grammarIssues: [GrammarIssue] = [] { didSet { needsDisplay = true } }
+    enum GrammarAction { case replace(String), ignore, learn }
+    var grammarSuggestions: ((GrammarIssue) -> [String])?
+    var onGrammarAction: ((GrammarIssue, GrammarAction) -> Void)?
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        guard super.shouldChangeText(in: affectedCharRange, replacementString: replacementString) else { return false }
+        if !grammarIssues.isEmpty { grammarIssues = GrammarIssue.shift(grammarIssues, editing: affectedCharRange, replacementLength: (replacementString as NSString?)?.length ?? 0) }
+        return true
+    }
+    private func addGrammarItems(to menu: NSMenu, at position: Int) {
+        guard let issue = grammarIssues.first(where: { NSLocationInRange(position, $0.range) || NSMaxRange($0.range) == position }) else { return }
+        let header = NSMenuItem(title: issue.message, action: nil, keyEquivalent: ""); header.isEnabled = false
+        header.image = Theme.symbol(issue.isSpelling ? "textformat.abc.dottedunderline" : "text.badge.checkmark", size: 12)
+        menu.addItem(header)
+        for suggestion in (grammarSuggestions?(issue) ?? []).prefix(6) {
+            menu.addItem(ClosureMenuItem(suggestion.isEmpty ? L10n.tr("删除") : suggestion, symbol: "arrow.right") { [weak self] in self?.onGrammarAction?(issue, .replace(suggestion)) })
+        }
+        menu.addItem(ClosureMenuItem(L10n.tr("忽略此处"), symbol: "eye.slash") { [weak self] in self?.onGrammarAction?(issue, .ignore) })
+        if issue.isSpelling { menu.addItem(ClosureMenuItem(L10n.tr("加入词典"), symbol: "book") { [weak self] in self?.onGrammarAction?(issue, .learn) }) }
+        menu.addItem(.separator())
+    }
+    private func drawGrammarIssues(in dirty: NSRect) {
+        guard let layoutManager, let textContainer, !grammarIssues.isEmpty else { return }
+        let length = (string as NSString).length, origin = textContainerOrigin
+        let visible = layoutManager.characterRange(forGlyphRange: layoutManager.glyphRange(forBoundingRect: dirty.offsetBy(dx: -origin.x, dy: -origin.y), in: textContainer), actualGlyphRange: nil)
+        for issue in grammarIssues where NSMaxRange(issue.range) <= length && NSIntersectionRange(issue.range, visible).length > 0 {
+            (issue.isSpelling ? Theme.red : Theme.accent).withAlphaComponent(0.85).setStroke()
+            let glyphs = layoutManager.glyphRange(forCharacterRange: issue.range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: textContainer) { rect, _ in
+                let line = rect.offsetBy(dx: origin.x, dy: origin.y)
+                // A gentle wave just under the baseline area of the line fragment.
+                let path = NSBezierPath(); path.lineWidth = 1.1
+                let y = line.maxY - 2, step: CGFloat = 2
+                var x = line.minX; path.move(to: NSPoint(x: x, y: y)); var up = true
+                while x < line.maxX { x = min(x + step, line.maxX); path.line(to: NSPoint(x: x, y: up ? y - 1.5 : y)); up.toggle() }
+                path.stroke()
+            }
+        }
     }
     private func imageURLs(on pasteboard: NSPasteboard) -> [URL] {
         ((pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []).filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) }
@@ -235,6 +277,7 @@ final class CodeTextView: NSTextView {
     }
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        drawGrammarIssues(in: dirtyRect)
         for cursor in remoteCursors {
             guard let caret = caretRect(at: cursor.offset), caret.intersects(visibleRect.insetBy(dx: 0, dy: -40)) else { continue }
             cursor.color.setFill(); NSRect(x: caret.minX - 1, y: caret.minY, width: 2, height: caret.height).fill()
@@ -494,6 +537,30 @@ final class EditorPane: Surface, NSTextViewDelegate {
     private var gitChanges: [LineChange] = []
     private var problemLines: [(line: Int, error: Bool)] = []
     private var overviewJob: DispatchWorkItem?
+    /// Checks .tex files for English grammar and spelling.
+    var grammarEnabled = false {
+        didSet { guard grammarEnabled != oldValue else { return }; textView.grammarIssues = []; scheduleGrammar(after: 0) }
+    }
+    private var fileURL: URL?
+    private var grammarJob: DispatchWorkItem?
+    private static let grammarQueue = DispatchQueue(label: "BetterTeX.Grammar", qos: .utility)
+    private func scheduleGrammar(after delay: TimeInterval) {
+        grammarJob?.cancel()
+        guard grammarEnabled, let url = fileURL, url.pathExtension.lowercased() == "tex" else { return }
+        let job = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let text = self.textView.string
+            guard (text as NSString).length < 400_000 else { return }
+            Self.grammarQueue.async {
+                let issues = GrammarChecker.shared.check(text)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.grammarEnabled, self.fileURL == url, self.textView.string == text else { return }
+                    self.textView.grammarIssues = issues
+                }
+            }
+        }
+        grammarJob = job; DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: job)
+    }
     var lineColumn: (Int, Int) {
         let ns = textView.string as NSString; let position = min(textView.selectedRange().location, ns.length)
         let prefix = ns.substring(to: position)
@@ -525,6 +592,23 @@ final class EditorPane: Surface, NSTextViewDelegate {
         textView.onResign = { [weak self] in self?.popup.dismiss() }
         textView.onContextMenu = { [weak self] in self?.popup.dismiss() }
         textView.onInsertSnippet = { [weak self] in self?.insert($0) }
+        textView.grammarSuggestions = { [weak self] issue in
+            guard let self else { return [] }
+            return GrammarChecker.shared.suggestions(for: issue, in: self.textView.string)
+        }
+        textView.onGrammarAction = { [weak self] issue, action in
+            guard let self else { return }
+            let text = self.textView.string as NSString
+            guard NSMaxRange(issue.range) <= text.length else { return }
+            let flagged = text.substring(with: issue.range).lowercased()
+            /// Drops every underline of this rule on the same text, e.g. all occurrences of a learned word.
+            func dropMatching() { self.textView.grammarIssues.removeAll { $0.rule == issue.rule && NSMaxRange($0.range) <= text.length && text.substring(with: $0.range).lowercased() == flagged } }
+            switch action {
+            case .replace(let replacement): self.textView.insertText(replacement, replacementRange: issue.range)
+            case .ignore: GrammarChecker.shared.ignore(issue, in: self.textView.string); dropMatching()
+            case .learn: GrammarChecker.shared.learn(text.substring(with: issue.range)); dropMatching()
+            }
+        }
         textView.onCompletionKey = { [weak self] event in
             guard let self, self.popup.isVisible else { return false }
             switch event.keyCode {
@@ -646,6 +730,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         loading = true; textView.string = buffer.text; applyParagraphStyle(); textView.undoManager?.removeAllActions()
         textView.setSelectedRange(NSRange(location: min(buffer.selection.location, (buffer.text as NSString).length), length: 0))
         setBreadcrumb(file: buffer.url.lastPathComponent, section: nil)
+        fileURL = buffer.url; textView.grammarIssues = []; scheduleGrammar(after: 0.2)
         loading = false; highlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview()
         onOutline?(OutlineItem.parse(buffer.text))
     }
@@ -681,7 +766,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         let removed = ops.first { $0.kind == .delete }?.length ?? 0
         let inserted = ops.first { $0.kind == .insert }?.text ?? ""
         let selection = textView.selectedRange()
-        guard textView.isEditable else { loading = true; textView.string = text; loading = false; highlight(); onChange?(text); return }
+        guard textView.isEditable else { loading = true; textView.string = text; loading = false; textView.grammarIssues = []; highlight(); onChange?(text); return }
         let origin = scroll.contentView.bounds.origin
         completionPaused = true; defer { completionPaused = false }
         textView.insertText(inserted, replacementRange: NSRange(location: first.position, length: removed))
@@ -717,6 +802,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
     func clear() {
         textView.remoteCursors = []; textView.commentRanges = []; setGitChanges([]); setProblems(errors: [], warnings: [])
         loading = true; textView.string = ""; loading = false
+        fileURL = nil; grammarJob?.cancel(); textView.grammarIssues = []
         setBreadcrumb(file: "", section: nil); onOutline?([])
     }
     func updateTabs(_ buffers: [EditorBuffer], active: URL?) {
@@ -729,7 +815,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
     }
     func textDidChange(_ notification: Notification) {
         guard !loading else { return }
-        onChange?(textView.string); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview()
+        onChange?(textView.string); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview(); scheduleGrammar(after: 0.8)
         // Run after the caret has settled too: typing moves it before this call, other input paths after.
         completionPending = true
         DispatchQueue.main.async { [weak self] in self?.completionPending = false; self?.updateCompletion() }

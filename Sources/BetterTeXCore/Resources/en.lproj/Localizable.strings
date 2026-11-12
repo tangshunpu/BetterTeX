@@ -744,9 +744,14 @@
 "%1$@ 个文件已更改" = "%1$@ files changed";
 "查看另外 %1$@ 个文件" = "View %1$@ more files";
 "查看另外 1 个文件" = "View 1 more file";
+"写作" = "Writing";
+"忽略此处" = "Ignore Here";
+"加入词典" = "Add to Dictionary";
 "没有打开的文件" = "No File Open";
 "最近与项目文件" = "Recent and Project Files";
 "主文件" = "Main file";
 "这个项目还没有 .tex 文件" = "This project has no .tex files yet";
 "从左侧选择一个文件，或从这里继续" = "Pick a file on the left, or continue here";
 "打开 %1$@" = "Open %1$@";
+"检查英文语法与拼写" = "Check English grammar and spelling";
+"在本机离线运行，跳过命令、公式和注释。波浪线标出问题，右键查看建议。" = "Runs offline on this Mac and skips commands, math and comments. Problems get a wavy underline; right-click for suggestions.";

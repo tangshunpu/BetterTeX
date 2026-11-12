@@ -105,6 +105,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             self.ui.editor.setBreadcrumb(section: self.ui.explorer.currentOutlineTitle)
         }
         ui.editor.onChange = { [weak self] in self?.edited($0) }
+        NotificationCenter.default.addObserver(forName: GrammarPreferences.changed, object: nil, queue: .main) { [weak self] _ in self?.updateGrammar() }
+        updateGrammar()
         ui.editor.onSelectTab = { [weak self] in self?.openFile($0) }
         ui.editor.onCloseTab = { [weak self] in self?.closeTab($0) }
         ui.editor.onSelection = { [weak self] line, col in
@@ -248,6 +250,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             }
         }
     }
+    func updateGrammar() { ui.editor.grammarEnabled = GrammarPreferences.enabled() }
     // MARK: Opening and closing projects
     var recentProjects: [URL] { (UserDefaults.standard.stringArray(forKey: "recentProjects") ?? []).map { URL(fileURLWithPath: $0) } }
     /// When each known project was last opened, by path.

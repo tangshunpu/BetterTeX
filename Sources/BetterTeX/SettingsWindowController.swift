@@ -10,12 +10,14 @@ final class SettingsWindowController: NSWindowController {
     private let schemePicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let automatic = NSButton(checkboxWithTitle: L10n.tr("自动检查更新"), target: nil, action: nil)
     private let prereleases = NSButton(checkboxWithTitle: L10n.tr("接收预发布版本（alpha / beta）"), target: nil, action: nil)
+    private let grammar = NSButton(checkboxWithTitle: L10n.tr("检查英文语法与拼写"), target: nil, action: nil)
+    private let grammarHint = NSTextField(wrappingLabelWithString: "")
     private let onCheckForUpdates: @MainActor () -> Void
     private var fontFamilies: [String] = []
 
     init(onCheckForUpdates: @escaping @MainActor () -> Void) {
         self.onCheckForUpdates = onCheckForUpdates
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 540),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 640),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init(window: window)
         window.title = L10n.tr("设置")
@@ -59,6 +61,12 @@ final class SettingsWindowController: NSWindowController {
         schemePicker.selectItem(at: EditorColorScheme.allCases.firstIndex(of: preferences.colorScheme) ?? 0)
         schemePicker.target = self; schemePicker.action = #selector(appearanceChanged)
 
+        let writingHeading = Theme.label(L10n.tr("写作"), size: 20, weight: .bold)
+        grammar.state = GrammarPreferences.enabled() ? .on : .off
+        grammar.target = self; grammar.action = #selector(grammarChanged)
+        grammarHint.font = .systemFont(ofSize: 12); grammarHint.textColor = .secondaryLabelColor
+        grammarHint.stringValue = L10n.tr("在本机离线运行，跳过命令、公式和注释。波浪线标出问题，右键查看建议。")
+
         let updateHeading = Theme.label(L10n.tr("软件更新"), size: 20, weight: .bold)
         let version = Theme.label(L10n.tr("当前版本：\(ReleaseVersion.installed())"), size: 12)
         automatic.state = UpdatePreferences.automatic() ? .on : .off
@@ -71,17 +79,19 @@ final class SettingsWindowController: NSWindowController {
             heading, row, restartHint,
             appearanceHeading, Self.row(L10n.tr("应用主题"), themePicker), Self.row(L10n.tr("编辑器字体"), fontPicker),
             Self.row(L10n.tr("字号"), sizePicker), Self.row(L10n.tr("配色方案"), schemePicker),
+            writingHeading, grammar, grammarHint,
             updateHeading, automatic, prereleases, updateRow
         ])
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 16
-        content.setCustomSpacing(28, after: restartHint); content.setCustomSpacing(28, after: content.views[7])
+        content.setCustomSpacing(28, after: restartHint); content.setCustomSpacing(28, after: content.views[7]); content.setCustomSpacing(8, after: grammar); content.setCustomSpacing(28, after: grammarHint)
         content.translatesAutoresizingMaskIntoConstraints = false
         let root = NSView(); window.contentView = root; root.addSubview(content)
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 32),
             content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -32),
             content.topAnchor.constraint(equalTo: root.topAnchor, constant: 28),
-            restartHint.widthAnchor.constraint(equalTo: content.widthAnchor)
+            restartHint.widthAnchor.constraint(equalTo: content.widthAnchor),
+            grammarHint.widthAnchor.constraint(equalTo: content.widthAnchor)
         ])
         window.center()
     }
@@ -107,6 +117,7 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func checkForUpdates() { onCheckForUpdates() }
+    @objc private func grammarChanged() { GrammarPreferences.setEnabled(grammar.state == .on) }
     @objc private func automaticChanged() { UpdatePreferences.setAutomatic(automatic.state == .on) }
     @objc private func prereleasesChanged() { UpdatePreferences.setIncludesPrereleases(prereleases.state == .on) }
 
