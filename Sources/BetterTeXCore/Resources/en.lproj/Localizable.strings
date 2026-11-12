@@ -764,3 +764,6 @@
 "没有错误" = "No errors";
 "没有警告" = "No warnings";
 "显示编译日志" = "Show Build Log";
+"相对上次提交的更改" = "Changes since last commit";
+"%1$@ 的修改" = "Edited by %1$@";
+"由 %1$@ 修改" = "Edited by %1$@";

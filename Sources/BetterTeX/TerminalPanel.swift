@@ -46,6 +46,13 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private let switcher = SegmentedTabs(["Codex", "Claude", "Shell", L10n.tr("输出")])
     let chat = AgentChatView(provider: .codex)
     let claudeChat = AgentChatView(provider: .claude)
+    /// The agent most likely behind a file change seen now: one still working, else one whose
+    /// turn ended moments ago (the file watcher reports a little late).
+    func editingAgent(now: Date = Date()) -> AgentProvider? {
+        if let busy = [chat, claudeChat].first(where: \.running) { return busy.provider }
+        return [chat, claudeChat].filter { $0.stoppedAt.map { now.timeIntervalSince($0) < 4 } ?? false }
+            .max { ($0.stoppedAt ?? .distantPast) < ($1.stoppedAt ?? .distantPast) }?.provider
+    }
     /// The conversation behind the active tab, if it is an agent tab.
     private var activeChat: AgentChatView? { active == "Agent" ? chat : active == "Claude" ? claudeChat : nil }
     private func idleHint(_ provider: AgentProvider) -> String { L10n.tr("↩ 发送给 \(provider.rawValue) · ⇧↩ 换行 · 使用本机 \(provider.rawValue.lowercased()) 登录") }
@@ -680,13 +687,6 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         if storage.length > 350_000 { storage.deleteCharacters(in: NSRange(location: 0, length: storage.length - 300_000)) }
         logView.scrollToEndOfDocument(nil)
     }
-    @objc func logClicked(_ recognizer: NSClickGestureRecognizer) {
-        let position = logView.characterIndexForInsertion(at: recognizer.location(in: logView))
-        let text = logView.string as NSString
-        let line = text.substring(with: text.lineRange(for: NSRange(location: min(position, text.length), length: 0)))
-        if let diagnostic = TeXDiagnostic.parse(line).first { onDiagnostic?(diagnostic.file, diagnostic.line) }
-    }
-    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     /// Selects the last occurrence of `text` in the build log and scrolls it into view.
     @discardableResult func revealInLog(_ text: String) -> Bool {
         let range = (logView.string as NSString).range(of: text, options: .backwards)
@@ -694,6 +694,13 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         logView.setSelectedRange(range); logView.scrollRangeToVisible(range); logView.showFindIndicator(for: range)
         return true
     }
+    @objc func logClicked(_ recognizer: NSClickGestureRecognizer) {
+        let position = logView.characterIndexForInsertion(at: recognizer.location(in: logView))
+        let text = logView.string as NSString
+        let line = text.substring(with: text.lineRange(for: NSRange(location: min(position, text.length), length: 0)))
+        if let diagnostic = TeXDiagnostic.parse(line).first { onDiagnostic?(diagnostic.file, diagnostic.line) }
+    }
+    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
     func processTerminated(source: TerminalView, exitCode: Int32?) {

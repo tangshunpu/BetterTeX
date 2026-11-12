@@ -33,6 +33,8 @@ final class AgentChatView: NSView {
     private var usageGeneration = UUID()
     private var turnStarted = false
     private(set) var running = false
+    /// When the last turn ended; file changes seen just after still belong to it.
+    private(set) var stoppedAt: Date?
     private(set) var thread: String?
     var isEmpty: Bool { order.isEmpty }
 
@@ -221,6 +223,7 @@ final class AgentChatView: NSView {
     private func setRunning(_ value: Bool) {
         let finished = running && !value
         running = value
+        if finished { stoppedAt = Date() }
         if finished { finishTurn(turnIndex, duration: elapsed) }
         ticker?.invalidate(); ticker = nil
         if value {

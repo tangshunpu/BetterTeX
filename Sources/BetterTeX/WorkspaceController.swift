@@ -44,6 +44,10 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     var compileJob: DispatchWorkItem?
     let watcher = ProjectWatcher()
     var conflicts = Set<URL>()
+    /// Which pieces of each file Codex or Claude wrote, for the change popover's logos.
+    let authorship = ChangeAuthorship()
+    /// The committed text of the active file, for word-level change detail.
+    var headText: (url: URL, text: String)?
     var resolvingConflict = false
     private(set) lazy var overleaf = OverleafController(workspace: self)
 
@@ -125,6 +129,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             } else { self.ui.terminal.contextLines = nil }
         }
         ui.editor.textView.onSync = { [weak self] in self?.forwardSync() }
+        ui.editor.changeDetail = { [weak self] in self?.changeDetail($0) }
         ui.editor.emptyState.onOpen = { [weak self] in self?.openFile($0) }
         ui.editor.emptyState.onNew = { [weak self] in self?.newFile() }
         ui.editor.emptyState.onSearch = { [weak self] in self?.ui.search.focus() }
@@ -487,7 +492,10 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             } else {
                 do {
                     if buffer === active { buffer.selection = ui.editor.textView.selectedRange() }
-                    try buffer.reload(); settle(buffer); if buffer === active, let project { ui.editor.load(buffer, project: project) }
+                    let before = buffer.text
+                    try buffer.reload(); settle(buffer)
+                    if let agent = ui.terminal.editingAgent(), before != buffer.text { authorship.record(path: buffer.url.standardizedFileURL.path, old: before, new: buffer.text, by: agent) }
+                    if buffer === active, let project { ui.editor.load(buffer, project: project) }
                     setStatus(L10n.tr("已载入外部修改：\(buffer.url.lastPathComponent)"))
                 } catch { setStatus(L10n.tr("文件已移动或无法读取：\(buffer.url.lastPathComponent)")) }
             }
@@ -806,9 +814,28 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         guard let project, let tools, let file = active?.url else { ui.editor.setGitChanges([]); return }
         let token = generation
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let changes = GitService(directory: project, tools: tools).lineChanges(file: file)
-            DispatchQueue.main.async { guard let self, self.generation == token, self.active?.url == file else { return }; self.ui.editor.setGitChanges(changes) }
+            let service = GitService(directory: project, tools: tools)
+            let changes = service.lineChanges(file: file)
+            let head = changes.isEmpty ? nil : service.headText(file: file)
+            DispatchQueue.main.async {
+                guard let self, self.generation == token, self.active?.url == file else { return }
+                self.headText = (file, head ?? ""); self.ui.editor.setGitChanges(changes)
+            }
         }
+    }
+    /// Word-level diff of one hunk: the committed lines against the lines now in the editor,
+    /// with each edit credited to the agent that made it when known.
+    func changeDetail(_ hunk: LineChange.Hunk) -> [WordDiff.Segment]? {
+        guard let file = active?.url, let head = headText, head.url == file else { return nil }
+        func lines(_ text: String, _ start: Int, _ count: Int) -> String {
+            guard count > 0 else { return "" }
+            let all = text.components(separatedBy: "\n")
+            let from = max(0, min(start - 1, all.count)), to = min(all.count, from + count)
+            return all[from..<to].joined(separator: "\n")
+        }
+        let old = lines(head.text, hunk.oldStart, hunk.oldCount), new = lines(ui.editor.textView.string, hunk.newStart, hunk.newCount)
+        let segments = WordDiff.diff(old: old, new: new)
+        return segments.isEmpty ? nil : authorship.attribute(segments, path: file.standardizedFileURL.path)
     }
     func refreshGit() {
         refreshGitMarkers()

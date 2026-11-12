@@ -310,11 +310,93 @@ final class LineRuler: NSRulerView {
     var problems: [Int: NSColor] = [:] { didSet { needsDisplay = true } }
     private var kinds: [Int: LineChange.Kind] = [:]
     private var deletions = Set<Int>()
+    /// Word-level detail of a hunk against the last commit, shown when the change strip is hovered.
+    var changeDetail: ((LineChange.Hunk) -> [WordDiff.Segment]?)?
+    private var hovered: LineChange? { didSet { if oldValue != hovered { needsDisplay = true } } }
+    private let popover = NSPopover()
+    private var showJob: DispatchWorkItem?
+    private var watchTimer: Timer?
+    private var misses = 0
+    /// The change strip (and deletion wedge) plus a little slack, measured from the right edge.
+    private static let hoverWidth: CGFloat = 14
     init(scroll: NSScrollView, text: CodeTextView) {
         self.text = text; super.init(scrollView: scroll, orientation: .verticalRuler)
         clientView = text; ruleThickness = 50
+        popover.behavior = .applicationDefined; popover.animates = false
     }
     required init(coder: NSCoder) { fatalError() }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas(); trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+    override func mouseMoved(with event: NSEvent) { hover(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseEntered(with event: NSEvent) { hover(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseExited(with event: NSEvent) { if !popover.isShown { showJob?.cancel(); hovered = nil } }
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(NSRect(x: bounds.width - Self.hoverWidth, y: 0, width: Self.hoverWidth, height: bounds.height), cursor: .pointingHand)
+    }
+    /// Closes the change popover, e.g. when the editor scrolls under it.
+    func dismissChange() { showJob?.cancel(); watchTimer?.invalidate(); watchTimer = nil; if popover.isShown { popover.close() }; hovered = nil }
+
+    private func hover(at point: NSPoint) {
+        guard point.x >= bounds.width - Self.hoverWidth, let (change, rect) = change(at: point) else {
+            showJob?.cancel(); if !popover.isShown { hovered = nil }; return
+        }
+        guard change.hunk != hovered?.hunk || !popover.isShown else { return }
+        hovered = change; showJob?.cancel()
+        let job = DispatchWorkItem { [weak self] in self?.show(change, at: rect) }
+        showJob = job
+        // Open at once when moving between hunks; otherwise wait a beat so passing over does nothing.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (popover.isShown ? 0 : 0.25), execute: job)
+    }
+
+    /// The change under `point` and the rect of its hovered line, in ruler coordinates.
+    private func change(at point: NSPoint) -> (LineChange, NSRect)? {
+        guard let text, let layout = text.layoutManager, let container = text.textContainer, layout.numberOfGlyphs > 0 else { return nil }
+        let visible = text.visibleRect, inset = text.textContainerInset.height
+        let glyph = layout.glyphIndex(for: NSPoint(x: 0, y: point.y + visible.minY - inset), in: container)
+        let fragment = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let char = layout.characterIndexForGlyph(at: glyph)
+        let line = lineNumber(at: char)
+        let rect = NSRect(x: bounds.width - 9, y: fragment.minY + inset - visible.minY, width: 6, height: fragment.height)
+        if let found = changes.first(where: { $0.kind != .deleted && $0.lines.contains(line) }) { return (found, rect) }
+        // A deletion's wedge straddles the top of the line the removed text preceded.
+        let offset = point.y - rect.minY
+        let target = offset < 6 ? line : offset > rect.height - 6 ? line + 1 : nil
+        if let target, let found = changes.first(where: { $0.kind == .deleted && $0.lines.lowerBound == target }) { return (found, rect) }
+        return nil
+    }
+    private var lineCache: (start: Int, line: Int)?
+    private func lineNumber(at char: Int) -> Int {
+        guard let text else { return 1 }
+        let string = text.string as NSString
+        let start = string.lineRange(for: NSRange(location: min(char, string.length), length: 0)).location
+        if let lineCache, lineCache.start == start { return lineCache.line }
+        var count = 1
+        string.enumerateSubstrings(in: NSRange(location: 0, length: start), options: [.byLines, .substringNotRequired]) { _, _, _, _ in count += 1 }
+        lineCache = (start, count); return count
+    }
+
+    private func show(_ change: LineChange, at rect: NSRect) {
+        guard let hunk = change.hunk, let segments = changeDetail?(hunk), window != nil else { return }
+        let content = ChangeDetailView(segments: segments, deletionOnly: change.kind == .deleted)
+        let controller = NSViewController(); controller.view = content
+        popover.contentViewController = controller; popover.contentSize = content.fittingSize
+        if popover.isShown { popover.positioningRect = rect } else { popover.show(relativeTo: rect, of: self, preferredEdge: .maxX) }
+        misses = 0; watchTimer?.invalidate()
+        watchTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in self?.watchPointer() }
+    }
+    /// Keeps the popover while the pointer is on the strip or inside the popover, so its text
+    /// can be read and selected; closes it a moment after the pointer leaves both.
+    private func watchPointer() {
+        guard let window, popover.isShown else { dismissChange(); return }
+        let mouse = NSEvent.mouseLocation
+        let strip = window.convertToScreen(convert(NSRect(x: bounds.width - Self.hoverWidth, y: 0, width: Self.hoverWidth, height: bounds.height), to: nil))
+        let inside = (popover.contentViewController?.view.window?.frame.insetBy(dx: -6, dy: -6).contains(mouse) ?? false) || strip.contains(mouse)
+        misses = inside ? 0 : misses + 1
+        if misses >= 3 { dismissChange() }
+    }
     override func drawHashMarksAndLabels(in rect: NSRect) {
         Theme.canvas.setFill(); bounds.fill()
         guard let text, let layout = text.layoutManager, let container = text.textContainer, layout.numberOfGlyphs > 0 else { return }
@@ -333,7 +415,8 @@ final class LineRuler: NSRulerView {
             let top = lineRect.minY + text.textContainerInset.height - visible.minY
             if let kind = kinds[line], kind != .deleted {
                 (kind == .added ? Theme.green : Theme.accent).setFill()
-                NSRect(x: ruleThickness - 7, y: top, width: 3, height: lineRect.height).fill()
+                let lit = hovered.map { $0.kind != .deleted && $0.hunk != nil && Self.covers($0.hunk!, line) } ?? false
+                NSRect(x: ruleThickness - (lit ? 8 : 7), y: top, width: lit ? 5 : 3, height: lineRect.height).fill()
             }
             if char == 0 || string.character(at: char - 1) == 10 {
                 if deletions.contains(line) {
@@ -352,6 +435,108 @@ final class LineRuler: NSRulerView {
             if NSMaxRange(range) <= string.length, string.substring(with: range).hasSuffix("\n") { line += 1 }
             guard NSMaxRange(effective) > glyph else { break }; glyph = NSMaxRange(effective)
         }
+    }
+}
+
+extension LineRuler {
+    static func covers(_ hunk: LineChange.Hunk, _ line: Int) -> Bool { line >= hunk.newStart && line < hunk.newStart + hunk.newCount }
+}
+
+/// The body of the change popover: a header naming the agents involved and a word-level diff
+/// where insertions are tinted green and deletions struck through in red.
+final class ChangeDetailView: NSView {
+    static let maxWidth: CGFloat = 520, maxHeight: CGFloat = 340
+    private let scroll = NSScrollView()
+    init(segments: [WordDiff.Segment], deletionOnly: Bool) {
+        super.init(frame: .zero)
+        let authors = AgentProvider.allCases.filter { provider in segments.contains { $0.author == provider } }
+        let words = { (kind: WordDiff.Kind) in segments.filter { $0.kind == kind }.reduce(0) { $0 + WordDiff.normalized($1.text).split(separator: " ").count } }
+        let added = words(.inserted), removed = words(.deleted)
+
+        let header = NSStackView(); header.spacing = 6; header.alignment = .centerY
+        for author in authors {
+            let logo = NSImageView(); logo.image = AgentLogo.image(for: author.rawValue, side: 16) ?? Theme.symbol("sparkles", size: 12)
+            logo.toolTip = author.rawValue; header.addArrangedSubview(logo)
+        }
+        let title = authors.isEmpty ? L10n.tr("相对上次提交的更改") : L10n.tr("\(authors.map(\.rawValue).joined(separator: " · ")) 的修改")
+        header.addArrangedSubview(Theme.label(title, size: 12, color: Theme.text, weight: .semibold))
+        let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal); header.addArrangedSubview(spacer)
+        let stats = NSMutableAttributedString()
+        let statFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        if added > 0 { stats.append(NSAttributedString(string: "+\(added)", attributes: [.font: statFont, .foregroundColor: Theme.green])) }
+        if removed > 0 { stats.append(NSAttributedString(string: (added > 0 ? "  " : "") + "\u{2212}\(removed)", attributes: [.font: statFont, .foregroundColor: Theme.red])) }
+        let statLabel = NSTextField(labelWithAttributedString: stats); header.addArrangedSubview(statLabel)
+
+        let body = NSTextView(); body.isEditable = false; body.isSelectable = true; body.drawsBackground = false
+        body.textContainerInset = NSSize(width: 0, height: 2); body.textContainer?.lineFragmentPadding = 0
+        body.textStorage?.setAttributedString(Self.render(segments))
+        body.textContainer?.containerSize = NSSize(width: Self.maxWidth, height: .greatestFiniteMagnitude); body.textContainer?.widthTracksTextView = false
+        body.layoutManager?.ensureLayout(for: body.textContainer!)
+        let used = body.layoutManager?.usedRect(for: body.textContainer!).size ?? .zero
+        let width = max(260, min(Self.maxWidth, ceil(used.width))), height = min(Self.maxHeight, ceil(used.height) + 4)
+        body.textContainer?.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude); body.textContainer?.widthTracksTextView = true
+        body.frame = NSRect(x: 0, y: 0, width: width, height: ceil(used.height) + 4)
+        body.isVerticallyResizable = true; body.autoresizingMask = [.width]
+        scroll.documentView = body; scroll.drawsBackground = false; scroll.hasVerticalScroller = used.height + 4 > Self.maxHeight; scroll.scrollerStyle = .overlay
+
+        let divider = NSBox(); divider.boxType = .separator
+        let stack = NSStackView(views: [header, divider, scroll]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 12, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor), stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor), stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            header.widthAnchor.constraint(equalToConstant: width), divider.widthAnchor.constraint(equalToConstant: width),
+            scroll.widthAnchor.constraint(equalToConstant: width), scroll.heightAnchor.constraint(equalToConstant: height)
+        ])
+        setAccessibilityLabel(title)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Long unchanged stretches are cut to their ends so the eye lands on the edits.
+    static func render(_ segments: [WordDiff.Segment]) -> NSAttributedString {
+        let font = Theme.editorFont().withSize(12.5)
+        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 3
+        let base: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: paragraph]
+        let result = NSMutableAttributedString()
+        var lastAuthor: AgentProvider?
+        for (index, segment) in segments.enumerated() {
+            var text = segment.text
+            // Runs that were apart in the source stay apart; `\\bm{s}` → `\\bm{y}` stays joined.
+            if index > 0, segment.spaceBefore { result.append(NSAttributedString(string: " ", attributes: base)) }
+            switch segment.kind {
+            case .equal:
+                let keep = 60, first = index == 0, last = index == segments.count - 1
+                if text.count > keep * 2 + 10 || ((first || last) && text.count > keep + 10) {
+                    let head = first ? "" : String(text.prefix(keep)), tail = last ? "" : String(text.suffix(keep))
+                    text = head + (first ? "" : " ") + "\u{2026}" + (last ? "" : " ") + tail
+                }
+                var attributes = base; attributes[.foregroundColor] = Theme.muted
+                result.append(NSAttributedString(string: text, attributes: attributes)); lastAuthor = nil
+            case .inserted, .deleted:
+                if let author = segment.author, author != lastAuthor, let logo = AgentLogo.image(for: author.rawValue, side: 13) {
+                    let attachment = NSTextAttachment(); attachment.image = logo
+                    attachment.bounds = NSRect(x: 0, y: font.descender + 1, width: 13, height: 13)
+                    let mark = NSMutableAttributedString(attachment: attachment)
+                    mark.append(NSAttributedString(string: "\u{2009}", attributes: base))
+                    mark.addAttribute(.toolTip, value: L10n.tr("由 \(author.rawValue) 修改"), range: NSRange(location: 0, length: mark.length))
+                    result.append(mark)
+                }
+                lastAuthor = segment.author
+                var attributes = base
+                if segment.kind == .inserted {
+                    attributes[.foregroundColor] = Theme.text
+                    attributes[.backgroundColor] = Theme.green.withAlphaComponent(0.22)
+                } else {
+                    attributes[.foregroundColor] = Theme.red
+                    attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                    attributes[.strikethroughColor] = Theme.red
+                    attributes[.backgroundColor] = Theme.red.withAlphaComponent(0.10)
+                }
+                if let author = segment.author { attributes[.toolTip] = L10n.tr("由 \(author.rawValue) 修改") }
+                result.append(NSAttributedString(string: text, attributes: attributes))
+            }
+        }
+        return result
     }
 }
 
@@ -775,6 +960,10 @@ final class EditorPane: Surface, NSTextViewDelegate {
         textView.setSelectedRange(NSRange(location: start, length: max(0, end - start)))
     }
     /// Marks lines that differ from the last Git commit.
+    var changeDetail: ((LineChange.Hunk) -> [WordDiff.Segment]?)? {
+        get { (scroll.verticalRulerView as? LineRuler)?.changeDetail }
+        set { (scroll.verticalRulerView as? LineRuler)?.changeDetail = newValue }
+    }
     func setGitChanges(_ changes: [LineChange]) { (scroll.verticalRulerView as? LineRuler)?.changes = changes; gitChanges = changes; updateOverview() }
     /// Marks lines the last build complained about, in the gutter and in the overview.
     func setProblems(errors: Set<Int>, warnings: Set<Int>) {
@@ -840,7 +1029,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         // The editor wraps lines, so it never scrolls sideways (a trackpad swipe or a stray jump would cut off text).
         let origin = scroll.contentView.bounds.origin, edge = leftEdgeOrigin(y: origin.y)
         if abs(origin.x - edge.x) > 0.5 { scrollEditor(toY: origin.y); return }
-        popup.dismiss(); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true }
+        popup.dismiss(); (scroll.verticalRulerView as? LineRuler)?.dismissChange(); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true }
     func scheduleHighlight() {
         highlighting?.cancel(); let job = DispatchWorkItem { [weak self] in self?.highlight() }; highlighting = job
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: job)
