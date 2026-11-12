@@ -121,11 +121,10 @@ final class SourceSyncTests: XCTestCase {
 
     // MARK: PDF → source
 
-    private func click(_ word: String, in pdf: String, occurrence: Int = 0) -> (stream: TextStream, index: Int, word: String) {
+    private func click(_ word: String, in pdf: String, occurrence: Int = 0) -> PDFClick {
         let ns = pdf as NSString; var range = ns.range(of: word)
         for _ in 0..<occurrence { range = ns.range(of: word, range: NSRange(location: NSMaxRange(range), length: ns.length - NSMaxRange(range))) }
-        let stream = TextSync.pdfStream(pdf)
-        return (stream, stream.index(atOrAfter: range.location + word.count / 2), word)
+        return PDFClick(stream: TextSync.pdfStream(pdf), pageText: pdf, character: range.location + word.count / 2)
     }
     private let body = (1...30).map { "Paragraph \($0) discusses a distinct aspect of the layered design in its own words, number \($0 * 7)." }.joined(separator: "\n")
 
@@ -158,7 +157,48 @@ final class SourceSyncTests: XCTestCase {
         let macro = try XCTUnwrap(TextSync.locate(clicked: click("LayerCast", in: pdf), hint: (file, 31, tex), candidates: [(file, tex)]))
         XCTAssertEqual(macro.offset, ns.range(of: "\\name").location)
         let equation = try XCTUnwrap(TextSync.locate(clicked: click("MSE", in: pdf), hint: (file, 34, tex), candidates: [(file, tex)]))
-        XCTAssertEqual(equation.offset, ns.range(of: "MSE").location)
+        XCTAssertEqual(equation.offset, ns.range(of: "MSE").location + 1)
         XCTAssertEqual(equation.line, 33)
+    }
+
+    func testLocateFindsATableCellByTheWordsAroundIt() throws {
+        let file = URL(fileURLWithPath: "/tmp/main.tex")
+        let tex = "\(body)\nOur model reaches a higher PSNR than every baseline at low rates.\n\\begin{table}\n\\caption{Quality on Kodak}\n\\begin{tabular}{lcc}\nMethod & PSNR$\\uparrow$ & LPIPS$\\downarrow$ \\\\\nDeepJSCC & 24.83 & 0.412 \\\\\n\\end{tabular}\n\\end{table}\n"
+        // The float is printed at the top of the page, far from the paragraph, and SyncTeX names its last line.
+        let pdf = "TABLE I\nQuality on Kodak\nMethod PSNR↑ LPIPS↓\nDeepJSCC 24.83 0.412\n\(body)\nOur model reaches a higher PSNR than every baseline at low rates.\n"
+        let found = try XCTUnwrap(TextSync.locate(clicked: click("PSNR", in: pdf), hint: (file, 39, tex), candidates: [(file, tex)]))
+        XCTAssertEqual(found.line, 35)
+        XCTAssertEqual(found.offset, (tex as NSString).range(of: "PSNR$").location + 2)
+    }
+
+    func testLocateJoinsAWordHyphenatedAcrossLines() throws {
+        let file = URL(fileURLWithPath: "/tmp/main.tex")
+        let tex = "\(body)\nWe then describe a progressive extension of the scheme for unknown channels.\n"
+        let pdf = "\(body)\nWe then describe a pro-\ngressive extension of the scheme for unknown channels.\n"
+        let found = try XCTUnwrap(TextSync.locate(clicked: click("gressive", in: pdf), hint: (file, 31, tex), candidates: [(file, tex)]))
+        XCTAssertEqual(found.offset, (tex as NSString).range(of: "progressive").location + 3 + 4)
+    }
+
+    func testLocateKeepsToTheSyncTeXLineForTextTheSourceDoesNotSpell() throws {
+        let file = URL(fileURLWithPath: "/tmp/main.tex")
+        let tex = "\(body)\n\\begin{figure}\n\\includegraphics{figures/pipeline.pdf}\n\\caption{Overview of the pipeline.}\n\\end{figure}\nThe decoder refines the image step by step.\n"
+        // "Decoder" is a label drawn inside the included figure.
+        let pdf = "Encoder Channel Decoder Softmax\nFig. 1. Overview of the pipeline.\n\(body)\nThe decoder refines the image step by step.\n"
+        let found = try XCTUnwrap(TextSync.locate(clicked: click("Decoder", in: pdf), hint: (file, 32, tex), candidates: [(file, tex)]))
+        // Not the "decoder" of the paragraph three lines on.
+        XCTAssertEqual(found.line, 32)
+    }
+
+    func testAReferenceLeadsToItsBibEntry() throws {
+        let bbl = "\\begin{thebibliography}{10}\n\n\\bibitem{shannon1948}\nC.~E. Shannon, ``A mathematical theory of communication,''\n  \\emph{Bell Syst. Tech. J.}, 1948.\n\n\\bibitem[Xu et~al.(2021)]{xu2021}\nJ.~Xu, ``Wireless image transmission,'' 2021.\n"
+        XCTAssertEqual(TextSync.citationKey(inBBL: bbl, line: 5), "shannon1948")
+        XCTAssertEqual(TextSync.citationKey(inBBL: bbl, line: 8), "xu2021")
+        XCTAssertNil(TextSync.citationKey(inBBL: bbl, line: 1))
+        let bib = "@article{xu2021,\n  title = {Wireless image transmission},\n}\n\n@article{shannon1948,\n  author = {Shannon, C. E.},\n  title = {A mathematical theory of communication},\n}\n"
+        let entry = try XCTUnwrap(TextSync.bibEntry(key: "shannon1948", in: bib))
+        XCTAssertEqual(entry.location, (bib as NSString).range(of: "@article{shannon1948").location)
+        let pdf = "[1] C. E. Shannon, “A mathematical theory of communication,” Bell Syst. Tech. J., 1948.\n"
+        XCTAssertEqual(TextSync.locate(clicked: click("mathematical", in: pdf), inEntry: entry, of: bib), (bib as NSString).range(of: "mathematical").location + 6)
+        XCTAssertEqual(TextSync.locate(clicked: click("Bell", in: pdf), inEntry: entry, of: bib), entry.location)
     }
 }

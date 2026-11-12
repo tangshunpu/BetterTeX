@@ -52,7 +52,7 @@ final class PDFSyncTests: XCTestCase {
 
         // PDF → source, a click on "marvellous".
         let document = try XCTUnwrap(pane.pdfView.document)
-        var clicked: (stream: TextStream, index: Int, word: String)?
+        var clicked: PDFClick?
         for pageIndex in 0..<document.pageCount {
             guard let page = document.page(at: pageIndex), let text = page.string as NSString? else { continue }
             let location = text.range(of: "marvellous").location

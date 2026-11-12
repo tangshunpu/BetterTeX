@@ -32,6 +32,48 @@ public struct TextMatch: Equatable {
     public func score(penalty: Double = 0) -> Double { weight * (exact ? 1 : 0.1) / (1 + penalty) }
 }
 
+/// A click on a PDF page: the word under it as the page prints it, the spellings to look for in the source,
+/// and the words printed around it.
+public struct PDFClick {
+    /// The page's comparable text and the clicked character's index in it.
+    public let stream: TextStream
+    public let index: Int
+    public let word: String
+    /// Spellings to search for, most complete first, each with the clicked character's offset inside it.
+    /// A word hyphenated across lines is joined with its other half.
+    public let needles: [(text: String, column: Int)]
+    /// Words before the click (nearest first) and after it, folded to lower case.
+    public let before: [String]
+    public let after: [String]
+
+    public init(stream: TextStream, pageText: String, character: Int) {
+        let ns = pageText as NSString
+        let at = min(max(0, character), max(0, ns.length - 1))
+        let range = TextSync.wordRange(in: pageText, at: at) ?? NSRange(location: at, length: ns.length > 0 ? 1 : 0)
+        let word = ns.substring(with: range), column = at - range.location
+        self.stream = stream; self.word = word
+        index = min(stream.index(atOrAfter: at), max(0, stream.count - 1))
+        func isHyphen(_ position: Int) -> Bool { position >= 0 && position < ns.length && [0x2D, 0xAD, 0x2010].contains(Int(ns.character(at: position))) }
+        func isBreak(_ position: Int) -> Bool { position >= 0 && position < ns.length && ns.character(at: position) == 10 }
+        var needles: [(String, Int)] = []
+        var start = range.location, end = NSMaxRange(range)
+        if isHyphen(end), isBreak(end + 1), let next = TextSync.wordRange(in: pageText, at: end + 2), next.location == end + 2 {
+            let tail = ns.substring(with: next)
+            needles += [(word + tail, column), (word + "-" + tail, column)]; end = NSMaxRange(next)
+        }
+        if isBreak(start - 1), isHyphen(start - 2), start >= 3, let previous = TextSync.wordRange(in: pageText, at: start - 3), NSMaxRange(previous) == start - 2 {
+            let head = ns.substring(with: previous)
+            needles += [(head + word, column + head.utf16.count), (head + "-" + word, column + head.utf16.count + 1)]; start = previous.location
+        }
+        needles.append((word, column))
+        self.needles = needles.filter { $0.0.count >= 2 }.map { (text: $0.0, column: $0.1) }
+        let reach = 420
+        let head = ns.substring(with: NSRange(location: max(0, start - reach), length: start - max(0, start - reach)))
+        let tail = ns.substring(with: NSRange(location: end, length: min(ns.length, end + reach) - end))
+        before = Array(TextSync.tokens(head).reversed().prefix(8)); after = Array(TextSync.tokens(tail).prefix(8))
+    }
+}
+
 public enum TextSync {
     // MARK: Building streams
 
@@ -235,10 +277,29 @@ public enum TextSync {
 
     private static func canonical(_ url: URL) -> String { url.standardizedFileURL.resolvingSymlinksInPath().path }
 
+    /// Runs of letters and digits, folded to lower case; single characters are left out.
+    static func tokens(_ text: String) -> [String] {
+        var result: [String] = [], current = ""
+        for character in fold(text) {
+            if character.isLetter || character.isNumber { current.append(character) }
+            else { if current.count >= 2 { result.append(current) }; current = "" }
+        }
+        if current.count >= 2 { result.append(current) }
+        return result
+    }
+    private static func fold(_ text: String) -> String {
+        text.precomposedStringWithCompatibilityMapping.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+    }
+
     /// Where a click in the PDF lands in the sources. `hint` is the file and (current) line SyncTeX named.
-    /// SyncTeX is often a paragraph off and at times names a neighbouring file, so the clicked words are looked
-    /// for in every candidate and the hint only ranks the places found. `offset` is nil when only a line is known.
-    public static func locate(clicked: (stream: TextStream, index: Int, word: String)?, hint: (file: URL, line: Int, text: String)?,
+    ///
+    /// The clicked word is searched for in every candidate file, and each place it occurs is rated by how many of
+    /// the words printed around the click also stand around it in the source, by how close it is to the SyncTeX
+    /// line, and by whether the running text lines up there character for character. That finds a table cell, a
+    /// caption or a legend entry as well as a word in a paragraph. Text the source does not spell out (inside an
+    /// included figure, a macro, an equation) falls back to aligning the surrounding text, then to the SyncTeX
+    /// line. `offset` is nil when only a line is known.
+    public static func locate(clicked: PDFClick?, hint: (file: URL, line: Int, text: String)?,
                               candidates: [(file: URL, text: String)]) -> (file: URL, offset: Int?, line: Int, text: String)? {
         let fallback: (file: URL, offset: Int?, line: Int, text: String)? = hint.map { ($0.file, nil, $0.line, $0.text) }
         guard let clicked else { return fallback }
@@ -247,28 +308,131 @@ public enum TextSync {
         var seen: Set<String> = hinted.map { [$0] } ?? []
         for candidate in candidates where seen.insert(canonical(candidate.file)).inserted { files.append((candidate.file, candidate.text, nil)) }
 
-        var best: (file: URL, text: String, stream: TextStream, starts: [Int], hint: Int?, match: TextMatch, score: Double)?
+        func weight(_ token: String) -> Double { token.count >= 5 ? 1 : token.count == 4 ? 0.8 : token.count == 3 ? 0.5 : 0.25 }
+        func rank(_ position: Int) -> Double { 1 / (1 + Double(position) / 3) }
+        let available = clicked.before.enumerated().reduce(0) { $0 + weight($1.element) * rank($1.offset) }
+            + clicked.after.enumerated().reduce(0) { $0 + weight($1.element) * rank($1.offset) }
+
+        var aligned: (file: URL, text: String, stream: TextStream, starts: [Int], hint: Int?, match: TextMatch, score: Double)?
+        var found: (file: URL, text: String, starts: [Int], offset: Int, score: Double)?
         for (file, source, line) in files where !source.isEmpty {
-            let stream = texStream(source); let starts = lineStarts(source)
+            let ns = source as NSString, stream = texStream(source), starts = lineStarts(source)
+            // The running text, aligned character by character.
             let penalty: (Int) -> Double
             if let line { penalty = { min(3, Double(abs(TextSync.line(of: stream.offset(at: $0), starts: starts) - line)) / 12) } }
             else { penalty = { _ in hint == nil ? 0 : 1 } }
-            guard let match = correspond(clicked.index, from: clicked.stream, to: stream, penalty: penalty) else { continue }
-            let score = match.score(penalty: penalty(match.index))
-            if best == nil || score > best!.score { best = (file, source, stream, starts, line, match, score) }
-            // A firm hit on the clicked word in the file SyncTeX named settles it.
-            if line != nil, match.exact, match.weight >= 3 { break }
+            let match = correspond(clicked.index, from: clicked.stream, to: stream, penalty: penalty)
+            if let match {
+                let score = match.score(penalty: penalty(match.index))
+                if aligned == nil || score > aligned!.score { aligned = (file, source, stream, starts, line, match, score) }
+            }
+            let landing = match.flatMap { $0.exact ? stream.offset(at: $0.index) : nil }
+
+            // Every place the clicked word occurs, rated by its surroundings.
+            for needle in clicked.needles {
+                var search = NSRange(location: 0, length: ns.length), any = false
+                while search.length > 0 {
+                    let hit = ns.range(of: needle.text, options: [.caseInsensitive, .diacriticInsensitive], range: search)
+                    guard hit.location != NSNotFound else { break }
+                    search = NSRange(location: NSMaxRange(hit), length: ns.length - NSMaxRange(hit))
+                    let lineRange = ns.lineRange(for: NSRange(location: hit.location, length: 0))
+                    if isCommented(ns, lineRange: lineRange, before: hit.location) { continue }
+                    any = true
+                    func alphanumeric(_ position: Int) -> Bool {
+                        guard position >= 0, position < ns.length, let scalar = UnicodeScalar(ns.character(at: position)) else { return false }
+                        return CharacterSet.alphanumerics.contains(scalar)
+                    }
+                    let whole = !alphanumeric(hit.location - 1) && !alphanumeric(NSMaxRange(hit))
+                    let reach = 320
+                    let left = fold(ns.substring(with: NSRange(location: max(0, hit.location - reach), length: hit.location - max(0, hit.location - reach))))
+                    let right = fold(ns.substring(with: NSRange(location: NSMaxRange(hit), length: min(ns.length, NSMaxRange(hit) + reach) - NSMaxRange(hit))))
+                    var context = 0.0
+                    for (position, token) in clicked.before.enumerated() where left.contains(token) { context += weight(token) * rank(position) }
+                    for (position, token) in clicked.after.enumerated() where right.contains(token) { context += weight(token) * rank(position) }
+                    let distance = line.map { abs(TextSync.line(of: hit.location, starts: starts) - $0) }
+                    let agrees = landing.map { NSLocationInRange($0, hit) } ?? false
+                    // Without the surroundings, the SyncTeX line or the running text to vouch for it, a place where
+                    // the word merely occurs is not the place that was clicked.
+                    guard agrees || (distance ?? .max) <= 1 || context >= max(1.2, 0.25 * available) else { continue }
+                    var score = context + (agrees ? 3 : 0) + (whole ? 0.5 : 0)
+                    if let distance { score += 2.5 / (1 + Double(distance) / 4) } else if hint != nil { score -= 0.5 }
+                    let offset = hit.location + min(needle.column, hit.length - 1)
+                    if found == nil || score > found!.score { found = (file, source, starts, offset, score) }
+                }
+                // A fuller spelling that occurs makes the fragments of it moot.
+                if any { break }
+            }
         }
-        guard let best else { return fallback }
-        let offset = best.match.exact ? best.stream.offset(at: best.match.index)
-            : settle(clicked: clicked, landing: best.match.index, in: best.stream, text: best.text, starts: best.starts, hint: best.hint)
-        return (best.file, offset, line(of: offset, starts: best.starts), best.text)
+        if let found { return (found.file, found.offset, line(of: found.offset, starts: found.starts), found.text) }
+        guard let aligned else { return fallback }
+        if aligned.match.exact {
+            let offset = aligned.stream.offset(at: aligned.match.index)
+            return (aligned.file, offset, line(of: offset, starts: aligned.starts), aligned.text)
+        }
+        let offset = settle(clicked: clicked, landing: aligned.match.index, in: aligned.stream, text: aligned.text, starts: aligned.starts, hint: aligned.hint)
+        let settled = line(of: offset, starts: aligned.starts)
+        // Loosely aligned text far from where SyncTeX points is more likely a neighbour on the page than the click.
+        if let hint, !(canonical(aligned.file) == canonical(hint.file) && abs(settled - hint.line) <= 12) { return fallback }
+        return (aligned.file, offset, settled, aligned.text)
+    }
+
+    // MARK: Bibliography
+
+    private static let bibItem = try! NSRegularExpression(pattern: #"^\s*\\(?:bibitem|entry)\b.*?\{([^{}]+)\}"#)
+    /// The citation key of the entry that holds a (1-based) line of a `.bbl` file, as BibTeX or Biber wrote it.
+    public static func citationKey(inBBL text: String, line: Int) -> String? {
+        let lines = text.components(separatedBy: "\n")
+        var index = min(max(0, line - 1), lines.count - 1)
+        while index >= 0 {
+            let candidate = lines[index] as NSString
+            if candidate.contains("\\bibitem") || candidate.contains("\\entry") {
+                // \bibitem[label]{key}: the key is the last braced group on the line.
+                var key: String?
+                let optionalEnd = candidate.range(of: "]{", options: .backwards)
+                let rest = optionalEnd.location != NSNotFound ? candidate.substring(from: optionalEnd.location + 1) : candidate as String
+                if let match = bibItem.firstMatch(in: rest, range: NSRange(location: 0, length: (rest as NSString).length)) { key = (rest as NSString).substring(with: match.range(at: 1)) }
+                else if optionalEnd.location != NSNotFound, let close = rest.firstIndex(of: "}") { key = String(rest[rest.index(after: rest.startIndex)..<close]) }
+                if let key, !key.isEmpty { return key.trimmingCharacters(in: .whitespaces) }
+            }
+            index -= 1
+        }
+        return nil
+    }
+    /// The range of the entry `key` in a `.bib` file, from its `@` to the line before the next entry.
+    public static func bibEntry(key: String, in text: String) -> NSRange? {
+        let ns = text as NSString
+        guard let start = try? NSRegularExpression(pattern: "@[A-Za-z]+\\s*[{(]\\s*" + NSRegularExpression.escapedPattern(for: key) + "\\s*,"),
+              let match = start.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        let next = ns.range(of: "\n@", range: NSRange(location: NSMaxRange(match.range), length: ns.length - NSMaxRange(match.range)))
+        let end = next.location == NSNotFound ? ns.length : next.location
+        return NSRange(location: match.range.location, length: end - match.range.location)
+    }
+    /// Where a click on a reference lands inside its `.bib` entry: on the clicked word if the entry spells it, else at its start.
+    public static func locate(clicked: PDFClick?, inEntry entry: NSRange, of text: String) -> Int {
+        let ns = text as NSString
+        for needle in clicked?.needles ?? [] {
+            let hit = ns.range(of: needle.text, options: [.caseInsensitive, .diacriticInsensitive], range: entry)
+            if hit.location != NSNotFound { return hit.location + min(needle.column, hit.length - 1) }
+        }
+        return entry.location
+    }
+
+    /// Whether `position` on its line sits behind an unescaped `%`.
+    private static func isCommented(_ text: NSString, lineRange: NSRange, before position: Int) -> Bool {
+        var at = lineRange.location
+        while at < position {
+            let unit = text.character(at: at)
+            if unit == 0x5C { at += 2; continue }
+            if unit == 0x25 { return true }
+            at += 1
+        }
+        return false
     }
 
     /// Places a click on something the source spells differently (a macro, an equation, a generated heading or
     /// number). The shared text on either side bounds a stretch of source; inside it the clicked word is looked
     /// for literally, then the SyncTeX line is taken if it falls there, then the nearer end.
-    private static func settle(clicked: (stream: TextStream, index: Int, word: String), landing: Int, in target: TextStream,
+    private static func settle(clicked: PDFClick, landing: Int, in target: TextStream,
                                text: String, starts: [Int], hint: Int?) -> Int {
         let source = clicked.stream, position = min(max(0, clicked.index), source.count - 1), base = landing - position
         let ns = text as NSString, gram = 6

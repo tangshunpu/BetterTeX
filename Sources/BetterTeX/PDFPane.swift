@@ -589,7 +589,7 @@ final class PDFPane: Surface {
     }
 
     /// The text position under a point of a page, as an index into that page's stream.
-    func textPosition(page index: Int, point: CGPoint) -> (stream: TextStream, index: Int, word: String)? {
+    func textPosition(page index: Int, point: CGPoint) -> PDFClick? {
         guard let page = pdfView.document?.page(at: index), let stream = pageStream(index), stream.count > 0 else { return nil }
         var hit = page.textIndex(at: point)
         if hit == nil {
@@ -602,9 +602,7 @@ final class PDFPane: Surface {
             }
         }
         guard let character = hit else { return nil }
-        let text = page.string ?? ""
-        let word = TextSync.wordRange(in: text, at: character).map { (text as NSString).substring(with: $0) } ?? ""
-        return (stream, min(stream.index(atOrAfter: character), stream.count - 1), word)
+        return PDFClick(stream: stream, pageText: page.string ?? "", character: character)
     }
 
     private func clearHighlights() {

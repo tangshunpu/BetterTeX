@@ -686,18 +686,38 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     /// since the build), so the caret lands on the clicked word and its sentence is marked.
     func inverseSync(page: Int, x: Double, y: Double) {
         guard let pdf = compiledPDF, let root = compiledRoot, let tools else { setStatus(L10n.tr("请先编译当前文档以生成 SyncTeX 映射")); return }
-        var clicked: (stream: TextStream, index: Int, word: String)?
+        var clicked: PDFClick?
         if let pdfPage = ui.preview.pdfView.document?.page(at: page - 1) {
             let media = pdfPage.bounds(for: .mediaBox)
             clicked = ui.preview.textPosition(page: page - 1, point: CGPoint(x: media.minX + x, y: media.maxY - y))
         }
-        let token = generation; let snapshot = compiledSnapshot
+        let token = generation; let snapshot = compiledSnapshot; let project = project
         let candidates = ([active?.url].compactMap { $0 } + buffers.map(\.url)).filter { ["tex", "ltx"].contains($0.pathExtension.lowercased()) }
         let texts = Dictionary(candidates.map { ($0, currentText(of: $0) ?? "") }, uniquingKeysWith: { first, _ in first })
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let synced = try? SyncTeX.inverse(page: page, x: x, y: y, pdf: pdf, root: root, tools: tools)
+            var synced = try? SyncTeX.inverse(page: page, x: x, y: y, pdf: pdf, root: root, tools: tools)
+            if synced == nil {
+                // Inside an included figure SyncTeX has nothing; its caption just below or above does.
+                for step in [14.0, -14, 32, -32, 60, -60, 100, -100, 150] {
+                    synced = try? SyncTeX.inverse(page: page, x: x, y: y + step, pdf: pdf, root: root, tools: tools)
+                    if synced != nil { break }
+                }
+            }
             func text(of url: URL) -> String? {
                 texts.first { Self.samePath($0.key, url) }?.value ?? (try? String(contentsOf: url, encoding: .utf8))
+            }
+            // A click on a reference: the .bbl is generated, so go to the entry in the .bib it came from.
+            if let synced, synced.file.pathExtension.lowercased() == "bbl", let bbl = try? String(contentsOf: synced.file, encoding: .utf8),
+               let key = TextSync.citationKey(inBBL: bbl, line: synced.line), let found = Self.bibEntry(key: key, project: project, text: text(of:)) {
+                let offset = TextSync.locate(clicked: clicked, inEntry: found.entry, of: found.text)
+                DispatchQueue.main.async {
+                    guard let self, self.generation == token else { return }
+                    let open = self.buffers.first { Self.samePath($0.url, found.file) }?.url ?? found.file
+                    self.openFile(open)
+                    self.ui.editor.reveal(offset: offset, sentence: (found.text as NSString).lineRange(for: NSRange(location: offset, length: 0)))
+                    self.setStatus("PDF → \(found.file.lastPathComponent) · \(key)")
+                }
+                return
             }
             var hint: (file: URL, line: Int, text: String)?
             if let synced, let source = text(of: synced.file) {
@@ -725,6 +745,17 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                 self.setStatus("PDF → \(result.file.lastPathComponent):\(result.line)")
             }
         }
+    }
+    /// Finds the entry `key` among the project's .bib files.
+    private static func bibEntry(key: String, project: URL?, text: (URL) -> String?) -> (file: URL, text: String, entry: NSRange)? {
+        guard let project, let iterator = FileManager.default.enumerator(at: project, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return nil }
+        var checked = 0
+        while let url = iterator.nextObject() as? URL, checked < 200 {
+            guard url.pathExtension.lowercased() == "bib" else { continue }
+            checked += 1
+            if let source = text(url), let entry = TextSync.bibEntry(key: key, in: source) { return (url, source, entry) }
+        }
+        return nil
     }
     @objc func newFile() {
         guard let project else { return }
