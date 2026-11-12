@@ -148,12 +148,18 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         composerHeight = composerScroll.heightAnchor.constraint(equalToConstant: 22); composerHeight.isActive = true
         let attach = ActionButton("", symbol: "plus") { [weak self] in self?.attachContext() }; attach.toolTip = L10n.tr("加入 Agent 上下文")
         modelButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showModelMenu() }; modelButton.toolTip = L10n.tr("选择模型")
-        effortButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showEffortMenu() }; effortButton.toolTip = L10n.tr("选择思考强度")
-        for button in [modelButton!, effortButton!] { button.cell?.lineBreakMode = .byTruncatingTail; button.setContentCompressionResistancePriority(.init(200), for: .horizontal) }
+        effortButton = ActionButton("", symbol: "gauge.with.dots.needle.50percent", style: .plain) { [weak self] in self?.showEffortMenu() }; effortButton.toolTip = L10n.tr("选择思考强度")
+        effortButton.image = Theme.symbol("gauge.with.dots.needle.50percent", size: 13, weight: .regular, description: L10n.tr("选择思考强度"))
+        // When the pane is narrow the model name gives way first, so every picker keeps a readable label.
+        for button in [modelButton!, effortButton!] { button.cell?.lineBreakMode = .byTruncatingTail }
+        modelButton.setContentCompressionResistancePriority(.init(150), for: .horizontal); effortButton.setContentCompressionResistancePriority(.init(400), for: .horizontal)
+        // Pickers hug their labels; spare width goes to the gap before the send button.
+        for button in [modelButton!, effortButton!] { button.setContentHuggingPriority(.required, for: .horizontal) }
         let send = ActionButton("", symbol: "arrow.up", style: .send) { [weak self] in self?.sendPrompt() }; send.toolTip = L10n.tr("发送  ↩")
         let toolSpacer = NSView(); toolSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
         sandboxButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showSandboxMenu() }; sandboxButton.toolTip = L10n.tr("Agent 可以做什么")
         sandboxButton.setContentCompressionResistancePriority(.init(600), for: .horizontal); sandboxButton.setTitle(sandbox.title)
+        sandboxButton.setContentHuggingPriority(.required, for: .horizontal); attach.setContentHuggingPriority(.required, for: .horizontal)
         for view in [chat, claudeChat] {
             let name = view.provider.rawValue
             view.onOpenFile = { [weak self] in self?.onOpenFile?($0) }
@@ -169,13 +175,13 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
                 if !view.running { self.refreshUsage() }
             }
         }
-        let toolRow = NSStackView(views: [attach, modelButton, effortButton, sandboxButton, toolSpacer, send]); toolRow.spacing = 2; toolRow.alignment = .centerY
+        let toolRow = NSStackView(views: [attach, modelButton, effortButton, sandboxButton, toolSpacer, send]); toolRow.spacing = 4; toolRow.alignment = .centerY
         let cardStack = NSStackView(views: [contextRow, composerScroll, toolRow]); cardStack.orientation = .vertical; cardStack.spacing = 8; cardStack.alignment = .leading
         for row in [contextRow, composerScroll, toolRow] { row.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true }
-        let field = Chip(fill: Theme.card, radius: 14, border: Theme.adaptive(0x3C3C43, 0xFFFFFF, lightAlpha: 0.18, darkAlpha: 0.12))
+        let field = Chip(fill: Theme.card, radius: 16, border: Theme.adaptive(0x3C3C43, 0xFFFFFF, lightAlpha: 0.18, darkAlpha: 0.12))
         composerCard = field; composerTools = toolRow
         cardStack.translatesAutoresizingMaskIntoConstraints = false; field.addSubview(cardStack)
-        NSLayoutConstraint.activate([cardStack.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 12), cardStack.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: -8), cardStack.topAnchor.constraint(equalTo: field.topAnchor, constant: 10), cardStack.bottomAnchor.constraint(equalTo: field.bottomAnchor, constant: -6)])
+        NSLayoutConstraint.activate([cardStack.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 12), cardStack.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: -10), cardStack.topAnchor.constraint(equalTo: field.topAnchor, constant: 12), cardStack.bottomAnchor.constraint(equalTo: field.bottomAnchor, constant: -10)])
         // The placeholder sits over the text view but outside the scroll view, which would otherwise tile it.
         placeholder.translatesAutoresizingMaskIntoConstraints = false; placeholder.lineBreakMode = .byTruncatingTail; field.addSubview(placeholder)
         NSLayoutConstraint.activate([placeholder.leadingAnchor.constraint(equalTo: composerScroll.leadingAnchor), placeholder.topAnchor.constraint(equalTo: composerScroll.topAnchor, constant: 2), placeholder.trailingAnchor.constraint(lessThanOrEqualTo: composerScroll.trailingAnchor)])
@@ -507,7 +513,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         let config = configurations[selectedProvider] ?? AgentConfiguration()
         let name = availableModels(for: selectedProvider).first { $0.id == config.model }?.name ?? config.model
         modelButton.setTitle(config.model.isEmpty ? L10n.tr("\(selectedProvider.rawValue) 默认") : name)
-        effortButton.setTitle(config.effort.isEmpty ? L10n.tr("默认强度") : config.effort)
+        // The default effort is just the gauge; a chosen one shows its name next to it.
+        effortButton.setTitle(config.effort); effortButton.toolTip = L10n.tr("选择思考强度") + " · " + (config.effort.isEmpty ? L10n.tr("默认强度") : config.effort)
     }
     /// Pops a picker upward from a composer button without pre-highlighting any row.
     private func popUp(_ menu: NSMenu, from button: NSButton) {

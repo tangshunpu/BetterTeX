@@ -204,7 +204,9 @@ final class ActionButton: NSButton {
             if style == .prominent { keyEquivalent = "\r" }
             return
         }
-        isBordered = false; wantsLayer = true; layer?.cornerCurve = .continuous; focusRingType = .none
+        isBordered = false; wantsLayer = true; focusRingType = .none
+        // A continuous (squircle) curve at half the height bulges into an oval; round shapes use a true arc.
+        layer?.cornerCurve = [.pill, .tinted, .circle, .send].contains(style) ? .circular : .continuous
         setButtonType(.momentaryChange)
         let glyph: CGFloat = style == .pill ? 10 : style == .tool ? 11 : style == .send ? 12 : style == .chip || style == .plain ? 9 : 15
         if let symbol { image = Theme.symbol(symbol, size: glyph, weight: style == .send || style == .pill ? .bold : .medium, description: title) }
@@ -214,7 +216,7 @@ final class ActionButton: NSButton {
         switch style {
         case .icon, .accentIcon: size(30, 30)
         case .circle: size(34, 34)
-        case .send: size(26, 26)
+        case .send: size(28, 28)
         case .chip: size(nil, 32)
         case .pill: size(nil, 32)
         case .tinted: size(nil, 30)
@@ -250,6 +252,9 @@ final class ActionButton: NSButton {
         size.width += style == .tool ? 18 : 24
         return size
     }
+    // NSButton pads its frame around the alignment rect that constraints size; a round button's
+    // layer fills the frame, so without this a 28 × 28 circle is drawn 28.5 × 33.5 — an egg.
+    override var alignmentRectInsets: NSEdgeInsets { style == .send || style == .circle ? NSEdgeInsets() : super.alignmentRectInsets }
     override var wantsUpdateLayer: Bool { style != .push && style != .prominent }
     override func updateLayer() {
         let pressed = isHighlighted
