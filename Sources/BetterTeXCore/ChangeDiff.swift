@@ -123,6 +123,9 @@ public enum WordDiff {
         return segments
     }
 
+    /// How many tokens (words, commands, symbols, CJK characters) `text` holds.
+    public static func tokenCount(_ text: String) -> Int { tokens(text).count }
+
     /// Collapses whitespace so texts that differ only in spacing compare equal.
     public static func normalized(_ text: String) -> String {
         tokens(text).map(\.text).joined(separator: " ")

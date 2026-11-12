@@ -767,3 +767,8 @@
 "相对上次提交的更改" = "Changes since last commit";
 "%1$@ 的修改" = "Edited by %1$@";
 "由 %1$@ 修改" = "Edited by %1$@";
+"− 上次提交" = "− Last commit";
+"+ 现在" = "+ Now";
+"点击竖条放大" = "Click the bar to enlarge";
+"第 %1$@ 行前的删除" = "Deleted before line %1$@";
+"第 %1$@–%2$@ 行" = "Lines %1$@–%2$@";

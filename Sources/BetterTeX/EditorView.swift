@@ -378,14 +378,30 @@ final class LineRuler: NSRulerView {
         lineCache = (start, count); return count
     }
 
+    private func lines(of change: LineChange) -> String {
+        guard let hunk = change.hunk else { return "" }
+        if hunk.newCount == 0 { return L10n.tr("第 \(change.lines.lowerBound) 行前的删除") }
+        let last = hunk.newStart + hunk.newCount - 1
+        return last == hunk.newStart ? L10n.tr("第 \(last) 行") : L10n.tr("第 \(hunk.newStart)–\(last) 行")
+    }
     private func show(_ change: LineChange, at rect: NSRect) {
         guard let hunk = change.hunk, let segments = changeDetail?(hunk), window != nil else { return }
-        let content = ChangeDetailView(segments: segments, deletionOnly: change.kind == .deleted)
+        // As wide as the editor allows, so a paragraph wraps into a few readable lines.
+        let room = (enclosingScrollView?.contentView.bounds.width ?? 600) - 60
+        let content = ChangeDetailView(segments: segments, lines: lines(of: change), hint: L10n.tr("点击竖条放大"),
+                                       width: min(760, max(420, room)), maxHeight: 460, fontSize: 13)
         let controller = NSViewController(); controller.view = content
-        popover.contentViewController = controller; popover.contentSize = content.fittingSize
+        popover.contentViewController = controller; popover.contentSize = content.preferredSize
         if popover.isShown { popover.positioningRect = rect } else { popover.show(relativeTo: rect, of: self, preferredEdge: .maxX) }
         misses = 0; watchTimer?.invalidate()
         watchTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in self?.watchPointer() }
+    }
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard point.x >= bounds.width - Self.hoverWidth, let (change, _) = change(at: point), let hunk = change.hunk,
+              let segments = changeDetail?(hunk) else { super.mouseDown(with: event); return }
+        dismissChange()
+        ChangeDetailWindow.shared.show(segments: segments, lines: lines(of: change), near: window)
     }
     /// Keeps the popover while the pointer is on the strip or inside the popover, so its text
     /// can be read and selected; closes it a moment after the pointer leaves both.
@@ -442,102 +458,181 @@ extension LineRuler {
     static func covers(_ hunk: LineChange.Hunk, _ line: Int) -> Bool { line >= hunk.newStart && line < hunk.newStart + hunk.newCount }
 }
 
-/// The body of the change popover: a header naming the agents involved and a word-level diff
-/// where insertions are tinted green and deletions struck through in red.
+/// The body of the change popover and of the change window: a header naming the agents involved,
+/// the lines and the word counts, over a word-level diff of the hunk.
 final class ChangeDetailView: NSView {
-    static let maxWidth: CGFloat = 520, maxHeight: CGFloat = 340
-    private let scroll = NSScrollView()
-    init(segments: [WordDiff.Segment], deletionOnly: Bool) {
+    /// The size that shows everything up to `maxHeight`, for sizing a popover.
+    private(set) var preferredSize = NSSize.zero
+    init(segments: [WordDiff.Segment], lines: String, hint: String?, width: CGFloat, maxHeight: CGFloat, fontSize: CGFloat) {
         super.init(frame: .zero)
         let authors = AgentProvider.allCases.filter { provider in segments.contains { $0.author == provider } }
-        let words = { (kind: WordDiff.Kind) in segments.filter { $0.kind == kind }.reduce(0) { $0 + WordDiff.normalized($1.text).split(separator: " ").count } }
-        let added = words(.inserted), removed = words(.deleted)
+        let added = ChangeDetailView.words(segments, .inserted), removed = ChangeDetailView.words(segments, .deleted)
 
         let header = NSStackView(); header.spacing = 6; header.alignment = .centerY
         for author in authors {
-            let logo = NSImageView(); logo.image = AgentLogo.image(for: author.rawValue, side: 16) ?? Theme.symbol("sparkles", size: 12)
-            logo.toolTip = author.rawValue; header.addArrangedSubview(logo)
+            let logo = NSImageView(); logo.image = AgentLogo.image(for: author.rawValue, side: 18) ?? Theme.symbol("sparkles", size: 13)
+            logo.toolTip = L10n.tr("由 \(author.rawValue) 修改"); header.addArrangedSubview(logo)
         }
         let title = authors.isEmpty ? L10n.tr("相对上次提交的更改") : L10n.tr("\(authors.map(\.rawValue).joined(separator: " · ")) 的修改")
-        header.addArrangedSubview(Theme.label(title, size: 12, color: Theme.text, weight: .semibold))
+        let titleLabel = Theme.label(title, size: 13, color: Theme.text, weight: .semibold)
+        let detail = Theme.label(([lines] + (hint.map { [$0] } ?? [])).joined(separator: " · "), size: 11.5, color: Theme.muted)
+        for label in [titleLabel, detail] { label.lineBreakMode = .byTruncatingTail; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        header.addArrangedSubview(titleLabel); header.addArrangedSubview(detail)
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal); header.addArrangedSubview(spacer)
         let stats = NSMutableAttributedString()
-        let statFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        let statFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
         if added > 0 { stats.append(NSAttributedString(string: "+\(added)", attributes: [.font: statFont, .foregroundColor: Theme.green])) }
         if removed > 0 { stats.append(NSAttributedString(string: (added > 0 ? "  " : "") + "\u{2212}\(removed)", attributes: [.font: statFont, .foregroundColor: Theme.red])) }
-        let statLabel = NSTextField(labelWithAttributedString: stats); header.addArrangedSubview(statLabel)
-
-        let body = NSTextView(); body.isEditable = false; body.isSelectable = true; body.drawsBackground = false
-        body.textContainerInset = NSSize(width: 0, height: 2); body.textContainer?.lineFragmentPadding = 0
-        body.textStorage?.setAttributedString(Self.render(segments))
-        body.textContainer?.containerSize = NSSize(width: Self.maxWidth, height: .greatestFiniteMagnitude); body.textContainer?.widthTracksTextView = false
-        body.layoutManager?.ensureLayout(for: body.textContainer!)
-        let used = body.layoutManager?.usedRect(for: body.textContainer!).size ?? .zero
-        let width = max(260, min(Self.maxWidth, ceil(used.width))), height = min(Self.maxHeight, ceil(used.height) + 4)
-        body.textContainer?.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude); body.textContainer?.widthTracksTextView = true
-        body.frame = NSRect(x: 0, y: 0, width: width, height: ceil(used.height) + 4)
-        body.isVerticallyResizable = true; body.autoresizingMask = [.width]
-        scroll.documentView = body; scroll.drawsBackground = false; scroll.hasVerticalScroller = used.height + 4 > Self.maxHeight; scroll.scrollerStyle = .overlay
+        let statLabel = NSTextField(labelWithAttributedString: stats); statLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        header.addArrangedSubview(statLabel)
+        header.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
 
         let divider = NSBox(); divider.boxType = .separator
-        let stack = NSStackView(views: [header, divider, scroll]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 12, right: 12)
-        stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
+
+        // The text view wraps at the scroll view's width, so it reflows when a window is resized.
+        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.scrollerStyle = .overlay
+        let body = NSTextView(frame: NSRect(x: 0, y: 0, width: width, height: 10))
+        body.isEditable = false; body.isSelectable = true; body.drawsBackground = false
+        body.isVerticallyResizable = true; body.isHorizontallyResizable = false; body.autoresizingMask = [.width]
+        body.minSize = NSSize(width: 0, height: 0); body.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        body.textContainerInset = NSSize(width: 14, height: 12)
+        body.textContainer?.lineFragmentPadding = 0; body.textContainer?.widthTracksTextView = true
+        body.textContainer?.containerSize = NSSize(width: width - 28, height: .greatestFiniteMagnitude)
+        body.textStorage?.setAttributedString(ChangeDetailView.render(segments, fontSize: fontSize))
+        body.layoutManager?.ensureLayout(for: body.textContainer!)
+        let textHeight = ceil(body.layoutManager?.usedRect(for: body.textContainer!).height ?? 0) + 24
+        body.frame.size.height = textHeight
+        scroll.documentView = body
+
+        for view in [header, divider, scroll] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        let headerHeight: CGFloat = 40
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor), stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor), stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            header.widthAnchor.constraint(equalToConstant: width), divider.widthAnchor.constraint(equalToConstant: width),
-            scroll.widthAnchor.constraint(equalToConstant: width), scroll.heightAnchor.constraint(equalToConstant: height)
+            header.topAnchor.constraint(equalTo: topAnchor), header.leadingAnchor.constraint(equalTo: leadingAnchor), header.trailingAnchor.constraint(equalTo: trailingAnchor), header.heightAnchor.constraint(equalToConstant: headerHeight),
+            divider.topAnchor.constraint(equalTo: header.bottomAnchor), divider.leadingAnchor.constraint(equalTo: leadingAnchor), divider.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: divider.bottomAnchor), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+        preferredSize = NSSize(width: width, height: headerHeight + 1 + min(textHeight, maxHeight))
+        frame.size = preferredSize
         setAccessibilityLabel(title)
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    /// Long unchanged stretches are cut to their ends so the eye lands on the edits.
-    static func render(_ segments: [WordDiff.Segment]) -> NSAttributedString {
-        let font = Theme.editorFont().withSize(12.5)
-        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 3
-        let base: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: paragraph]
+    static func words(_ segments: [WordDiff.Segment], _ kind: WordDiff.Kind) -> Int {
+        segments.filter { $0.kind == kind }.reduce(0) { $0 + WordDiff.tokenCount($1.text) }
+    }
+
+    /// Light edits read best inline. A block that was mostly rewritten turns into confetti that
+    /// way, so it is shown as the committed text over the current text, each with its changes marked.
+    static func render(_ segments: [WordDiff.Segment], fontSize: CGFloat) -> NSAttributedString {
+        let kept = words(segments, .equal), changed = words(segments, .inserted) + words(segments, .deleted)
+        let rewritten = segments.contains { $0.kind == .deleted } && segments.contains { $0.kind == .inserted } && changed > 12 && changed > kept
+        // The header already names a sole author; inline logos only help tell mixed authors apart.
+        let mixed = Set(segments.filter { $0.kind != .equal }.map { $0.author?.rawValue ?? "" }).count > 1
+        return rewritten ? renderBlocks(segments, fontSize: fontSize, logos: mixed) : renderInline(segments, fontSize: fontSize, logos: mixed)
+    }
+
+    private static func base(_ fontSize: CGFloat) -> [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 4
+        return [.font: Theme.editorFont().withSize(fontSize), .paragraphStyle: paragraph, .foregroundColor: Theme.text]
+    }
+    private static func logo(_ author: AgentProvider, fontSize: CGFloat) -> NSAttributedString? {
+        guard let image = AgentLogo.image(for: author.rawValue, side: fontSize + 1) else { return nil }
+        let attachment = NSTextAttachment(); attachment.image = image
+        attachment.bounds = NSRect(x: 0, y: -3, width: fontSize + 1, height: fontSize + 1)
+        let mark = NSMutableAttributedString(attachment: attachment)
+        mark.append(NSAttributedString(string: "\u{2009}", attributes: base(fontSize)))
+        mark.addAttribute(.toolTip, value: L10n.tr("由 \(author.rawValue) 修改"), range: NSRange(location: 0, length: mark.length))
+        return mark
+    }
+    private static func style(_ kind: WordDiff.Kind, strong: Bool, fontSize: CGFloat) -> [NSAttributedString.Key: Any] {
+        var attributes = base(fontSize)
+        switch kind {
+        case .equal: break
+        case .inserted:
+            attributes[.backgroundColor] = Theme.green.withAlphaComponent(strong ? 0.30 : 0.22)
+        case .deleted:
+            attributes[.foregroundColor] = Theme.red
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            attributes[.strikethroughColor] = Theme.red.withAlphaComponent(0.7)
+            attributes[.backgroundColor] = Theme.red.withAlphaComponent(strong ? 0.18 : 0.10)
+        }
+        return attributes
+    }
+
+    static func renderInline(_ segments: [WordDiff.Segment], fontSize: CGFloat, logos: Bool) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var lastAuthor: AgentProvider?
         for (index, segment) in segments.enumerated() {
             var text = segment.text
-            // Runs that were apart in the source stay apart; `\\bm{s}` → `\\bm{y}` stays joined.
-            if index > 0, segment.spaceBefore { result.append(NSAttributedString(string: " ", attributes: base)) }
-            switch segment.kind {
-            case .equal:
-                let keep = 60, first = index == 0, last = index == segments.count - 1
+            if index > 0, segment.spaceBefore { result.append(NSAttributedString(string: " ", attributes: base(fontSize))) }
+            if segment.kind == .equal {
+                // Long unchanged stretches are cut to their ends so the eye lands on the edits.
+                let keep = 80, first = index == 0, last = index == segments.count - 1
                 if text.count > keep * 2 + 10 || ((first || last) && text.count > keep + 10) {
                     let head = first ? "" : String(text.prefix(keep)), tail = last ? "" : String(text.suffix(keep))
                     text = head + (first ? "" : " ") + "\u{2026}" + (last ? "" : " ") + tail
                 }
-                var attributes = base; attributes[.foregroundColor] = Theme.muted
+                var attributes = base(fontSize); attributes[.foregroundColor] = Theme.muted
                 result.append(NSAttributedString(string: text, attributes: attributes)); lastAuthor = nil
-            case .inserted, .deleted:
-                if let author = segment.author, author != lastAuthor, let logo = AgentLogo.image(for: author.rawValue, side: 13) {
-                    let attachment = NSTextAttachment(); attachment.image = logo
-                    attachment.bounds = NSRect(x: 0, y: font.descender + 1, width: 13, height: 13)
-                    let mark = NSMutableAttributedString(attachment: attachment)
-                    mark.append(NSAttributedString(string: "\u{2009}", attributes: base))
-                    mark.addAttribute(.toolTip, value: L10n.tr("由 \(author.rawValue) 修改"), range: NSRange(location: 0, length: mark.length))
-                    result.append(mark)
-                }
-                lastAuthor = segment.author
-                var attributes = base
-                if segment.kind == .inserted {
-                    attributes[.foregroundColor] = Theme.text
-                    attributes[.backgroundColor] = Theme.green.withAlphaComponent(0.22)
-                } else {
-                    attributes[.foregroundColor] = Theme.red
-                    attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
-                    attributes[.strikethroughColor] = Theme.red
-                    attributes[.backgroundColor] = Theme.red.withAlphaComponent(0.10)
-                }
-                if let author = segment.author { attributes[.toolTip] = L10n.tr("由 \(author.rawValue) 修改") }
-                result.append(NSAttributedString(string: text, attributes: attributes))
+                continue
             }
+            if logos, let author = segment.author, author != lastAuthor, let mark = logo(author, fontSize: fontSize) { result.append(mark) }
+            lastAuthor = segment.author
+            var attributes = style(segment.kind, strong: false, fontSize: fontSize)
+            if let author = segment.author { attributes[.toolTip] = L10n.tr("由 \(author.rawValue) 修改") }
+            result.append(NSAttributedString(string: text, attributes: attributes))
         }
         return result
     }
+
+    static func renderBlocks(_ segments: [WordDiff.Segment], fontSize: CGFloat, logos: Bool) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        func caption(_ text: String, _ color: NSColor) {
+            let paragraph = NSMutableParagraphStyle(); paragraph.paragraphSpacingBefore = result.length == 0 ? 0 : 14; paragraph.paragraphSpacing = 6
+            result.append(NSAttributedString(string: text + "\n", attributes: [.font: NSFont.systemFont(ofSize: fontSize - 1.5, weight: .semibold), .foregroundColor: color, .paragraphStyle: paragraph]))
+        }
+        func block(_ kind: WordDiff.Kind) {
+            var lastAuthor: AgentProvider?, first = true
+            for segment in segments where segment.kind == .equal || segment.kind == kind {
+                if !first, segment.spaceBefore { result.append(NSAttributedString(string: " ", attributes: base(fontSize))) }
+                first = false
+                if segment.kind == .equal { result.append(NSAttributedString(string: segment.text, attributes: base(fontSize))); lastAuthor = nil; continue }
+                if logos, let author = segment.author, author != lastAuthor, let mark = logo(author, fontSize: fontSize) { result.append(mark) }
+                lastAuthor = segment.author
+                var attributes = style(kind, strong: true, fontSize: fontSize)
+                if kind == .deleted { attributes[.strikethroughStyle] = nil }
+                if let author = segment.author { attributes[.toolTip] = L10n.tr("由 \(author.rawValue) 修改") }
+                result.append(NSAttributedString(string: segment.text, attributes: attributes))
+            }
+            result.append(NSAttributedString(string: "\n", attributes: base(fontSize)))
+        }
+        caption(L10n.tr("\u{2212} 上次提交"), Theme.red); block(.deleted)
+        caption(L10n.tr("+ 现在"), Theme.green); block(.inserted)
+        return result
+    }
+}
+
+/// A resizable window with the full diff of one hunk, opened by clicking the change strip.
+final class ChangeDetailWindow: NSPanel {
+    static let shared = ChangeDetailWindow()
+    private init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 760, height: 520), styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered, defer: true)
+        isFloatingPanel = true; hidesOnDeactivate = true; isReleasedWhenClosed = false; minSize = NSSize(width: 420, height: 240)
+        setFrameAutosaveName("BetterTeXChangeDetail")
+    }
+    func show(segments: [WordDiff.Segment], lines: String, near parent: NSWindow?) {
+        let opening = !isVisible
+        let width = max(minSize.width, opening ? 760 : frame.width)
+        let view = ChangeDetailView(segments: segments, lines: lines, hint: nil, width: width, maxHeight: 2000, fontSize: 14)
+        title = lines; contentView = view
+        if opening {
+            let size = NSSize(width: width, height: min(max(view.preferredSize.height, 240), (parent?.frame.height ?? 900) * 0.8))
+            setContentSize(size)
+            if let parent { setFrameOrigin(NSPoint(x: parent.frame.midX - frame.width / 2, y: parent.frame.midY - frame.height / 2)) }
+        }
+        makeKeyAndOrderFront(nil)
+    }
+    override func cancelOperation(_ sender: Any?) { close() }
 }
 
 /// A document tab: filled when active, with a file-type tile and a trailing control that
