@@ -18,3 +18,15 @@ final class PaneSplitTests: XCTestCase {
         XCTAssertLessThanOrEqual(first, 500)
     }
 }
+
+final class SegmentedTabsTests: XCTestCase {
+    func testTabsShareSpaceProportionallyWhenTheyFit() {
+        XCTAssertEqual(SegmentedTabs.segmentWidths(natural: [50, 100], available: 300, selected: 0), [100, 200])
+    }
+
+    func testSelectedTabKeepsItsTitleWhenSpaceIsShort() {
+        let widths = SegmentedTabs.segmentWidths(natural: [60, 60, 60, 60], available: 160, selected: 2)
+        XCTAssertEqual(widths[2], 60)
+        XCTAssertEqual(widths.reduce(0, +), 160, accuracy: 0.01)
+    }
+}

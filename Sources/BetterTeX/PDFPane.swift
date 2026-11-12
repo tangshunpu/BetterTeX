@@ -7,10 +7,20 @@ final class SyncedPDFView: PDFView {
     var onResize: (() -> Void)?
     var onCommandClick: (() -> Void)?
     var onEscape: (() -> Void)?
+    /// A pinch or ⌘+ / ⌘− — the only scale changes that count as the user choosing a zoom.
+    var onUserZoom: (() -> Void)?
     override func setFrameSize(_ newSize: NSSize) {
         let changed = newSize != frame.size
         super.setFrameSize(newSize); if changed { onResize?() }
     }
+    override func layout() {
+        super.layout()
+        // The inner scroll view settles during layout; fit again once it has, then once more after the pass.
+        onResize?(); DispatchQueue.main.async { [weak self] in self?.onResize?() }
+    }
+    override func magnify(with event: NSEvent) { onUserZoom?(); super.magnify(with: event) }
+    override func zoomIn(_ sender: Any?) { onUserZoom?(); super.zoomIn(sender) }
+    override func zoomOut(_ sender: Any?) { onUserZoom?(); super.zoomOut(sender) }
     override func cancelOperation(_ sender: Any?) { if let onEscape { onEscape() } else { super.cancelOperation(sender) } }
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.command) {
@@ -59,7 +69,7 @@ final class PDFPane: Surface {
     var onReveal: (() -> Void)?
     var onAuto: ((Bool) -> Void)?
     var onReadingMode: ((Bool) -> Void)?
-    private(set) var zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode") ?? "") ?? .fitWidth
+    private(set) var zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode.v2") ?? "") ?? .fitWidth
     private var applyingZoom = false
     private(set) var readingMode = false
     private var readingButton: ActionButton!
@@ -121,6 +131,7 @@ final class PDFPane: Surface {
             (L10n.tr("导出 PDF…"), "arrow.down.to.line", { [weak self] in self?.onExport?() })
         ]
         pdfView.onResize = { [weak self] in self?.applyZoom() }
+        pdfView.onUserZoom = { [weak self] in guard let self, self.zoomMode != .manual else { return }; self.zoomMode = .manual; if !self.readingMode { UserDefaults.standard.set(ZoomMode.manual.rawValue, forKey: "pdf.zoomMode.v2") } }
         // Jumping to the source needs the editor, so it ends reading mode.
         pdfView.onCommandClick = { [weak self] in guard let self, self.readingMode else { return }; self.onReadingMode?(false) }
         pdfView.onEscape = { [weak self] in guard let self, self.readingMode else { return }; self.onReadingMode?(false) }
@@ -182,7 +193,7 @@ final class PDFPane: Surface {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: zoomLabel.bounds.height + 6), in: zoomLabel)
     }
     func setZoomMode(_ mode: ZoomMode) {
-        zoomMode = mode; UserDefaults.standard.set(mode.rawValue, forKey: "pdf.zoomMode"); applyZoom()
+        zoomMode = mode; UserDefaults.standard.set(mode.rawValue, forKey: "pdf.zoomMode.v2"); applyZoom()
     }
     private func zoom(by factor: CGFloat) { setManualScale(pdfView.scaleFactor * factor) }
     private func setManualScale(_ scale: CGFloat) {
@@ -198,11 +209,15 @@ final class PDFPane: Surface {
         var box = page.bounds(for: pdfView.displayBox).size
         if page.rotation % 180 != 0 { box = NSSize(width: box.height, height: box.width) }
         guard box.width > 0, box.height > 0 else { return nil }
-        let viewport = pdfView.documentView?.enclosingScrollView?.contentSize ?? pdfView.bounds.size
+        // The view's own size, not its inner scroll view's, which may not have caught up with a resize yet.
+        var viewport = pdfView.bounds.size
+        if NSScroller.preferredScrollerStyle == .legacy { viewport.width -= NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) }
+        guard viewport.width > 20, viewport.height > 20 else { return nil }
+        // Page-break margins grow with the zoom, so they count as part of the page.
         let margins = pdfView.pageBreakMargins
         let columns: CGFloat = pdfView.displayMode == .twoUp || pdfView.displayMode == .twoUpContinuous ? 2 : 1
-        let width = (viewport.width - (margins.left + margins.right) * columns) / (box.width * columns)
-        let height = (viewport.height - margins.top - margins.bottom) / box.height
+        let width = (viewport.width - 2) / ((box.width + margins.left + margins.right) * columns)
+        let height = viewport.height / (box.height + margins.top + margins.bottom)
         let scale = zoomMode == .fitPage ? min(width, height) : width
         guard scale.isFinite, scale > 0 else { return nil }
         return max(pdfView.minScaleFactor, min(pdfView.maxScaleFactor, scale))
@@ -216,16 +231,12 @@ final class PDFPane: Surface {
         let page = pdfView.currentPage
         pdfView.displayMode = on ? .twoUpContinuous : .singlePageContinuous
         pdfView.displaysAsBook = false
-        if on { zoomMode = .fitWidth } else { zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode") ?? "") ?? .fitWidth }
+        if on { zoomMode = .fitWidth } else { zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode.v2") ?? "") ?? .fitWidth }
         pdfView.layoutDocumentView(); applyZoom()
         if let page { pdfView.go(to: page) }
         if on { window?.makeFirstResponder(pdfView) }
     }
     @objc private func scaleChanged() {
-        // A pinch or a PDFKit shortcut changes the scale outside our zoom controls.
-        if !applyingZoom, zoomMode != .manual, let fit = fittingScale(), abs(fit - pdfView.scaleFactor) > 0.01 {
-            zoomMode = .manual; if !readingMode { UserDefaults.standard.set(ZoomMode.manual.rawValue, forKey: "pdf.zoomMode") }
-        }
         zoomLabel.stringValue = "\(Int((pdfView.scaleFactor * 100).rounded()))%"
     }
     func load(_ url: URL) {

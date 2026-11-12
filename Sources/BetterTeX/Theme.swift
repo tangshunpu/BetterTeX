@@ -321,7 +321,8 @@ final class SegmentedTabs: NSView {
         thumb.shadow = { let s = NSShadow(); s.shadowColor = NSColor.black.withAlphaComponent(0.16); s.shadowBlurRadius = 4; s.shadowOffset = NSSize(width: 0, height: -2); return s }()
         addSubview(thumb)
         for title in titles {
-            let label = Theme.label(title, size: 12, weight: .medium); label.alignment = .center; label.lineBreakMode = .byClipping
+            let label = Theme.label(title, size: 12, weight: .medium); label.alignment = .center; label.lineBreakMode = .byTruncatingTail
+            label.toolTip = title
             labels.append(label); addSubview(label)
         }
         size(nil, 30); setAccessibilityRole(.tabGroup)
@@ -329,15 +330,24 @@ final class SegmentedTabs: NSView {
     required init?(coder: NSCoder) { fatalError() }
     override var isFlipped: Bool { true }
     /// Segments share the width in proportion to their titles, so short titles leave room for long ones.
+    /// When they do not all fit, the selected one keeps its full title and the others share what is left.
     private var segmentFrames: [NSRect] {
-        let natural = labels.map { $0.intrinsicContentSize.width + 10 }
-        let total = max(1, natural.reduce(0, +)), available = bounds.width - 4
+        let natural = labels.map { $0.intrinsicContentSize.width + 12 }
+        let widths = Self.segmentWidths(natural: natural, available: bounds.width - 4, selected: selected)
         var x: CGFloat = 2
-        return natural.map { width in
-            let scaled = width / total * available
-            defer { x += scaled }
-            return NSRect(x: x, y: 2, width: scaled, height: bounds.height - 4)
+        return widths.map { width in
+            defer { x += width }
+            return NSRect(x: x, y: 2, width: width, height: bounds.height - 4)
         }
+    }
+    static func segmentWidths(natural: [CGFloat], available: CGFloat, selected: Int) -> [CGFloat] {
+        let total = max(1, natural.reduce(0, +))
+        guard total > available, natural.indices.contains(selected), natural.count > 1 else {
+            return natural.map { $0 / total * max(0, available) }
+        }
+        let kept = min(natural[selected], max(0, available) * 0.55)
+        let rest = max(0, available - kept) / CGFloat(natural.count - 1)
+        return natural.indices.map { $0 == selected ? kept : rest }
     }
     private func frame(for index: Int) -> NSRect { let frames = segmentFrames; return frames.indices.contains(index) ? frames[index] : .zero }
     override func layout() {
@@ -356,6 +366,8 @@ final class SegmentedTabs: NSView {
             label.textColor = on ? Theme.adaptive(0x1C1C1E, 0xFFFFFF) : Theme.text
         }
         guard selected >= 0 else { return }
+        // Segment widths depend on which one is selected when space is short.
+        needsLayout = true
         if animated {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.22; context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
