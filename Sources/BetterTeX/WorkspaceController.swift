@@ -108,7 +108,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         ui.editor.onOutline = { [weak self] items in
             guard let self else { return }
             self.ui.explorer.setOutline(items, cursorLine: self.ui.editor.lineColumn.0)
-            self.ui.editor.setBreadcrumb(section: self.ui.explorer.currentOutlineTitle)
+            self.ui.editor.setBreadcrumb(section: self.ui.editor.currentSectionPath ?? self.ui.explorer.currentOutlineTitle)
         }
         ui.editor.onChange = { [weak self] in self?.edited($0) }
         NotificationCenter.default.addObserver(forName: GrammarPreferences.changed, object: nil, queue: .main) { [weak self] _ in self?.updateGrammar() }
@@ -119,7 +119,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             guard let self else { return }
             self.ui.position.stringValue = "Ln \(line), Col \(col)"
             self.overleaf.selectionChanged()
-            self.ui.explorer.updateOutline(cursorLine: line); self.ui.editor.setBreadcrumb(section: self.ui.explorer.currentOutlineTitle)
+            self.ui.explorer.updateOutline(cursorLine: line); self.ui.editor.setBreadcrumb(section: self.ui.editor.currentSectionPath ?? self.ui.explorer.currentOutlineTitle)
             // Mirror the selection in the Agent composer's context chip.
             let text = self.ui.editor.textView.string as NSString; let range = self.ui.editor.textView.selectedRange()
             if range.length > 0, NSMaxRange(range) <= text.length {

@@ -9,6 +9,23 @@ enum Theme {
     static let orange = NSColor.systemOrange
     static let red = NSColor.systemRed
     static let indigo = adaptive(0x5856D6, 0x5E5CE6)
+    /// Document structure in the editor: one hue per heading level and per float kind,
+    /// shared by the section rules, the float tints, the gutter scope bars and their badges.
+    static func structure(_ kind: TexStructure.HeadingKind) -> NSColor {
+        switch kind {
+        case .part, .chapter: return .systemPink
+        case .section: return indigo
+        case .subsection: return .systemTeal
+        case .subsubsection, .paragraph: return .systemGray
+        }
+    }
+    static func structure(_ kind: TexStructure.BlockKind) -> NSColor {
+        switch kind {
+        case .figure: return .systemGreen
+        case .table: return .systemOrange
+        case .algorithm: return .systemPurple
+        }
+    }
     // Surfaces
     static let base = adaptive(0xF2F2F7, 0x1C1C1E)
     static let header = adaptive(0xF7F7FA, 0x28282A)

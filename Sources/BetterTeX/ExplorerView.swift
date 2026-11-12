@@ -29,8 +29,39 @@ struct OutlineItem {
     let number: String
     let level: Int
     let line: Int
-    /// Scans LaTeX source for the title, abstract and sectioning commands.
+    /// Figures, tables and algorithms sit in the outline beside the headings; nil for headings.
+    var float: TexStructure.BlockKind? = nil
+    /// Last line of a float, so the outline only marks it current while the caret is inside it.
+    var endLine: Int? = nil
+    /// The row that holds `line`: the innermost float around it, else the last heading above it.
+    static func current(in items: [OutlineItem], line: Int) -> Int {
+        if let float = items.lastIndex(where: { $0.float != nil && $0.line <= line && line <= ($0.endLine ?? $0.line) }) { return float }
+        return items.lastIndex { $0.float == nil && $0.line <= line } ?? -1
+    }
+    /// Headings plus the document's floats, in source order.
     static func parse(_ text: String) -> [OutlineItem] {
+        let headings = parseHeadings(text)
+        let structure = TexStructure.scan(text)
+        guard !structure.blocks.isEmpty else { return headings }
+        let ns = text as NSString
+        // Line numbers for each float's first and last line, found in one pass over the text.
+        var marks = structure.blocks.flatMap { [$0.header.location, NSMaxRange($0.range) - 1] }.sorted()
+        var lineAt: [Int: Int] = [:]; var line = 1, index = 0
+        for mark in marks {
+            while index < min(mark, ns.length) { if ns.character(at: index) == 10 { line += 1 }; index += 1 }
+            lineAt[mark] = line
+        }
+        marks.removeAll()
+        let floats = structure.blocks.map { block -> OutlineItem in
+            let name: String
+            switch block.kind { case .figure: name = "Figure"; case .table: name = "Table"; case .algorithm: name = "Algorithm" }
+            return OutlineItem(title: block.caption.flatMap { $0.isEmpty ? nil : $0 } ?? "\(name) \(block.number)", number: "\(block.number)", level: 3,
+                               line: lineAt[block.header.location] ?? 1, float: block.kind, endLine: lineAt[NSMaxRange(block.range) - 1])
+        }
+        return (headings + floats).enumerated().sorted { ($0.element.line, $0.offset) < ($1.element.line, $1.offset) }.map(\.element)
+    }
+    /// Scans LaTeX source for the title, abstract and sectioning commands.
+    private static func parseHeadings(_ text: String) -> [OutlineItem] {
         guard let regex = try? NSRegularExpression(pattern: "\\\\(title|section|subsection|subsubsection)(\\*?)\\s*(?:\\[[^\\]]*\\])?\\s*\\{([^}]*)\\}|\\\\begin\\{(abstract)\\}") else { return [] }
         var items: [OutlineItem] = []; var counters = [0, 0, 0]
         var lineNumber = 0
@@ -194,7 +225,7 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
         outlineHeader.isHidden = items.isEmpty; outlineScroll.isHidden = items.isEmpty
         let sections = items.filter { $0.level == 0 && !$0.number.isEmpty }.count
         outlineCount.stringValue = sections > 0 ? "\(sections)" : ""
-        currentOutline = items.lastIndex { $0.line <= cursorLine } ?? -1
+        currentOutline = OutlineItem.current(in: items, line: cursorLine)
         // The section that holds the cursor stays emphasised while a subsection is current.
         let currentSection = currentOutline >= 0 ? items[...currentOutline].lastIndex { $0.level == 0 } : nil
         currentRow = nil
@@ -216,6 +247,7 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
         }
     }
     private func outlineRow(_ item: OutlineItem, current: Bool, inCurrentSection: Bool) -> NSView {
+        if let float = item.float { return floatRow(item, kind: float, current: current) }
         let level = min(item.level, 2)
         let row = RowButton(height: level == 0 ? 30 : 26) { [weak self] in self?.onJump?(item.line) }
         row.layer?.cornerRadius = 7; row.layer?.cornerCurve = .continuous
@@ -265,9 +297,37 @@ final class ExplorerPane: Surface, NSOutlineViewDataSource, NSOutlineViewDelegat
         row.pinRow(content, leading: level == 0 ? 10 : 30 + CGFloat(level - 1) * 16, trailing: 10)
         return row
     }
+    /// A compact row for a figure/table: a tinted glyph, "Fig. 2" and its caption.
+    private func floatRow(_ item: OutlineItem, kind: TexStructure.BlockKind, current: Bool) -> NSView {
+        let row = RowButton(height: 22) { [weak self] in self?.onJump?(item.line) }
+        row.layer?.cornerRadius = 6; row.layer?.cornerCurve = .continuous
+        let color = Theme.structure(kind)
+        if current {
+            let highlight = Chip(fill: color.withAlphaComponent(0.14), radius: 6); highlight.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(highlight)
+            NSLayoutConstraint.activate([highlight.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 22), highlight.trailingAnchor.constraint(equalTo: row.trailingAnchor), highlight.topAnchor.constraint(equalTo: row.topAnchor), highlight.bottomAnchor.constraint(equalTo: row.bottomAnchor)])
+        }
+        let symbol: String, short: String
+        switch kind {
+        case .figure: symbol = "photo"; short = "Fig."
+        case .table: symbol = "tablecells"; short = "Tab."
+        case .algorithm: symbol = "list.number"; short = "Alg."
+        }
+        row.setAccessibilityLabel("\(short) \(item.number) \(item.title)")
+        let icon = NSImageView(image: Theme.symbol(symbol, size: 10, weight: .medium)!); icon.contentTintColor = color
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        let tag = Theme.label("\(short) \(item.number)", size: 11, color: color, weight: .semibold)
+        tag.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        tag.setContentCompressionResistancePriority(.required, for: .horizontal); tag.setContentHuggingPriority(.required, for: .horizontal)
+        let title = Theme.label(item.title, size: 11.5, color: current ? Theme.text : Theme.muted)
+        title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        title.setContentHuggingPriority(.init(1), for: .horizontal); title.toolTip = item.title
+        let content = NSStackView(views: [icon, tag, title]); content.spacing = 5; content.alignment = .centerY
+        row.pinRow(content, leading: 30, trailing: 10)
+        return row
+    }
     /// Moves the "current" marker when the cursor enters another section.
     func updateOutline(cursorLine: Int) {
-        let current = outlineItems.lastIndex { $0.line <= cursorLine } ?? -1
+        let current = OutlineItem.current(in: outlineItems, line: cursorLine)
         if current != currentOutline { setOutline(outlineItems, cursorLine: cursorLine) }
     }
     var outlineItemsForSearch: [OutlineItem] { outlineItems }

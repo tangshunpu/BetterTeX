@@ -231,6 +231,7 @@ final class CodeTextView: NSTextView {
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
         drawEntryBands(in: rect)
+        drawStructure(in: rect)
         if let line = currentLineRect { Theme.accent.withAlphaComponent(0.10).setFill(); line.fill(using: .sourceOver) }
         guard let layoutManager, let textContainer, !commentRanges.isEmpty else { return }
         let length = (string as NSString).length, origin = textContainerOrigin
@@ -255,6 +256,78 @@ final class CodeTextView: NSTextView {
             band.color.withAlphaComponent(0.09).setFill(); rect.fill(using: .sourceOver)
             band.color.withAlphaComponent(0.85).setFill(); NSRect(x: 0, y: rect.minY, width: 3, height: rect.height).fill(using: .sourceOver)
         }
+    }
+    // MARK: Document structure
+    /// Sections and floats of the open .tex file; drives the rules, tints, badges and gutter scope bars.
+    var structure = TexStructure() {
+        didSet {
+            guard structure != oldValue else { return }
+            headingStarts = Dictionary(structure.headings.map { ($0.line.location, $0.kind) }, uniquingKeysWith: { a, _ in a })
+            needsDisplay = true; enclosingScrollView?.verticalRulerView?.needsDisplay = true
+        }
+    }
+    /// Line start → heading kind, so the ruler can tint heading line numbers cheaply.
+    private(set) var headingStarts: [Int: TexStructure.HeadingKind] = [:]
+    /// The full-width rect of the lines covering `range`, in view coordinates.
+    func lineBand(_ range: NSRange) -> NSRect? {
+        guard let layoutManager, let textContainer else { return nil }
+        let length = (string as NSString).length
+        var range = NSIntersectionRange(range, NSRange(location: 0, length: length))
+        // Drop the trailing line break so the band stops at the last line, not the one after it.
+        if range.length > 1, (string as NSString).character(at: NSMaxRange(range) - 1) == 10 { range.length -= 1 }
+        guard range.length > 0 else { return nil }
+        let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        guard glyphs.length > 0 else { return nil }
+        let first = layoutManager.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+        let last = layoutManager.lineFragmentRect(forGlyphAt: NSMaxRange(glyphs) - 1, effectiveRange: nil)
+        let top = first.minY + textContainerInset.height
+        return NSRect(x: 0, y: top, width: bounds.width, height: last.maxY + textContainerInset.height - top)
+    }
+    private func drawStructure(in dirty: NSRect) {
+        guard !structure.headings.isEmpty || !structure.blocks.isEmpty else { return }
+        let visible = visibleRect
+        for block in structure.blocks {
+            guard let band = lineBand(block.range), band.intersects(dirty) else { continue }
+            let color = Theme.structure(block.kind)
+            color.withAlphaComponent(0.045).setFill(); band.fill(using: .sourceOver)
+            color.withAlphaComponent(0.55).setFill(); NSRect(x: 0, y: band.minY, width: 2, height: band.height).fill(using: .sourceOver)
+            if let header = lineBand(block.header) {
+                let name: String
+                switch block.kind { case .figure: name = "Figure"; case .table: name = "Table"; case .algorithm: name = "Algorithm" }
+                drawBadge("\(name) \(block.number)", color: color, line: header, visible: visible)
+            }
+        }
+        for heading in structure.headings {
+            guard let band = lineBand(heading.line), band.insetBy(dx: 0, dy: -3).intersects(dirty) else { continue }
+            let color = Theme.structure(heading.kind)
+            switch heading.kind {
+            case .part, .chapter, .section:
+                let major = heading.kind != .section
+                color.withAlphaComponent(major ? 0.12 : 0.085).setFill(); band.fill(using: .sourceOver)
+                color.setFill(); NSRect(x: 0, y: band.minY, width: 3, height: band.height).fill(using: .sourceOver)
+                // A rule above the heading splits the source into chapters/sections at a glance.
+                color.withAlphaComponent(major ? 0.7 : 0.45).setFill()
+                NSRect(x: 0, y: band.minY - (major ? 1 : 0.5), width: bounds.width, height: major ? 2 : 1).fill(using: .sourceOver)
+            case .subsection:
+                color.withAlphaComponent(0.06).setFill(); band.fill(using: .sourceOver)
+                color.withAlphaComponent(0.8).setFill(); NSRect(x: 0, y: band.minY, width: 2, height: band.height).fill(using: .sourceOver)
+                let rule = NSBezierPath(); rule.move(to: NSPoint(x: 0, y: band.minY)); rule.line(to: NSPoint(x: bounds.width, y: band.minY))
+                rule.lineWidth = 1; rule.setLineDash([4, 3], count: 2, phase: 0)
+                color.withAlphaComponent(0.35).setStroke(); rule.stroke()
+            case .subsubsection, .paragraph:
+                color.withAlphaComponent(0.6).setFill(); NSRect(x: 0, y: band.minY, width: 2, height: band.height).fill(using: .sourceOver)
+            }
+            if !heading.number.isEmpty { drawBadge("§ \(heading.number)", color: color, line: band, visible: visible) }
+        }
+    }
+    /// A small pill at the right edge of the visible text, naming what the line starts.
+    private func drawBadge(_ text: String, color: NSColor, line: NSRect, visible: NSRect) {
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: color]
+        let size = (text as NSString).size(withAttributes: attributes)
+        let pill = NSRect(x: visible.maxX - size.width - 18, y: line.minY + (min(line.height, 22) - size.height - 2) / 2, width: size.width + 10, height: size.height + 2)
+        Theme.canvas.withAlphaComponent(0.85).setFill(); NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
+        color.withAlphaComponent(0.14).setFill(); NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
+        (text as NSString).draw(at: NSPoint(x: pill.minX + 5, y: pill.minY + 1), withAttributes: attributes)
     }
     // MARK: Collaboration overlays
     struct RemoteCursor { let offset: Int; let color: NSColor; let name: String }
@@ -419,6 +492,7 @@ final class LineRuler: NSRulerView {
         let visible = text.visibleRect
         let current = text.currentLineRect
         if let current { Theme.accent.withAlphaComponent(0.10).setFill(); NSRect(x: 0, y: current.minY - visible.minY, width: bounds.width, height: current.height).fill(using: .sourceOver) }
+        drawScopes(of: text, visible: visible)
         let glyphs = layout.glyphRange(forBoundingRect: visible, in: container)
         let string = text.string as NSString
         let firstChar = min(layout.characterIndexForGlyph(at: min(glyphs.location, max(0, layout.numberOfGlyphs - 1))), string.length)
@@ -443,7 +517,8 @@ final class LineRuler: NSRulerView {
                 let y = lineRect.minY + text.textContainerInset.height
                 let active = current.map { y >= $0.minY - 0.5 && y < $0.maxY - 0.5 } ?? false
                 let label = "\(line)" as NSString
-                let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .regular), .foregroundColor: problems[line] ?? (active ? Theme.text : Theme.lineNumber)]
+                let heading = text.headingStarts[char].map(Theme.structure)
+                let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: heading == nil ? .regular : .semibold), .foregroundColor: problems[line] ?? heading ?? (active ? Theme.text : Theme.lineNumber)]
                 let size = label.size(withAttributes: attrs)
                 label.draw(at: NSPoint(x: ruleThickness - size.width - 16, y: y - visible.minY + (lineRect.height - size.height) / 2 - 2), withAttributes: attrs)
             }
@@ -455,6 +530,20 @@ final class LineRuler: NSRulerView {
 }
 
 extension LineRuler {
+    /// Bars down the gutter's left edge spanning the section, subsection … and float that hold the caret,
+    /// one lane per level in that level's colour, so the extent of "where am I" is visible while scrolling.
+    func drawScopes(of text: CodeTextView, visible: NSRect) {
+        let caret = text.selectedRange().location
+        var lanes: [(NSRange, NSColor)] = text.structure.path(at: caret).suffix(3).map { ($0.scope, Theme.structure($0.kind)) }
+        if let block = text.structure.block(at: caret) { lanes.append((block.range, Theme.structure(block.kind))) }
+        for (index, lane) in lanes.enumerated() {
+            guard let band = text.lineBand(lane.0) else { continue }
+            let rect = NSRect(x: 2 + CGFloat(index) * 4, y: band.minY - visible.minY, width: 2.5, height: band.height)
+            guard rect.intersects(bounds) else { continue }
+            lane.1.withAlphaComponent(0.8).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 1.25, yRadius: 1.25).fill()
+        }
+    }
     static func covers(_ hunk: LineChange.Hunk, _ line: Int) -> Bool { line >= hunk.newStart && line < hunk.newStart + hunk.newCount }
 }
 
@@ -795,6 +884,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
     private var highlighting: DispatchWorkItem?
     private var outlining: DispatchWorkItem?
     private var loading = false
+    /// The text changed since `textView.structure` was last scanned.
+    private var structureStale = true
     /// The open file is a BibTeX database: bib highlighting and entry-type completion.
     private(set) var isBib = false
     var onChange: ((String) -> Void)?
@@ -995,6 +1086,12 @@ final class EditorPane: Surface, NSTextViewDelegate {
         textView.setSelectedRange(NSRange(location: selection.location + (selection.location >= NSMaxRange(line) ? shift : 0), length: selection.length))
         return true
     }
+    /// "2 Method › 2.1 Data" for the headings around the caret, or nil before the first one.
+    var currentSectionPath: String? {
+        let path = textView.structure.path(at: textView.selectedRange().location).filter { $0.kind != .paragraph }
+        guard !path.isEmpty else { return nil }
+        return path.map { $0.number.isEmpty ? $0.title : "\($0.number) \($0.title)" }.joined(separator: "  ›  ")
+    }
     func setBreadcrumb(file: String? = nil, section: String?) {
         if let file { crumbFile.stringValue = file }
         crumbSection.stringValue = section ?? ""; crumbSection.isHidden = section == nil; crumbArrow.isHidden = section == nil
@@ -1007,6 +1104,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
     func load(_ buffer: EditorBuffer, project: URL) {
         popup.dismiss(); emptyState.isHidden = true
         isBib = buffer.url.pathExtension.lowercased() == "bib"; if !isBib { textView.entryBands = [] }
+        textView.structure = TexStructure(); structureStale = true
         loading = true; textView.string = buffer.text; applyParagraphStyle(); textView.undoManager?.removeAllActions()
         textView.setSelectedRange(NSRange(location: min(buffer.selection.location, (buffer.text as NSString).length), length: 0))
         setBreadcrumb(file: buffer.url.lastPathComponent, section: nil)
@@ -1046,7 +1144,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         let removed = ops.first { $0.kind == .delete }?.length ?? 0
         let inserted = ops.first { $0.kind == .insert }?.text ?? ""
         let selection = textView.selectedRange()
-        guard textView.isEditable else { loading = true; textView.string = text; loading = false; textView.grammarIssues = []; highlight(); onChange?(text); return }
+        guard textView.isEditable else { loading = true; textView.string = text; loading = false; textView.grammarIssues = []; structureStale = true; highlight(); onChange?(text); return }
         let origin = scroll.contentView.bounds.origin
         completionPaused = true; defer { completionPaused = false }
         textView.insertText(inserted, replacementRange: NSRange(location: first.position, length: removed))
@@ -1085,7 +1183,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
     override func layout() { super.layout(); scheduleOverview() }
     func clear() {
         textView.remoteCursors = []; textView.commentRanges = []; setGitChanges([]); setProblems(errors: [], warnings: [])
-        loading = true; textView.string = ""; loading = false
+        loading = true; textView.string = ""; loading = false; textView.structure = TexStructure()
         fileURL = nil; grammarJob?.cancel(); textView.grammarIssues = []
         setBreadcrumb(file: "", section: nil); onOutline?([])
     }
@@ -1099,6 +1197,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
     }
     func textDidChange(_ notification: Notification) {
         guard !loading else { return }
+        structureStale = true
         onChange?(textView.string); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview(); scheduleGrammar(after: 0.8)
         // Run after the caret has settled too: typing moves it before this call, other input paths after.
         completionPending = true
@@ -1146,6 +1245,11 @@ final class EditorPane: Surface, NSTextViewDelegate {
         if isBib { highlightBib(range, layout: layout); return }
         for (regex, color) in Self.patterns {
             for match in regex.matches(in: textView.string, range: range) { layout.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: match.range) }
+        }
+        if structureStale { structureStale = false; textView.structure = TexStructure.scan(textView.string) }
+        // Heading titles take their level's colour, so sections read apart from body text.
+        for heading in textView.structure.headings where NSMaxRange(heading.titleRange) <= ns.length && NSIntersectionRange(heading.titleRange, range).length > 0 {
+            layout.addTemporaryAttribute(.foregroundColor, value: Theme.structure(heading.kind), forCharacterRange: heading.titleRange)
         }
     }
 
