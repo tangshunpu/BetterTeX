@@ -663,7 +663,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                 if index >= 0, let page = self.ui.preview.reveal(source: stream, cursor: index, sentence: sentence, boxes: boxes) {
                     self.setStatus(L10n.tr("源码 → PDF · 第 \(page) 页"))
                 } else if let box = boxes.first {
-                    self.ui.preview.goTo(box.location); self.setStatus(L10n.tr("源码 → PDF · 第 \(box.page) 页"))
+                    self.ui.preview.goTo(boxes: boxes); self.setStatus(L10n.tr("源码 → PDF · 第 \(box.page) 页"))
                 } else {
                     self.setStatus(L10n.tr("该位置没有 PDF 映射。请先成功编译，并选择正文所在行。"))
                 }

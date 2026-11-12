@@ -64,4 +64,13 @@ final class PDFSyncTests: XCTestCase {
         let match = try XCTUnwrap(TextSync.correspond(position.index, from: position.stream, to: stream))
         XCTAssertEqual(stream.offset(at: match.index), (edited as NSString).range(of: "marvellous").location + 2)
     }
+
+    func testWordRangeFindsTheWordUnderTheCaret() {
+        let text = "The layered codeword lets the transmitter stop."
+        let ns = text as NSString
+        let at = ns.range(of: "codeword").location + 3
+        XCTAssertEqual(PDFPane.wordRange(in: text, at: at).map { ns.substring(with: $0) }, "codeword")
+        XCTAssertEqual(PDFPane.wordRange(in: text, at: 0).map { ns.substring(with: $0) }, "The")
+        XCTAssertNil(PDFPane.wordRange(in: text, at: ns.length))
+    }
 }

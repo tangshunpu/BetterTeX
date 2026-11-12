@@ -528,6 +528,16 @@ final class PDFPane: Surface {
                 annotations.append((annotation, page))
             }
         }
+        // The word under the caret gets its own, stronger mark inside the sentence.
+        if let word = Self.wordRange(in: page.string ?? "", at: caret), let selection = page.selection(for: word) {
+            for line in selection.selectionsByLine() {
+                let bounds = line.bounds(for: page).insetBy(dx: -1, dy: -0.5)
+                guard bounds.width > 0, bounds.height > 0 else { continue }
+                let annotation = PDFAnnotation(bounds: bounds, forType: .square, withProperties: nil)
+                annotation.color = .clear; annotation.interiorColor = Theme.accent.withAlphaComponent(0.45)
+                annotations.append((annotation, page))
+            }
+        }
         let caretBounds = page.characterBounds(at: caret)
         if caretBounds.height > 0 {
             let bar = PDFAnnotation(bounds: CGRect(x: caretBounds.minX - 1, y: caretBounds.minY - 1, width: 1.6, height: caretBounds.height + 2), forType: .square, withProperties: nil)
@@ -537,6 +547,40 @@ final class PDFPane: Surface {
         flash(annotations, for: 2.4)
         let focus = caretBounds.height > 0 ? caretBounds : (annotations.first?.0.bounds ?? .zero)
         pdfView.go(to: focus.insetBy(dx: -60, dy: -90), on: page)
+    }
+
+    /// The word (or, in CJK text, the segmented word) of `text` that contains `offset`.
+    static func wordRange(in text: String, at offset: Int) -> NSRange? {
+        let ns = text as NSString
+        guard offset >= 0, offset < ns.length else { return nil }
+        let start = max(0, offset - 80), window = NSRange(location: start, length: min(ns.length, offset + 80) - start)
+        var found: NSRange?
+        ns.enumerateSubstrings(in: window, options: [.byWords, .substringNotRequired]) { _, range, _, stop in
+            if NSLocationInRange(offset, range) { found = range; stop.pointee = true }
+            else if range.location > offset { stop.pointee = true }
+        }
+        return found
+    }
+
+    /// Marks the boxes SyncTeX gives for a line, so a fallback jump still shows the column and horizontal
+    /// extent of the line instead of a bar across the whole page.
+    @_optimize(none)
+    func goTo(boxes: [SyncBox]) {
+        guard let first = boxes.first else { return }
+        if gridVisible { leaveGrid(at: first.page - 1) }
+        guard let page = pdfView.document?.page(at: first.page - 1) else { return }
+        let media = page.bounds(for: .mediaBox)
+        let rects = boxes.filter { $0.page == first.page && $0.width > 1 }.map { box in
+            CGRect(x: media.minX + box.h - 1.5, y: media.maxY - box.v - 3, width: box.width + 3, height: max(box.height, 8) + 4)
+        }.filter { media.intersects($0) }
+        guard let lead = rects.first else { goTo(first.location); return }
+        clearHighlights()
+        flash(rects.map { rect -> (PDFAnnotation, PDFPage) in
+            let annotation = PDFAnnotation(bounds: rect, forType: .square, withProperties: nil)
+            annotation.color = .clear; annotation.interiorColor = Theme.accent.withAlphaComponent(0.18)
+            return (annotation, page)
+        }, for: 1.8)
+        pdfView.go(to: CGRect(x: lead.minX, y: lead.minY, width: min(lead.width, 240), height: lead.height).insetBy(dx: -40, dy: -60), on: page)
     }
 
     @_optimize(none)
