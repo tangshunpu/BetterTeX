@@ -55,25 +55,6 @@ public struct BuildStageTracker {
     }
 }
 
-public enum BuildSignature {
-    /// A fingerprint of everything a build reads: source files (path, size, modification time),
-    /// the root document and the engine. Equal fingerprints mean a rebuild would change nothing.
-    public static func compute(project: URL, root: String, engine: String) -> String {
-        var entries: [String] = ["root=\(root)", "engine=\(engine)"]
-        let base = project.standardizedFileURL.path
-        if let iterator = FileManager.default.enumerator(at: project, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey], options: [.skipsHiddenFiles]) {
-            var visited = 0
-            while let url = iterator.nextObject() as? URL {
-                visited += 1; if visited > 20_000 { entries.append("truncated"); break }
-                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]), values.isRegularFile == true else { continue }
-                let stamp = values.contentModificationDate?.timeIntervalSince1970 ?? 0
-                entries.append("\(url.standardizedFileURL.path.dropFirst(base.count))|\(values.fileSize ?? 0)|\(stamp)")
-            }
-        }
-        return entries.sorted().joined(separator: "\n")
-    }
-}
-
 public final class TeXCompiler {
     public let runner = ProcessRunner()
     public init() {}

@@ -14,6 +14,16 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     var buildPending = false
     /// Fingerprint of the inputs of the last build, so automatic triggers never repeat it.
     var lastBuildSignature: String?
+    /// Per-file digests reused between fingerprints, so only changed files are read again.
+    let signatureCache = BuildSignatureCache()
+    /// How long the last build took; slow documents wait a little longer before building automatically.
+    var lastBuildSeconds: TimeInterval?
+    /// The fingerprint is being computed off the main thread; a build is about to start.
+    var preparingBuild = false
+    /// Brace and environment balance of each open TeX file when it last built (or was opened).
+    /// While an edit leaves a file unbalanced compared to that, the user is mid-construct and
+    /// automatic builds wait instead of failing on a half-typed `\begin{…}` or `{`.
+    var settledBalance: [URL: TeXBalance] = [:]
     /// Problems of the most recent build, shown in the editor of whichever file they belong to.
     var buildErrors: [TeXDiagnostic] = []
     /// Labels, citation keys, macros and paths offered by the editor's completion list.
@@ -315,7 +325,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     /// Stops everything tied to the open project: builds, timers, the watcher, terminals and buffers.
     private func resetWorkspace() {
         generation = UUID(); saveJob?.cancel(); compileJob?.cancel(); compiler.runner.cancel(); compiler = TeXCompiler()
-        building = false; buildPending = false; gitBusy = false; ui.setBuilding(false); ui.activity = .idle
+        building = false; buildPending = false; preparingBuild = false; gitBusy = false; ui.setBuilding(false); ui.activity = .idle
+        lastBuildSeconds = nil; settledBalance = [:]; signatureCache.reset()
         watcher.stop(); ui.terminal.stopAll(); buffers.removeAll(); active = nil; conflicts.removeAll()
     }
     /// Closes the project and returns to the start page. Files are saved first; nothing is deleted.
@@ -374,7 +385,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         do {
             let buffer: EditorBuffer
             if let existing = buffers.first(where: { $0.url == url }) { buffer = existing }
-            else { buffer = try EditorBuffer(url: url); buffers.append(buffer) }
+            else { buffer = try EditorBuffer(url: url); buffers.append(buffer); settle(buffer) }
             active = buffer; ui.editor.textView.isEditable = true
             ui.editor.load(buffer, project: project ?? url.deletingLastPathComponent()); refreshTabs(); ui.explorer.reveal(url)
             let root = project ?? url.deletingLastPathComponent()
@@ -400,9 +411,29 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         saveJob?.cancel(); compileJob?.cancel()
         let job = DispatchWorkItem { [weak self] in
             guard let self, self.conflicts.isEmpty else { return }
-            if self.saveAll() { self.setStatus(L10n.tr("已自动保存")); if self.ui.autoBuildEnabled { self.scheduleBuild() } }
+            if self.saveAll(), !self.building, !self.preparingBuild { self.setStatus(L10n.tr("已自动保存")) }
         }
         saveJob = job; DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: job)
+        // Building is timed apart from saving: it waits for a pause in typing that fits what was just typed.
+        if ui.autoBuildEnabled { scheduleBuild(after: AutoBuildTiming.delay(previousCharacter: characterBeforeCursor(), lastBuildSeconds: lastBuildSeconds)) }
+    }
+    private func characterBeforeCursor() -> Character? {
+        let text = ui.editor.textView.string as NSString; let location = ui.editor.textView.selectedRange().location
+        guard location > 0, location <= text.length else { return nil }
+        return text.substring(with: text.rangeOfComposedCharacterSequence(at: location - 1)).first
+    }
+    private func settle(_ buffer: EditorBuffer) {
+        guard ["tex", "ltx", "sty", "cls"].contains(buffer.url.pathExtension.lowercased()) else { return }
+        settledBalance[buffer.url] = TeXSource.balance(of: buffer.text)
+    }
+    /// The open file whose edits look half-finished: a group or environment opened or closed
+    /// that was balanced at the last build. Automatic builds wait for it; manual ones do not.
+    private func unfinishedEdit() -> EditorBuffer? {
+        buffers.first { buffer in
+            guard buffer.dirty || buffer === active, let settled = settledBalance[buffer.url] else { return false }
+            let current = TeXSource.balance(of: buffer.text)
+            return current != settled && current != TeXBalance()
+        }
     }
     @discardableResult func saveAll() -> Bool {
         for buffer in buffers where buffer.dirty {
@@ -419,7 +450,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             } else {
                 do {
                     if buffer === active { buffer.selection = ui.editor.textView.selectedRange() }
-                    try buffer.reload(); if buffer === active, let project { ui.editor.load(buffer, project: project) }
+                    try buffer.reload(); settle(buffer); if buffer === active, let project { ui.editor.load(buffer, project: project) }
                     setStatus(L10n.tr("已载入外部修改：\(buffer.url.lastPathComponent)"))
                 } catch { setStatus(L10n.tr("文件已移动或无法读取：\(buffer.url.lastPathComponent)")) }
             }
@@ -440,10 +471,10 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             conflicts.remove(buffer.url); return true
         } catch { self.error(error.localizedDescription); return false }
     }
-    func scheduleBuild() {
+    func scheduleBuild(after delay: TimeInterval = 0.6) {
         compileJob?.cancel()
         let job = DispatchWorkItem { [weak self] in self?.build(automatic: true) }; compileJob = job
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: job)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: job)
     }
     @objc func buildClicked() {
         if building { buildPending = false; compileJob?.cancel(); compiler.runner.cancel(); setStatus(L10n.tr("正在停止编译…")) }
@@ -453,7 +484,14 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     /// when nothing the build reads has changed since the previous one.
     func build(automatic: Bool = false) {
         guard let project, let active, let tools, conflicts.isEmpty else { return }
-        if building { buildPending = true; return }
+        if building || preparingBuild { buildPending = true; return }
+        if automatic {
+            // Never build in the middle of an input-method composition (pinyin, kana, …).
+            if ui.editor.textView.hasMarkedText() { scheduleBuild(after: 0.8); return }
+            if let unfinished = unfinishedEdit() {
+                setStatus(L10n.tr("\(unfinished.url.lastPathComponent) 中有未闭合的括号或环境 · 补全后自动编译")); return
+            }
+        }
         guard saveAll() else { return }
         let selected = TeXEngine(rawValue: ui.selectedEngine) ?? .automatic
         let resolved = Result { try TeXProject.root(active: active.url, project: project) }
@@ -462,13 +500,31 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             if !automatic || mainPromptedFor != project.path { chooseMain(from: error.candidates, project: project); return }
         }
         let rootPath = (try? resolved.get())?.path ?? active.url.path
-        let signature = BuildSignature.compute(project: project, root: rootPath, engine: selected.rawValue)
-        if automatic, signature == lastBuildSignature { return }
-        lastBuildSignature = signature
+        // Fingerprinting reads the project's files, so it runs off the main thread.
+        preparingBuild = true
+        let token = generation; let cache = signatureCache
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let signature = BuildSignature.compute(project: project, root: rootPath, engine: selected.rawValue, cache: cache)
+            DispatchQueue.main.async {
+                guard let self, self.generation == token else { return }
+                self.preparingBuild = false
+                if automatic, signature == self.lastBuildSignature {
+                    // Only comments or spacing changed: the PDF would be identical.
+                    if self.buildPending { self.buildPending = false; self.scheduleBuild() }
+                    return
+                }
+                self.lastBuildSignature = signature
+                self.startBuild(automatic: automatic, project: project, source: active.url, selected: selected, tools: tools)
+            }
+        }
+    }
+    private func startBuild(automatic: Bool, project: URL, source: URL, selected: TeXEngine, tools: Toolchain) {
+        // What is on screen now is what this build sees; if it succeeds, later edits are compared against it.
+        let balances = buffers.filter { settledBalance[$0.url] != nil }.map { ($0.url, TeXSource.balance(of: $0.text)) }
         building = true; buildPending = false; compiler.runner.reset()
         ui.setBuilding(true)
         setStatus(L10n.tr("正在编译…"))
-        let token = generation; let compiler = compiler; let source = active.url
+        let token = generation; let compiler = compiler
         ui.terminal.append("\n── \(Date().formatted(date: .omitted, time: .standard)) · Build \(source.lastPathComponent) ──\n")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try compiler.build(active: source, project: project, selected: selected, tools: tools, onStage: { stage in
@@ -484,18 +540,20 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                 self.building = false; self.ui.setBuilding(false)
                 switch result {
                 case .success(let build):
-                    self.compiledRoot = build.root
+                    self.compiledRoot = build.root; self.lastBuildSeconds = build.seconds
                     self.buildErrors = build.succeeded ? [] : build.diagnostics; self.buildWarnings = TeXWarning.parse(build.log); self.refreshProblems()
                     let warnings = build.log.components(separatedBy: .newlines).filter { $0.contains("Warning:") }.count
                     self.ui.setDiagnostics(errors: build.succeeded ? 0 : max(1, build.diagnostics.count), warnings: warnings)
                     if build.succeeded {
+                        for (url, balance) in balances { self.settledBalance[url] = balance }
                         self.compiledPDF = build.pdf; self.ui.preview.load(build.pdf); self.ui.activity = .idle
                         self.setStatus(String(format: L10n.tr("编译完成 · %@ · %.1f s"), build.engine.rawValue, build.seconds))
                     } else {
-                        self.setStatus(L10n.tr("编译失败 · 保留上次预览")); self.ui.activity = .failed; self.ui.showOutput()
+                        // A failed automatic build marks the errors in place; only an explicit build opens the log.
+                        self.setStatus(L10n.tr("编译失败 · 保留上次预览")); self.ui.activity = .failed; if !automatic { self.ui.showOutput() }
                         if let first = build.diagnostics.first { self.ui.terminal.append(L10n.tr("\n错误：\(first.message)\n双击上方文件:行号可定位源码。\n")) }
                     }
-                case .failure(let error): self.setStatus(error.localizedDescription); self.ui.activity = .failed; self.ui.terminal.append("\n\(error.localizedDescription)\n"); self.ui.showOutput()
+                case .failure(let error): self.setStatus(error.localizedDescription); self.ui.activity = .failed; self.ui.terminal.append("\n\(error.localizedDescription)\n"); if !automatic { self.ui.showOutput() }
                 }
                 if self.buildPending { self.buildPending = false; self.scheduleBuild() }
             }

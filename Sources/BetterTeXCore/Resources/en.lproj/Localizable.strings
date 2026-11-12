@@ -648,3 +648,4 @@
 "此项目有多个含 \\documentclass 的文件。BetterTeX 会记住你的选择；打开其他主文件再编译，或在子文件首行添加 % !TeX root，可以编译别的文件。" = "This project has several files with \\documentclass. BetterTeX remembers your choice; to build another file, open that main file and build, or add % !TeX root on the first line of a subfile.";
 "查看或重新检测本机工具" = "Show or detect local tools again";
 "在 PDF 中定位  ⇧⌘J" = "Reveal in PDF  ⇧⌘J";
+"%1$@ 中有未闭合的括号或环境 · 补全后自动编译" = "%1$@ has an unclosed brace or environment · builds automatically once complete";
