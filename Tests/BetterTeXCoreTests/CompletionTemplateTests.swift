@@ -110,13 +110,23 @@ final class CompletionTemplateTests: XCTestCase {
         XCTAssertEqual(try complete(#"\end{fig|ure}"#, "figure"), #"\end{figure}|"#)
     }
 
-    func testOnlyExplicitShortcutsExpandEnvironments() throws {
-        for name in ["frame", "matrix", "column", "table", "center", "quote", "figure", "claim"] {
+    func testEnvironmentNamesExpandAsCommands() throws {
+        var index = ProjectIndex(); index.environments = ["claim"]
+        XCTAssertEqual(try complete(#"\figure|"#, #"\figure"#), figure)
+        XCTAssertEqual(try complete(#"\fig|"#, #"\figure"#), figure)
+        XCTAssertEqual(try complete(#"\clai|"#, #"\claim"#, index: index), "\\begin{claim}\n  |\n\\end{claim}")
+        XCTAssertTrue(try complete(#"\figure|"#, #"\figure*"#).hasPrefix(#"\begin{figure*}"#))
+        for name in ["table", "center", "quote", "equation", "align*"] {
+            XCTAssertTrue(try complete("\\\(name.replacingOccurrences(of: "*", with: ""))|", "\\" + name).contains("\\end{\(name)}"), name)
+        }
+    }
+
+    func testCommandLikeEnvironmentsStayCommands() throws {
+        for name in ["frame", "matrix", "column", "cases"] {
             let source = "\\" + name
             let request = try XCTUnwrap(CompletionRequest.detect(in: source, cursor: source.utf16.count))
-            var index = ProjectIndex(); index.environments = ["claim"]
-            XCTAssertFalse(Completer.items(for: request, index: index).contains { $0.environment == name }, name)
-            XCTAssertEqual(try complete("\\begin{\(name)|}", name, index: index).contains("\\end{\(name)}"), true)
+            XCTAssertFalse(Completer.items(for: request, index: ProjectIndex()).contains { $0.environment == name }, name)
+            XCTAssertEqual(try complete("\\begin{\(name)|}", name).contains("\\end{\(name)}"), true)
         }
         var index = ProjectIndex(); index.commands = ["fig"]
         XCTAssertEqual(try complete(#"\fi|"#, #"\fig"#, index: index), #"\fig|"#)

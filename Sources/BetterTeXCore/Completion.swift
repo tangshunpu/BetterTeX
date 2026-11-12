@@ -266,11 +266,13 @@ public enum Completer {
                 list.append(CompletionItem(label: "\\item[]", detail: L10n.tr("带标签的列表项"), insert: "\\item[] ", caret: 6))
             }
             for name in plain where seen.insert(name).inserted { list.append(CompletionItem(label: "\\" + name)) }
-            // Only explicit shortcuts may replace a command; \frame, \matrix, etc. have real package meanings.
-            let shortcuts = [("fig", "figure"), ("tbl", "table"), ("subfig", "subfigure"),
-                             ("itemize", "itemize"), ("enumerate", "enumerate"), ("description", "description")]
+            // Abbreviations, then every environment by its own name (\figure → \begin{figure}…\end{figure}).
+            // Names that are also real commands (\frame, \matrix, …) and commands defined by the project stay commands.
+            let shortcuts = [("fig", "figure"), ("tbl", "table"), ("subfig", "subfigure")]
+                + unique(index.environments + environments).filter { !commandEnvironments.contains($0) && $0.range(of: #"^[a-zA-Z@]+\*?$"#, options: .regularExpression) != nil }.map { ($0, $0) }
             for (shortcut, name) in shortcuts where seen.insert(shortcut).inserted {
-                list.append(CompletionItem(label: "\\" + shortcut, detail: L10n.tr("快捷模板") + " · " + EnvironmentTemplate.detail(for: name), environment: name))
+                let detail = index.environments.contains(name) ? L10n.tr("项目定义") : EnvironmentTemplate.detail(for: name)
+                list.append(CompletionItem(label: "\\" + shortcut, detail: [L10n.tr("快捷模板"), detail].filter { !$0.isEmpty }.joined(separator: " · "), environment: name))
             }
             candidates = list
         }
@@ -291,6 +293,8 @@ public enum Completer {
         if request.kind == .command, result.count == 1, result[0].environment == nil, result[0].insert.lowercased() == needle { return [] }
         return result
     }
+    /// Environments whose bare name is also a command people type on purpose (\frame{…}, tikz \matrix, beamer \column, plain \cases).
+    static let commandEnvironments: Set<String> = ["frame", "matrix", "column", "cases"]
     private static func unique(_ values: [String]) -> [String] { var seen = Set<String>(); return values.filter { seen.insert($0).inserted } }
 
     /// The edit that accepting `item` makes: the range to replace, its new text and the caret afterwards.
