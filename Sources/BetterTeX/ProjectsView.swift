@@ -67,7 +67,10 @@ final class WelcomeView: Surface, NSTableViewDataSource, NSTableViewDelegate, NS
         let linked: Bool
         let date: Date?
         let place: String
+        /// For a linked folder: its Overleaf project is in the trash, or not in the account at all.
+        var linkIssue: LinkIssue? = nil
     }
+    private enum LinkIssue { case trashed, missing }
     private enum Filter: Int { case all, local, overleaf }
     var onOpen: (() -> Void)?
     var onClone: (() -> Void)?
@@ -209,14 +212,22 @@ final class WelcomeView: Surface, NSTableViewDataSource, NSTableViewDelegate, NS
         if case .signedIn(let projects) = overleaf { remote = projects; signedIn = true }
         let linkedIDs = Set(local.compactMap { $0.link?.projectID })
         let remoteDates = Dictionary(remote.compactMap { project in project.lastUpdated.map { (project.id, $0) } }, uniquingKeysWith: { a, _ in a })
+        let remoteByID = Dictionary(remote.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var all = local.map { project -> Row in
             // A linked project changed whenever either side did; unlinked ones fall back to when they were opened.
             let dates = [project.modified, project.link.flatMap { remoteDates[$0.projectID] }].compactMap { $0 }
+            var issue: LinkIssue?
+            // Only links to the server the dashboard is signed in to can be checked against its list.
+            let signedHost = UserDefaults.standard.string(forKey: "overleaf.host") ?? OverleafClient.defaultHost
+            func trimmed(_ host: String) -> String { host.hasSuffix("/") ? String(host.dropLast()) : host }
+            if signedIn, let link = project.link, trimmed(link.host) == trimmed(signedHost) {
+                issue = remoteByID[link.projectID].map { $0.trashed ? .trashed : nil } ?? .missing
+            }
             return Row(name: project.url.lastPathComponent, url: project.url, remote: nil, linked: project.link != nil, date: dates.max() ?? project.opened,
-                       place: (project.url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath)
+                       place: (project.url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath, linkIssue: issue)
         }
         // An Overleaf project already downloaded appears once, as its local folder.
-        all += remote.filter { !linkedIDs.contains($0.id) }.map { Row(name: $0.name, url: nil, remote: $0, linked: false, date: $0.lastUpdated, place: L10n.tr("Overleaf · 点按下载到本机")) }
+        all += remote.filter { !linkedIDs.contains($0.id) && !$0.trashed && !$0.archived }.map { Row(name: $0.name, url: nil, remote: $0, linked: false, date: $0.lastUpdated, place: L10n.tr("Overleaf · 点按下载到本机")) }
         filters[0].count.stringValue = "\(all.count)"
         filters[1].count.stringValue = "\(all.filter { $0.url != nil }.count)"
         filters[2].count.stringValue = signedIn ? "\(all.filter { $0.remote != nil || $0.linked }.count)" : ""
@@ -321,8 +332,19 @@ final class WelcomeView: Surface, NSTableViewDataSource, NSTableViewDelegate, NS
             let name = Theme.label(entry.name, size: 13.5, weight: .medium); name.lineBreakMode = .byTruncatingTail; name.setContentCompressionResistancePriority(.init(200), for: .horizontal)
             var views: [NSView] = [icon, name]
             if entry.linked {
-                let leaf = NSImageView(image: Theme.symbol("leaf.fill", size: 10)!); leaf.contentTintColor = Theme.green; leaf.toolTip = L10n.tr("已与 Overleaf 关联并同步"); leaf.size(14, 14)
-                leaf.setAccessibilityLabel(L10n.tr("已与 Overleaf 关联")); views.append(leaf)
+                let leaf = NSImageView(image: Theme.symbol(entry.linkIssue == .missing ? "leaf" : "leaf.fill", size: 10)!); leaf.size(14, 14)
+                switch entry.linkIssue {
+                case .missing?:
+                    leaf.contentTintColor = Theme.faint; leaf.toolTip = L10n.tr("在你的 Overleaf 账户中找不到关联的项目，打开后可重新上传或改关联")
+                    leaf.setAccessibilityLabel(L10n.tr("关联的 Overleaf 项目已不可用"))
+                case .trashed?:
+                    leaf.contentTintColor = Theme.orange; leaf.toolTip = L10n.tr("关联的 Overleaf 项目在回收站中")
+                    leaf.setAccessibilityLabel(L10n.tr("关联的 Overleaf 项目在回收站中"))
+                case nil:
+                    leaf.contentTintColor = Theme.green; leaf.toolTip = L10n.tr("已与 Overleaf 关联并同步")
+                    leaf.setAccessibilityLabel(L10n.tr("已与 Overleaf 关联"))
+                }
+                views.append(leaf)
             }
             views.append(NSView())
             let line = NSStackView(views: views); line.spacing = 9; line.alignment = .centerY; cell.pinRow(line, leading: 2, trailing: 0)

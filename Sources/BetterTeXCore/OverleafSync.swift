@@ -92,6 +92,11 @@ public enum SyncPlanner {
         }
         return actions
     }
+    /// Whether removing `deletions` of the `tracked` synced files locally is unusual enough to ask first:
+    /// more than five, or most of a small project (an emptied or replaced Overleaf project looks like this).
+    public static func needsDeletionReview(deletions: Int, tracked: Int) -> Bool {
+        deletions > 5 || (deletions >= 2 && deletions * 2 > tracked)
+    }
 }
 
 /// The link between a local folder and an Overleaf project, stored in `.bettertex/overleaf.json`.

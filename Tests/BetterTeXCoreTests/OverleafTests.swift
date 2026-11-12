@@ -158,6 +158,19 @@ final class OverleafTests: XCTestCase {
         XCTAssertTrue(OverleafFiles.isText(path: "a.tex", data: Data("hi".utf8)))
         XCTAssertFalse(OverleafFiles.isText(path: "a.png", data: Data([0x89, 0x50, 0, 1])))
     }
+    func testMassLocalDeletionNeedsReview() {
+        XCTAssertFalse(SyncPlanner.needsDeletionReview(deletions: 1, tracked: 1))
+        XCTAssertFalse(SyncPlanner.needsDeletionReview(deletions: 3, tracked: 40))
+        XCTAssertTrue(SyncPlanner.needsDeletionReview(deletions: 6, tracked: 400))
+        XCTAssertTrue(SyncPlanner.needsDeletionReview(deletions: 3, tracked: 4))
+        XCTAssertFalse(SyncPlanner.needsDeletionReview(deletions: 2, tracked: 4))
+    }
+    func testProjectListKeepsTrashFlags() throws {
+        let trashed = try XCTUnwrap(OverleafClient.project(["_id": "a", "name": "Old", "trashed": true]))
+        XCTAssertTrue(trashed.trashed); XCTAssertFalse(trashed.archived)
+        let plain = try XCTUnwrap(OverleafClient.project(["id": "b", "name": "New"]))
+        XCTAssertFalse(plain.trashed)
+    }
     func testScanSkipsCompiledPDFsButKeepsFigures() throws {
         try write("draft.tex", "x"); try write("draft.pdf", "pdf"); try write("draft.synctex.gz", "x")
         try write("build/draft/draft.pdf", "pdf"); try write("build/draft/draft.fls", "x")

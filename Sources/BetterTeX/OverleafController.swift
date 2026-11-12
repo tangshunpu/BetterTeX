@@ -21,7 +21,7 @@ private final class LiveDoc {
 /// Connects a workspace folder to an Overleaf project: file sync, live editing of the open
 /// document, collaborator presence and comments. All state lives on the main thread.
 final class OverleafController {
-    private enum Status { case idle, signedOut, connecting, online, syncing, offline(String) }
+    private enum Status { case idle, signedOut, connecting, online, syncing, offline(String), lost(OverleafProjectState) }
     unowned let workspace: WorkspaceController
     private var ui: WorkspaceView { workspace.ui }
     private var client: OverleafClient?
@@ -46,6 +46,11 @@ final class OverleafController {
     /// A new-project upload is running; `uploadPercent` is the last percentage shown for it.
     private var uploading = false
     private var uploadPercent = -1
+    /// The linked project sits in the account's Overleaf trash.
+    private var trashed = false
+    /// Local deletions the user chose to leave alone this session, so the same question is not asked on every sync.
+    private var deferredDeletions: Set<String> = []
+    private var isLost: Bool { if case .lost = status { return true }; return false }
     private var poll: Timer?
     private let popover = NSPopover()
     private let panel = OverleafPanel()
@@ -119,11 +124,11 @@ final class OverleafController {
             return try await operation(created)
         }
     }
-    /// The account's projects. Without `interactive`, a missing or expired login throws instead of
+    /// The account's projects, trashed ones included. Without `interactive`, a missing or expired login throws instead of
     /// showing the sign-in window, so the dashboard can check quietly.
     @MainActor func projects(interactive: Bool) async throws -> [OverleafProject] {
-        if interactive { return try await withLogin { try await $0.projects() } }
-        do { return try await ensureClient(interactive: false).projects() }
+        if interactive { return try await withLogin { try await $0.projects(includeTrashed: true) } }
+        do { return try await ensureClient(interactive: false).projects(includeTrashed: true) }
         catch OverleafError.notLoggedIn { client = nil; throw OverleafError.notLoggedIn }
     }
     /// Forgets the saved session without touching the open project's link.
@@ -154,7 +159,7 @@ final class OverleafController {
     private func teardown() {
         generation += 1; jobs.values.forEach { $0.cancel() }; jobs.removeAll(); poll?.invalidate(); poll = nil
         socket?.close(); socket = nil; tree = nil; live = nil; joining = nil; presence.removeAll(); threads.removeAll()
-        syncing = false; syncQueued = false; retries = 0; popover.close(); refreshOverlays()
+        syncing = false; syncQueued = false; retries = 0; trashed = false; deferredDeletions = []; popover.close(); refreshOverlays()
     }
     func shutdown() {
         if let live, live.inflight == nil, !live.needsResync, let buffer = workspace.active, buffer.url == live.url, canWrite {
@@ -175,12 +180,17 @@ final class OverleafController {
         case .connecting: (title, color, tip) = (L10n.tr("连接中"), Theme.orange, L10n.tr("正在连接 Overleaf…"))
         case .syncing: (title, color, tip) = (L10n.tr("同步中"), Theme.orange, L10n.tr("正在与 Overleaf 同步…"))
         case .offline(let reason): (title, color, tip) = (L10n.tr("离线"), Theme.red, L10n.tr("未连接 Overleaf：\(reason)"))
+        case .lost(let state):
+            (title, color) = (L10n.tr("已失联"), Theme.faint)
+            tip = (state == .noAccess ? L10n.tr("你已没有「\(link.name)」的访问权限。") : L10n.tr("Overleaf 上找不到「\(link.name)」：它可能已被删除，或你已没有访问权限。"))
+                + L10n.tr("本地文件未受影响，点击可重新上传、关联到其他项目或取消关联。")
         case .idle, .online:
             if conflicts > 0 { (title, color, tip) = (L10n.tr("\(conflicts) 个冲突"), Theme.red, L10n.tr("有文件同时在本地和 Overleaf 被修改，请处理冲突标记后再同步")) }
             else {
                 let mode = link.mode == .realtime ? L10n.tr("实时同步") : link.mode == .interval ? L10n.tr("每 \(link.intervalMinutes) 分钟同步") : L10n.tr("手动同步")
                 let last = link.lastSync.map { L10n.tr(" · 上次同步 ") + $0.formatted(.dateTime.hour().minute().locale(L10n.locale)) } ?? ""
-                (title, color, tip) = (link.mode == .realtime ? L10n.tr("实时") : L10n.tr("已连接"), Theme.green, "\(link.name) · \(mode)\(last)" + (canWrite ? "" : L10n.tr(" · 只读")))
+                if trashed { (title, color, tip) = (L10n.tr("在回收站"), Theme.orange, L10n.tr("「\(link.name)」在 Overleaf 回收站中，仍会同步；清空回收站后将无法再同步。")) }
+                else { (title, color, tip) = (link.mode == .realtime ? L10n.tr("实时") : L10n.tr("已连接"), Theme.green, "\(link.name) · \(mode)\(last)" + (canWrite ? "" : L10n.tr(" · 只读"))) }
             }
         }
         ui.overleaf.set(title: title, color: color, people: others, tip: tip)
@@ -202,17 +212,58 @@ final class OverleafController {
                 guard self.generation == token, self.socket == nil else { created.close(); return }
                 self.socket = created
                 // The server answers the connection with `joinProjectResponse`.
-                self.after("join", 20) { [weak self] in if self?.tree == nil { self?.disconnected(L10n.tr("加入项目超时")) } }
+                self.after("join", 20) { [weak self] in if self?.tree == nil { self?.disconnected(L10n.tr("加入项目超时"), verify: true) } }
             } catch {
                 guard self.generation == token else { return }
                 if case OverleafError.notLoggedIn = error { self.client = nil; self.set(.signedOut) }
-                else { self.set(.offline(error.localizedDescription)); self.scheduleReconnect() }
+                else if error is URLError { self.set(.offline(error.localizedDescription)); self.scheduleReconnect() }
+                else { self.verifyProject(after: error.localizedDescription) }
             }
         }
     }
-    private func disconnected(_ reason: String) {
+    /// `verify` asks Overleaf whether the project still exists before retrying, for failures that could mean it is gone.
+    private func disconnected(_ reason: String, verify: Bool = false) {
         socket?.close(); socket = nil; tree = nil; live = nil; joining = nil; presence.removeAll(); refreshOverlays()
-        set(.offline(reason)); scheduleReconnect()
+        if verify { verifyProject(after: reason) } else { set(.offline(reason)); scheduleReconnect() }
+    }
+    /// Checks whether the linked project was deleted, trashed or taken away. Only a definite answer stops
+    /// the retries; a network failure or expired login keeps the usual reconnect behaviour.
+    private func verifyProject(after reason: String) {
+        guard let link else { return }
+        let token = generation
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let state: OverleafProjectState?
+            do { state = try await self.ensureClient(interactive: false).projectState(link.projectID) }
+            catch OverleafError.notLoggedIn {
+                guard self.generation == token else { return }
+                self.client = nil; self.socket?.close(); self.socket = nil; self.set(.signedOut); return
+            } catch { state = nil }
+            guard self.generation == token else { return }
+            switch state {
+            case .missing?: self.markLost(.missing)
+            case .noAccess?: self.markLost(.noAccess)
+            default:
+                if state == .trashed { self.trashed = true }
+                if self.socket == nil { self.set(.offline(reason)); self.scheduleReconnect() } else { self.refreshChip() }
+            }
+        }
+    }
+    /// Stops all syncing for a project that no longer exists; the local folder is left exactly as it is.
+    private func markLost(_ state: OverleafProjectState) {
+        jobs["reconnect"]?.cancel(); jobs["sync"]?.cancel(); jobs["join"]?.cancel(); poll?.invalidate(); poll = nil
+        socket?.close(); socket = nil; tree = nil; live = nil; joining = nil; presence.removeAll(); refreshOverlays()
+        set(.lost(state))
+        workspace.setStatus(L10n.tr("Overleaf 上的「\(link?.name ?? "")」已不可用，本地文件未受影响"))
+    }
+    /// Notices a project moved to the Overleaf trash, which otherwise keeps working until the trash is emptied.
+    private func refreshTrashed() {
+        guard let client, let id = link?.projectID else { return }
+        let token = generation
+        Task { @MainActor [weak self] in
+            guard let listed = try? await client.projects(includeTrashed: true), let self, self.generation == token else { return }
+            self.trashed = listed.first { $0.id == id }?.trashed == true; self.refreshChip()
+        }
     }
     private func scheduleReconnect() {
         guard link != nil else { return }
@@ -236,14 +287,14 @@ final class OverleafController {
                 for user in users { if let person = OverleafPresence(json: user) { self.presence[person.clientID] = person } }
                 self.refreshOverlays(); self.refreshChip()
             }
-            refreshThreads(); attachActiveDoc(); schedule()
+            refreshThreads(); attachActiveDoc(); schedule(); refreshTrashed()
             if link?.mode != .manual { requestSync(after: 0.5) }
         case "connectionRejected":
             let message = object(0)?["message"] as? String ?? L10n.tr("连接被拒绝")
             socket?.close(); socket = nil
-            if message.contains("session") || message.contains("not authorized") { client = nil; set(.signedOut) } else { disconnected(message) }
+            if message.contains("session") { client = nil; set(.signedOut) } else { disconnected(message, verify: true) }
         case "project:access:revoked":
-            socket?.close(); socket = nil; tree = nil; live = nil; set(.offline(L10n.tr("你对该项目的访问权限已被移除")))
+            markLost(.noAccess)
         case "forceDisconnect", "reconnectGracefully": disconnected(L10n.tr("服务器要求重新连接"))
         case "clientTracking.clientUpdated":
             if let json = object(0), let person = OverleafPresence(json: json) { presence[person.clientID] = person; refreshOverlays(); refreshChip() }
@@ -311,14 +362,17 @@ final class OverleafController {
     @MainActor private func performSync(token: Int, interactive: Bool) async throws {
         guard let project, let projectID = link?.projectID else { return }
         let client = try await ensureClient(interactive: interactive)
-        let archive = try await client.downloadZip(projectID: projectID); lastZip = Date()
+        let archive: URL
+        do { archive = try await client.downloadZip(projectID: projectID); lastZip = Date() }
+        catch OverleafError.http(let code, let detail) where code == 403 || code == 404 { verifyProject(after: detail); throw OverleafError.http(code, detail) }
         let manager = FileManager.default
         let remoteRoot = manager.temporaryDirectory.appendingPathComponent("BetterTeX-remote-\(UUID().uuidString)", isDirectory: true)
         defer { try? manager.removeItem(at: remoteRoot); try? manager.removeItem(at: archive) }
         let (remote, local) = try await background { try OverleafFiles.unzip(archive, to: remoteRoot); return (OverleafFiles.scan(remoteRoot), OverleafFiles.scan(project)) }
         guard generation == token, var link, let rootID = tree?.rootID else { return }
         let livePath = live?.path
-        let actions = SyncPlanner.plan(local: local, remote: remote, base: link.base).filter { $0.path != livePath }
+        var actions = SyncPlanner.plan(local: local, remote: remote, base: link.base).filter { $0.path != livePath }
+        actions = reviewLocalDeletions(actions, tracked: link.base.count)
         var down = 0, up = 0, merged = 0, unresolved = 0, marked = 0, removals: [String] = [], notes: [String] = []
         func localURL(_ path: String) -> URL { project.appendingPathComponent(path) }
         func write(_ data: Data, to path: String) throws {
@@ -388,6 +442,26 @@ final class OverleafController {
         let parts = [down > 0 ? "↓\(down)" : nil, up > 0 ? "↑\(up)" : nil, merged > 0 ? L10n.tr("合并 \(merged)") : nil, unresolved > 0 ? L10n.tr("\(unresolved) 个冲突待处理") : nil].compactMap { $0 }
         if !parts.isEmpty || interactive { workspace.setStatus(L10n.tr("Overleaf 同步完成") + (parts.isEmpty ? L10n.tr(" · 已是最新") : " · " + parts.joined(separator: " "))) }
         if unresolved > 0, interactive { ui.showOutput() }
+    }
+
+    /// Asks before trashing many local files at once; an emptied or replaced Overleaf project looks like that.
+    private func reviewLocalDeletions(_ actions: [SyncAction], tracked: Int) -> [SyncAction] {
+        let deletions = actions.compactMap { action -> String? in if case .deleteLocal(let path) = action { return path }; return nil }
+        guard SyncPlanner.needsDeletionReview(deletions: deletions.count, tracked: tracked) else { return actions }
+        let pending = Set(deletions)
+        if pending.isSubset(of: deferredDeletions) { return actions.filter { if case .deleteLocal = $0 { return false }; return true } }
+        let alert = NSAlert(); alert.alertStyle = .warning
+        alert.messageText = L10n.tr("Overleaf 上有 \(deletions.count) 个文件不见了，要删除本地副本吗？")
+        alert.informativeText = deletions.sorted().prefix(12).joined(separator: "\n") + (deletions.count > 12 ? "\n…" : "")
+            + L10n.tr("\n\n删除的本地文件会移到废纸篓。")
+        if canWrite { alert.addButton(withTitle: L10n.tr("恢复到 Overleaf")) }
+        alert.addButton(withTitle: L10n.tr("删除本地文件")); alert.addButton(withTitle: L10n.tr("暂不处理"))
+        let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue - (canWrite ? 0 : -1)
+        switch index {
+        case 0: return actions.map { if case .deleteLocal(let path) = $0 { return .upload(path) }; return $0 }  // restore to Overleaf
+        case 1: deferredDeletions.subtract(pending); return actions                                            // delete locally
+        default: deferredDeletions.formUnion(pending); return actions.filter { if case .deleteLocal = $0 { return false }; return true }
+        }
     }
 
     // MARK: Live document
@@ -558,7 +632,16 @@ final class OverleafController {
     // MARK: Menu
     func showMenu(from view: NSView) {
         let menu = NSMenu(); menu.autoenablesItems = false
-        if let link {
+        if let link, case .lost(let state) = status {
+            let header = NSMenuItem(title: link.name, action: nil, keyEquivalent: ""); header.isEnabled = false; menu.addItem(header)
+            let note = NSMenuItem(title: state == .noAccess ? L10n.tr("已没有访问权限 · 本地文件未受影响") : L10n.tr("Overleaf 上找不到该项目 · 本地文件未受影响"), action: nil, keyEquivalent: "")
+            note.isEnabled = false; menu.addItem(note); menu.addItem(.separator())
+            menu.addItem(ClosureMenuItem(L10n.tr("重新上传为新的 Overleaf 项目…"), symbol: "square.and.arrow.up") { [weak self] in self?.exportProject() })
+            menu.addItem(ClosureMenuItem(L10n.tr("关联到另一个 Overleaf 项目…"), symbol: "link") { [weak self] in self?.relink() })
+            menu.addItem(ClosureMenuItem(L10n.tr("再检查一次"), symbol: "arrow.clockwise") { [weak self] in self?.retries = 0; self?.connect() })
+            menu.addItem(.separator())
+            menu.addItem(ClosureMenuItem(L10n.tr("取消与 Overleaf 的关联"), symbol: "link.badge.plus") { [weak self] in self?.unlink() })
+        } else if let link {
             let header = NSMenuItem(title: link.name, action: nil, keyEquivalent: ""); header.isEnabled = false; menu.addItem(header)
             if case .signedOut = status { menu.addItem(ClosureMenuItem(L10n.tr("登录 Overleaf…"), symbol: "person.crop.circle") { [weak self] in self?.signIn() }) }
             menu.addItem(ClosureMenuItem(L10n.tr("立即同步"), symbol: "arrow.triangle.2.circlepath") { [weak self] in self?.sync(userInitiated: true) })
@@ -575,6 +658,11 @@ final class OverleafController {
             menu.addItem(ClosureMenuItem(L10n.tr("在浏览器中打开项目"), symbol: "safari") { [weak self] in
                 if let self, let url = URL(string: self.host.absoluteString + "/project/" + link.projectID) { NSWorkspace.shared.open(url) }
             })
+            if trashed {
+                menu.addItem(ClosureMenuItem(L10n.tr("在 Overleaf 中从回收站恢复…"), symbol: "trash.slash") { [weak self] in
+                    if let self, let url = URL(string: self.host.absoluteString + "/project") { NSWorkspace.shared.open(url) }
+                })
+            }
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(L10n.tr("取消与 Overleaf 的关联"), symbol: "link.badge.plus") { [weak self] in self?.unlink() })
         } else {
@@ -636,9 +724,11 @@ final class OverleafController {
     }
     /// Uploads the open folder as a new Overleaf project and keeps the two linked.
     func exportProject() {
-        guard let project, link == nil else { return }
+        guard let project, link == nil || isLost else { return }
+        let replacing = link != nil
         let alert = NSAlert(); alert.messageText = L10n.tr("把当前项目上传到 Overleaf")
         alert.informativeText = L10n.tr("源文件会作为一个新项目上传到你的 Overleaf 账户并保持同步。隐藏文件、.bettertex 和编译产物不会上传。")
+            + (replacing ? L10n.tr("\n\n原来那个已失联的关联会被替换。") : "")
         let name = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24)); name.stringValue = project.lastPathComponent; name.placeholderString = L10n.tr("Overleaf 项目名称")
         alert.accessoryView = name; alert.addButton(withTitle: L10n.tr("上传")); alert.addButton(withTitle: L10n.tr("取消")); alert.window.initialFirstResponder = name
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -668,11 +758,48 @@ final class OverleafController {
                 }
             }
             let id = try await withLogin { try await $0.createProject(name: title, archive: archive, progress: progress) }
+            // Overleaf titles zip uploads after \title{…}; keep the name the user chose.
+            do { try await withLogin { try await $0.rename(projectID: id, to: title) } }
+            catch { ui.terminal.append("\nOverleaf · " + L10n.tr("未能把项目重命名为「\(title)」：\(error.localizedDescription)") + "\n") }
             guard self.project == project else { return }
+            if replacing { teardown(); OverleafLink.remove(project: project) }
             var link = OverleafLink(host: host.absoluteString, projectID: id, name: title)
             for path in files { link.setBase(project: project, path: path, data: try? Data(contentsOf: project.appendingPathComponent(path))) }
             link.lastSync = Date(); try link.save(project: project)
             projectChanged(); workspace.setStatus(L10n.tr("已上传到 Overleaf「\(title)」并建立关联"))
+        }
+    }
+    /// Points a folder whose project is gone at another existing Overleaf project. Files that differ are
+    /// settled by the side the user picks; files on only one side are copied to the other.
+    func relink() {
+        guard let project else { return }
+        run(L10n.tr("关联失败"), alert: true) { [self] in
+            let projects = try await withLogin { try await $0.projects() }
+            guard let chosen = ProjectPicker.choose(projects, title: L10n.tr("关联到 Overleaf 项目"), confirm: L10n.tr("关联")) else { return }
+            let alert = NSAlert(); alert.messageText = L10n.tr("两边内容不同的文件，以哪一边为准？")
+            alert.informativeText = L10n.tr("只在一边存在的文件会保留，并同步到另一边。\n\n以本地为准：本地版本覆盖 Overleaf（Overleaf 历史记录里仍可找回）。\n以 Overleaf 为准：被替换的本地文件先移到废纸篓。")
+            alert.addButton(withTitle: L10n.tr("以本地为准")); alert.addButton(withTitle: L10n.tr("以 Overleaf 为准")); alert.addButton(withTitle: L10n.tr("取消"))
+            let choice = alert.runModal()
+            guard choice != .alertThirdButtonReturn, workspace.saveAll() else { return }
+            let localWins = choice == .alertFirstButtonReturn
+            workspace.setStatus(L10n.tr("正在读取「\(chosen.name)」…"))
+            let archive = try await withLogin { try await $0.downloadZip(projectID: chosen.id) }
+            let manager = FileManager.default
+            let remoteRoot = manager.temporaryDirectory.appendingPathComponent("BetterTeX-relink-\(UUID().uuidString)", isDirectory: true)
+            defer { try? manager.removeItem(at: remoteRoot); try? manager.removeItem(at: archive) }
+            let (remote, local) = try await background { try OverleafFiles.unzip(archive, to: remoteRoot); return (OverleafFiles.scan(remoteRoot), OverleafFiles.scan(project)) }
+            guard self.project == project else { return }
+            let differing = remote.keys.filter { local[$0] != nil && local[$0] != remote[$0] }
+            // Overleaf wins: with the local copy in the Trash, the planner simply downloads Overleaf's.
+            // Done before the old link is dropped, so a failure here leaves the folder as it was linked.
+            if !localWins { for path in differing { try manager.trashItem(at: project.appendingPathComponent(path), resultingItemURL: nil) } }
+            let host = host.absoluteString
+            teardown(); OverleafLink.remove(project: project)
+            var link = OverleafLink(host: host, projectID: chosen.id, name: chosen.name)
+            // Local wins: Overleaf's copy becomes the last agreed state, so the planner uploads ours over it.
+            if localWins { for path in differing { link.setBase(project: project, path: path, data: try? Data(contentsOf: remoteRoot.appendingPathComponent(path))) } }
+            try link.save(project: project)
+            projectChanged(); workspace.setStatus(L10n.tr("已关联到 Overleaf「\(chosen.name)」，正在同步…"))
         }
     }
     func invite() {
