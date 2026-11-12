@@ -737,3 +737,10 @@
 "适合整页" = "Fit Page";
 "缩放选项" = "Zoom options";
 "（无标题）" = "(Untitled)";
+"未检测到 pdflatex。" = "pdflatex not found.";
+"已工作 %1$@" = "Worked for %1$@";
+"工作过程" = "Worked";
+"1 个文件已更改" = "1 file changed";
+"%1$@ 个文件已更改" = "%1$@ files changed";
+"查看另外 %1$@ 个文件" = "View %1$@ more files";
+"查看另外 1 个文件" = "View 1 more file";

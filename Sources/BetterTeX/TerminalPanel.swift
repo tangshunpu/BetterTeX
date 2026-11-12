@@ -79,7 +79,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     var terminals: [String: AdaptiveTerminal] = [:]
     var active = "Agent"
     var project: URL?
-    var tools: Toolchain?
+    var tools: Toolchain? { didSet { MathRenderer.shared.tools = tools } }
     var onError: ((String) -> Void)?
     var onDiagnostic: ((String, Int) -> Void)?
     var currentContext: (() -> AgentSourceContext?)?

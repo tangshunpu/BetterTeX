@@ -50,6 +50,16 @@ final class AgentChatView: NSView {
     /// its group and a group to its items, in order.
     private var groupOf: [String: String] = [:]
     private var groupMembers: [String: [String]] = [:]
+    /// The row being built, and rows whose formulas are still being typeset.
+    private var building: String?
+    private var mathWaiting = Set<String>()
+    // A finished turn folds its steps behind a "Worked for …" line and lists the files it changed.
+    private var turnIndex = 0
+    private var turnOf: [String: Int] = [:]
+    private var hiddenRows = Set<String>()
+    private var folded: [Int: (duration: String?, steps: [String], tooltip: String?)] = [:]
+    private var openTurns = Set<Int>()
+    private var cardAll = Set<Int>(), cardClosed = Set<Int>(), cardFiles = Set<String>()
     private var notices = Set<String>()
     /// Identity of the turn in flight, and how to cancel it.
     private var turn: AnyObject?
@@ -140,6 +150,7 @@ final class AgentChatView: NSView {
         usageGeneration = UUID(); readingUsage = false; usageReadPending = false; lastUsageRead = .distantPast
         contextUsage = nil; quota = nil; onUsageChange?()
         entries.removeAll(); order.removeAll(); rows.removeAll(); expanded.removeAll(); disclosed.removeAll(); groupOf.removeAll(); groupMembers.removeAll(); notices.removeAll()
+        turnIndex = 0; turnOf.removeAll(); hiddenRows.removeAll(); folded.removeAll(); openTurns.removeAll(); cardAll.removeAll(); cardClosed.removeAll(); cardFiles.removeAll(); mathWaiting.removeAll()
         stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
         onChange?()
     }
@@ -168,6 +179,7 @@ final class AgentChatView: NSView {
                     case .item(let item): self.append("h.\(item.id)", .item(item))
                     }
                 }
+                for turn in 0...self.turnIndex { self.finishTurn(turn, duration: nil) }
                 self.append("hend", .status(L10n.tr("以上是之前的对话 · 继续输入即可接着聊"), failed: false))
                 self.refreshContextUsage(force: true)
             }
@@ -207,7 +219,9 @@ final class AgentChatView: NSView {
         }
     }
     private func setRunning(_ value: Bool) {
+        let finished = running && !value
         running = value
+        if finished { finishTurn(turnIndex, duration: elapsed) }
         ticker?.invalidate(); ticker = nil
         if value {
             started = Date(); activity = L10n.tr("\(name) 正在工作…")
@@ -249,6 +263,7 @@ final class AgentChatView: NSView {
     private func append(_ key: String, _ entry: Entry) {
         let isNew = entries[key] == nil, previous = order.last
         entries[key] = entry; if isNew { order.append(key) }
+        if isNew { if case .user = entry { turnIndex += 1 }; turnOf[key] = turnIndex }
         // A tool call joins the group of the row right above it, or starts a new one.
         var rowKey = key
         if groupable(entry) {
@@ -256,8 +271,10 @@ final class AgentChatView: NSView {
             else {
                 let group = previous.flatMap { groupOf[$0] } ?? "g." + key
                 groupOf[key] = group; groupMembers[group, default: []].append(key); rowKey = group
+                if turnOf[group] == nil { turnOf[group] = turnOf[key] }
             }
         }
+        building = rowKey; defer { building = nil }
         let view = rowKey == key ? row(for: key, entry) : groupRow(rowKey)
         place(rowKey, view)
         if isNew { if order.count == 1 { onChange?() }; scrollToEnd() }
@@ -268,7 +285,160 @@ final class AgentChatView: NSView {
         } else if running, let index = stack.arrangedSubviews.firstIndex(of: working) { stack.insertArrangedSubview(view, at: index) }
         else { stack.addArrangedSubview(view) }
         view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -Self.inset * 2).isActive = true
+        view.isHidden = hiddenRows.contains(key)
         rows[key] = view
+    }
+    /// Puts a row right after (or before) another one, for the rows a finished turn adds.
+    private func insert(_ key: String, _ view: NSView, near anchor: String, after: Bool) {
+        guard let anchorView = rows[anchor], let index = stack.arrangedSubviews.firstIndex(of: anchorView) else { return }
+        stack.insertArrangedSubview(view, at: after ? index + 1 : index)
+        view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -Self.inset * 2).isActive = true
+        rows[key] = view
+    }
+
+    // MARK: Finished turns
+    /// Folds a finished turn: its steps go behind one "Worked for …" line, the final reply stays,
+    /// and the files it changed are listed under the reply. Failures and stops stay visible.
+    private func finishTurn(_ turn: Int, duration: String?) {
+        guard folded[turn] == nil else { return }
+        let keys = order.filter { turnOf[$0] == turn }
+        var rowKeys: [String] = []
+        for key in keys { let row = groupOf[key] ?? key; if !rowKeys.contains(row) { rowKeys.append(row) } }
+        let reply = keys.last { if case .item(let item)? = entries[$0] { return item.kind == .message }; return false }
+        var steps: [String] = [], tooltip: String?, done: String?
+        for key in rowKeys where key != reply {
+            switch entries[key] {
+            case .user?: continue
+            case .status(let text, let failed)?:
+                if !failed, key.hasPrefix("d") { done = key; tooltip = text }
+            default: steps.append(key)
+            }
+        }
+        guard !steps.isEmpty else { return }
+        folded[turn] = (duration, steps, tooltip)
+        for key in steps + [done].compactMap({ $0 }) { hiddenRows.insert(key); rows[key]?.isHidden = true }
+        insert("th\(turn)", turnHeader(turn), near: steps[0], after: false)
+        if !changedFiles(turn).isEmpty { insert("tc\(turn)", changeCard(turn), near: reply ?? steps[steps.count - 1], after: true) }
+    }
+    private func toggleTurn(_ turn: Int) {
+        guard let info = folded[turn] else { return }
+        let open = !openTurns.contains(turn)
+        if open { openTurns.insert(turn) } else { openTurns.remove(turn) }
+        for key in info.steps { if open { hiddenRows.remove(key) } else { hiddenRows.insert(key) }; rows[key]?.isHidden = !open }
+        place("th\(turn)", turnHeader(turn))
+    }
+    private func turnHeader(_ turn: Int) -> NSView {
+        let open = openTurns.contains(turn), info = folded[turn]
+        let text = info?.duration.map { L10n.tr("已工作 \($0)") } ?? L10n.tr("工作过程")
+        let label = Theme.label(text, size: 13, color: Theme.muted)
+        let chevron = NSImageView(image: Theme.symbol(open ? "chevron.down" : "chevron.right", size: 9, weight: .semibold)!); chevron.contentTintColor = Theme.faint; chevron.size(12, 12)
+        let line = NSStackView(views: [label, chevron]); line.spacing = 5; line.alignment = .centerY
+        let button = RowButton(height: 26) { [weak self] in self?.toggleTurn(turn) }
+        button.layer?.cornerRadius = 6; button.layer?.cornerCurve = .continuous
+        button.pinRow(line, leading: 2, trailing: 6); button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setAccessibilityLabel(text); button.setAccessibilityExpanded(open); button.toolTip = info?.tooltip
+        let top = NSStackView(views: [button, NSView()]); top.distribution = .fill
+        let rule = Chip(fill: Theme.hairline, radius: 0); rule.size(nil, 1)
+        return column([top, rule], spacing: 4)
+    }
+
+    /// One file a turn changed, with its line counts when the diff is known.
+    private struct FileChange { var path: String; var added = 0; var removed = 0; var diff: [String] = []; var counted = true }
+    private func changedFiles(_ turn: Int) -> [FileChange] {
+        var files: [FileChange] = []
+        for key in order where turnOf[key] == turn {
+            guard case .item(let item)? = entries[key], item.kind == .fileChange, item.status != .failed else { continue }
+            let paths = item.detail.components(separatedBy: "\n").compactMap { line -> String? in
+                let parts = line.components(separatedBy: "  "); let path = parts.dropFirst().joined(separator: "  ")
+                return path.isEmpty ? nil : path
+            }
+            let lines = item.diff.isEmpty ? [] : item.diff.components(separatedBy: "\n")
+            for path in paths {
+                var file = files.first { $0.path == path } ?? FileChange(path: path)
+                if paths.count == 1, !lines.isEmpty {
+                    file.added += lines.filter { $0.hasPrefix("+") }.count; file.removed += lines.filter { $0.hasPrefix("-") }.count; file.diff += lines
+                } else { file.counted = false }
+                if let index = files.firstIndex(where: { $0.path == path }) { files[index] = file } else { files.append(file) }
+            }
+        }
+        return files
+    }
+    private func counts(_ added: Int, _ removed: Int, size: CGFloat = 12.5) -> NSTextField {
+        let text = NSMutableAttributedString()
+        let font = NSFont.monospacedDigitSystemFont(ofSize: size, weight: .medium)
+        text.append(NSAttributedString(string: "+\(added)", attributes: [.font: font, .foregroundColor: Theme.adaptive(0x1A7F37, 0x7EE787)]))
+        text.append(NSAttributedString(string: " −\(removed)", attributes: [.font: font, .foregroundColor: Theme.adaptive(0xCF222E, 0xFF9A93)]))
+        let label = NSTextField(labelWithAttributedString: text); label.setContentCompressionResistancePriority(.required, for: .horizontal); label.setContentHuggingPriority(.required, for: .horizontal)
+        return label
+    }
+    /// "3 files changed +52 −17", then a row per file (three until expanded). A row opens its diff.
+    private func changeCard(_ turn: Int) -> NSView {
+        let files = changedFiles(turn), closed = cardClosed.contains(turn)
+        let added = files.reduce(0) { $0 + $1.added }, removed = files.reduce(0) { $0 + $1.removed }
+        let title = Theme.label(files.count == 1 ? L10n.tr("1 个文件已更改") : L10n.tr("\(files.count) 个文件已更改"), size: 13, color: Theme.text, weight: .medium)
+        var headerViews: [NSView] = [title]
+        if files.contains(where: { $0.counted && $0.added + $0.removed > 0 }) { headerViews.append(counts(added, removed, size: 13)) }
+        let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal); headerViews.append(spacer)
+        let chevron = NSImageView(image: Theme.symbol(closed ? "chevron.right" : "chevron.down", size: 10, weight: .semibold)!); chevron.contentTintColor = Theme.muted; chevron.size(12, 12); headerViews.append(chevron)
+        var rowsInCard: [NSView] = [cardRow(headerViews, height: 38) { [weak self] in
+            guard let self else { return }
+            if self.cardClosed.contains(turn) { self.cardClosed.remove(turn) } else { self.cardClosed.insert(turn) }
+            self.place("tc\(turn)", self.changeCard(turn))
+        }]
+        if !closed {
+            let shown = cardAll.contains(turn) ? files : Array(files.prefix(3))
+            for file in shown {
+                let id = "\(turn)|\(file.path)", open = cardFiles.contains(id)
+                let relative = directory.map { file.path.hasPrefix($0.path + "/") ? String(file.path.dropFirst($0.path.count + 1)) : file.path } ?? file.path
+                let name = Theme.label(relative, size: 12.5, color: Theme.soft); name.lineBreakMode = .byTruncatingHead
+                name.setContentCompressionResistancePriority(.init(1), for: .horizontal); name.setContentHuggingPriority(.init(1), for: .horizontal); name.toolTip = file.path
+                var views: [NSView] = [name]
+                if file.counted, file.added + file.removed > 0 { views.append(counts(file.added, file.removed)) }
+                let reveal = ActionButton("", symbol: "arrow.up.forward.square", style: .plain) { [weak self] in
+                    guard let self else { return }
+                    let url = file.path.hasPrefix("/") ? URL(fileURLWithPath: file.path) : (self.directory ?? self.projectRoot?() ?? URL(fileURLWithPath: "/")).appendingPathComponent(file.path)
+                    self.onOpenLocation?(.source(url, line: nil))
+                }
+                reveal.toolTip = L10n.tr("在编辑器中打开 \(file.path)"); reveal.setContentHuggingPriority(.required, for: .horizontal); views.append(reveal)
+                rowsInCard.append(cardRow(views, height: 34) { [weak self] in
+                    guard let self, !file.diff.isEmpty else { return }
+                    if self.cardFiles.contains(id) { self.cardFiles.remove(id) } else { self.cardFiles.insert(id) }
+                    self.place("tc\(turn)", self.changeCard(turn))
+                })
+                if open, !file.diff.isEmpty {
+                    let lines = file.diff.count > 120 ? Array(file.diff.prefix(120)) + [L10n.tr(" … 还有 \(file.diff.count - 120) 行")] : file.diff
+                    let diff = wrapped(diffText(lines)); let holder = NSView(); diff.translatesAutoresizingMaskIntoConstraints = false; holder.addSubview(diff)
+                    NSLayoutConstraint.activate([diff.topAnchor.constraint(equalTo: holder.topAnchor, constant: 6), diff.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -8), diff.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 14), diff.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -14)])
+                    rowsInCard.append(holder)
+                }
+            }
+            if files.count > 3 {
+                let more = cardAll.contains(turn) ? L10n.tr("收起") : (files.count == 4 ? L10n.tr("查看另外 1 个文件") : L10n.tr("查看另外 \(files.count - 3) 个文件"))
+                let chevron = NSImageView(image: Theme.symbol(cardAll.contains(turn) ? "chevron.up" : "chevron.right", size: 10, weight: .semibold)!); chevron.contentTintColor = Theme.muted; chevron.size(12, 12)
+                let label = Theme.label(more, size: 12.5, color: Theme.muted); label.setContentHuggingPriority(.init(1), for: .horizontal)
+                rowsInCard.append(cardRow([label, chevron], height: 34) { [weak self] in
+                    guard let self else { return }
+                    if self.cardAll.contains(turn) { self.cardAll.remove(turn) } else { self.cardAll.insert(turn) }
+                    self.place("tc\(turn)", self.changeCard(turn))
+                })
+            }
+        }
+        // Rows separated by hairlines inside one rounded, bordered card.
+        var separated: [NSView] = []
+        for (index, view) in rowsInCard.enumerated() {
+            if index > 0 { let rule = Chip(fill: Theme.hairline, radius: 0); rule.size(nil, 1); separated.append(rule) }
+            separated.append(view)
+        }
+        let body = column(separated, spacing: 0)
+        let card = Chip(fill: Theme.fillSoft, radius: 10, border: Theme.hairline)
+        card.layer?.masksToBounds = true; card.pin(body)
+        return card
+    }
+    private func cardRow(_ views: [NSView], height: CGFloat, action: @escaping () -> Void) -> NSView {
+        let line = NSStackView(views: views); line.spacing = 8; line.alignment = .centerY; line.distribution = .fill
+        let button = RowButton(height: height, action: action)
+        button.pinRow(line, leading: 14, trailing: 12)
+        return button
     }
     private func scrollToEnd() {
         DispatchQueue.main.async { [weak self] in
@@ -281,6 +451,61 @@ final class AgentChatView: NSView {
     private func wrapped(_ text: NSAttributedString, selectable: Bool = true) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: ""); label.attributedStringValue = text; label.isSelectable = selectable
         label.setContentCompressionResistancePriority(.init(1), for: .horizontal); return label
+    }
+    /// Reply prose: Markdown, with TeX math typeset in place. Math is cut out before Markdown
+    /// parsing, which would otherwise eat the backslashes in \( \) and the underscores in subscripts.
+    private func prose(_ body: String) -> NSView {
+        let spans = MathText.spans(in: body)
+        guard !spans.isEmpty else { return linked(markdown(headings(body))) }
+        let source = NSMutableString(string: body)
+        for (index, span) in spans.enumerated().reversed() { source.replaceCharacters(in: span.range, with: String(UnicodeScalar(UInt32(0xE000 + index))!)) }
+        let text = NSMutableAttributedString(attributedString: markdown(headings(source as String)))
+        let renderer = MathRenderer.shared
+        var missing: [(tex: String, display: Bool)] = []
+        for (index, span) in spans.enumerated() {
+            let marker = String(UnicodeScalar(UInt32(0xE000 + index))!)
+            let range = (text.string as NSString).range(of: marker)
+            guard range.location != NSNotFound else { continue }
+            let font = text.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont ?? .systemFont(ofSize: 13)
+            switch renderer.state(span.tex, display: span.display) {
+            case .ready(let image, let descent)?:
+                let attachment = NSTextAttachment(); attachment.image = image
+                // Wide display math shrinks to fit the panel rather than overflowing it.
+                let fit = min(1, 340 / max(image.size.width, 1))
+                attachment.bounds = CGRect(x: 0, y: -descent * fit, width: image.size.width * fit, height: image.size.height * fit)
+                let piece = NSMutableAttributedString(attachment: attachment)
+                piece.addAttribute(.font, value: font, range: NSRange(location: 0, length: piece.length))
+                piece.addAttribute(.toolTip, value: span.tex, range: NSRange(location: 0, length: piece.length))
+                text.replaceCharacters(in: range, with: piece)
+                if span.display {
+                    let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .center; paragraph.paragraphSpacing = 4; paragraph.paragraphSpacingBefore = 4
+                    text.addAttribute(.paragraphStyle, value: paragraph, range: (text.string as NSString).paragraphRange(for: NSRange(location: range.location, length: 1)))
+                }
+            case .failed?, nil:
+                if renderer.state(span.tex, display: span.display) == nil { missing.append((span.tex, span.display)) }
+                // Until it is typeset (or if TeX rejects it), show the formula's source.
+                let original = (body as NSString).substring(with: span.range)
+                text.replaceCharacters(in: range, with: NSAttributedString(string: original, attributes: [.font: NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular), .foregroundColor: Theme.soft]))
+            }
+        }
+        if !missing.isEmpty, renderer.tools != nil, let key = building {
+            mathWaiting.insert(key)
+            renderer.request(missing) { [weak self] in self?.mathReady() }
+        }
+        return linked(text)
+    }
+    /// The user's prompt as typed. A bare "@file" attachment reference is dropped; a reference to
+    /// selected lines stays as a small caption above the text.
+    private func prompt(_ text: String, size: CGFloat = 13) -> NSAttributedString {
+        var lines = text.components(separatedBy: "\n"), caption: String?
+        if let first = lines.first, first.range(of: "^@\\S+$", options: .regularExpression) != nil {
+            lines.removeFirst(); while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { lines.removeFirst() }
+            if first.range(of: ":\\d+(-\\d+)?$", options: .regularExpression) != nil { caption = first }
+        }
+        let result = NSMutableAttributedString()
+        if let caption { result.append(plain(caption + (lines.isEmpty ? "" : "\n"), size: 11, color: Theme.muted, mono: true)) }
+        result.append(plain(lines.isEmpty && caption == nil ? text : lines.joined(separator: "\n"), size: size))
+        return result
     }
     /// Reply text whose links to source lines and PDF pages open inside BetterTeX. Plain mentions of
     /// project files ("sections/intro.tex:42") become links too.
@@ -312,16 +537,16 @@ final class AgentChatView: NSView {
         NSAttributedString(string: text, attributes: [.font: mono ? NSFont.monospacedSystemFont(ofSize: size, weight: .regular) : NSFont.systemFont(ofSize: size), .foregroundColor: color])
     }
     /// Inline Markdown (bold, italic, code) as the agent writes it; block structure stays as typed.
-    private func markdown(_ text: String) -> NSAttributedString {
+    private func markdown(_ text: String, size: CGFloat = 13, color: NSColor = Theme.text) -> NSAttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         guard let parsed = try? AttributedString(markdown: text, options: options) else { return plain(text) }
         let result = NSMutableAttributedString()
         for run in parsed.runs {
             let intent = run.inlinePresentationIntent ?? []
-            var font = NSFont.systemFont(ofSize: 13, weight: intent.contains(.stronglyEmphasized) ? .semibold : .regular)
-            if intent.contains(.code) { font = .monospacedSystemFont(ofSize: 12, weight: .regular) }
+            var font = NSFont.systemFont(ofSize: size, weight: intent.contains(.stronglyEmphasized) ? .semibold : .regular)
+            if intent.contains(.code) { font = .monospacedSystemFont(ofSize: size - 1, weight: .regular) }
             else if intent.contains(.emphasized) { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
-            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: Theme.text]
+            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
             if let link = run.link { attributes[.link] = link }
             result.append(NSAttributedString(string: String(parsed[run.range].characters), attributes: attributes))
         }
@@ -476,6 +701,14 @@ final class AgentChatView: NSView {
     // MARK: Collapsible tool rows
     /// Tool calls start folded to a single line; failures open so the error is in view.
     private func isOpen(_ key: String, default value: Bool = false) -> Bool { disclosed[key] ?? value }
+    /// Rebuilds the rows that were waiting for typeset formulas.
+    private func mathReady() {
+        let keys = mathWaiting; mathWaiting.removeAll()
+        for key in keys {
+            if groupMembers[key] != nil { building = key; place(key, groupRow(key)); building = nil }
+            else if let entry = entries[key] { append(key, entry) }
+        }
+    }
     private func toggle(_ key: String, from open: Bool) {
         if groupMembers[key] != nil { disclosed[key] = !open; place(key, groupRow(key)); return }
         guard let entry = entries[key] else { return }
@@ -565,7 +798,7 @@ final class AgentChatView: NSView {
     /// Message text with fenced code blocks set apart and Markdown headings shown bold.
     private func rich(_ text: String) -> NSView {
         let parts = text.components(separatedBy: "```")
-        guard parts.count > 2 else { return linked(markdown(headings(text))) }
+        guard parts.count > 2 else { return prose(text) }
         var views: [NSView] = []
         for (index, part) in parts.enumerated() {
             if index % 2 == 1 {
@@ -573,7 +806,7 @@ final class AgentChatView: NSView {
                 var code = part; if let newline = code.firstIndex(of: "\n") { code = String(code[code.index(after: newline)...]) }
                 let body = code.trimmingCharacters(in: .newlines); if !body.isEmpty { views.append(box(wrapped(plain(body, size: 11.5, mono: true)))) }
             } else {
-                let body = part.trimmingCharacters(in: .newlines); if !body.isEmpty { views.append(linked(markdown(headings(body)))) }
+                let body = part.trimmingCharacters(in: .newlines); if !body.isEmpty { views.append(prose(body)) }
             }
         }
         return column(views)
@@ -590,7 +823,7 @@ final class AgentChatView: NSView {
         case .status: return nil
         case .user(let text):
             let bubble = Chip(fill: Theme.fillSoft, radius: 8, border: Theme.adaptive(0x3C3C43, 0xFFFFFF, lightAlpha: 0.16, darkAlpha: 0.12))
-            let label = wrapped(plain(text)); label.translatesAutoresizingMaskIntoConstraints = false; bubble.addSubview(label)
+            let label = wrapped(prompt(text)); label.translatesAutoresizingMaskIntoConstraints = false; bubble.addSubview(label)
             NSLayoutConstraint.activate([label.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 8), label.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -8), label.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10), label.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10)])
             bubble.setAccessibilityLabel(L10n.tr("你：\(text)")); return bubble
         case .item(let item):
@@ -667,7 +900,7 @@ final class AgentChatView: NSView {
         switch entry {
         case .user(let text):
             let bubble = Chip(fill: Theme.accent.withAlphaComponent(0.18), radius: 12)
-            let label = wrapped(plain(text)); label.translatesAutoresizingMaskIntoConstraints = false; bubble.addSubview(label)
+            let label = wrapped(prompt(text)); label.translatesAutoresizingMaskIntoConstraints = false; bubble.addSubview(label)
             NSLayoutConstraint.activate([label.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 7), label.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -7), label.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 11), label.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -11)])
             let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
             let line = NSStackView(views: [spacer, bubble]); line.alignment = .top
@@ -677,8 +910,8 @@ final class AgentChatView: NSView {
             return wrapped(plain(text, size: 11.5, color: failed ? Theme.red : Theme.faint), selectable: failed)
         case .item(let item):
             switch item.kind {
-            case .message: return linked(markdown(item.text.trimmingCharacters(in: .newlines)))
-            case .reasoning: return wrapped(plain(item.text.trimmingCharacters(in: .whitespacesAndNewlines), size: 12, color: Theme.muted))
+            case .message: return rich(item.text.trimmingCharacters(in: .newlines))
+            case .reasoning: return wrapped(markdown(item.text.trimmingCharacters(in: .whitespacesAndNewlines), size: 12, color: Theme.muted))
             case .notice: return wrapped(plain(item.text, size: 11.5, color: Theme.orange))
             case .webSearch, .toolCall:
                 let line = NSStackView(views: [statusIcon(item.status, symbol: item.kind == .webSearch ? "magnifyingglass" : "wrench.and.screwdriver"), wrapped(plain(item.text, size: 12, color: Theme.soft))]); line.spacing = 7; line.alignment = .firstBaseline
@@ -741,6 +974,10 @@ final class LinkTextView: NSTextView {
     }
     override var intrinsicContentSize: NSSize {
         guard let layoutManager, let textContainer else { return .zero }
+        // Measure at the width the view has now; the container only follows the frame later.
+        if bounds.width > 0, textContainer.containerSize.width != bounds.width {
+            textContainer.containerSize = NSSize(width: bounds.width, height: CGFloat.greatestFiniteMagnitude)
+        }
         layoutManager.ensureLayout(for: textContainer)
         return NSSize(width: NSView.noIntrinsicMetric, height: ceil(layoutManager.usedRect(for: textContainer).height))
     }
