@@ -744,3 +744,9 @@
 "%1$@ 个文件已更改" = "%1$@ files changed";
 "查看另外 %1$@ 个文件" = "View %1$@ more files";
 "查看另外 1 个文件" = "View 1 more file";
+"没有打开的文件" = "No File Open";
+"最近与项目文件" = "Recent and Project Files";
+"主文件" = "Main file";
+"这个项目还没有 .tex 文件" = "This project has no .tex files yet";
+"从左侧选择一个文件，或从这里继续" = "Pick a file on the left, or continue here";
+"打开 %1$@" = "Open %1$@";

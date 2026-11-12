@@ -35,6 +35,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     var compiledRoot: URL?
     /// The sources as the last successful build read them; edits since then are diffed against it so SyncTeX lines still land.
     var compiledSnapshot: SourceSnapshot?
+    /// Tabs closed most recently first, offered again once every tab is closed.
+    var recentlyClosed: [URL] = []
     var generation = UUID()
     var saveJob: DispatchWorkItem?
     var compileJob: DispatchWorkItem?
@@ -119,6 +121,9 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             } else { self.ui.terminal.contextLines = nil }
         }
         ui.editor.textView.onSync = { [weak self] in self?.forwardSync() }
+        ui.editor.emptyState.onOpen = { [weak self] in self?.openFile($0) }
+        ui.editor.emptyState.onNew = { [weak self] in self?.newFile() }
+        ui.editor.emptyState.onSearch = { [weak self] in self?.ui.search.focus() }
         ui.editor.onInsertImage = { [weak self] in self?.pickImage() }
         ui.editor.textView.onDropImages = { [weak self] in self?.insertImages($0) }
         ui.editor.textView.onPasteImage = { [weak self] in self?.insertPastedImage($0) }
@@ -329,7 +334,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     private func resetWorkspace() {
         generation = UUID(); saveJob?.cancel(); compileJob?.cancel(); compiler.runner.cancel(); compiler = TeXCompiler()
         building = false; buildPending = false; preparingBuild = false; gitBusy = false; ui.setBuilding(false); ui.activity = .idle
-        lastBuildSeconds = nil; settledBalance = [:]; signatureCache.reset()
+        lastBuildSeconds = nil; settledBalance = [:]; signatureCache.reset(); recentlyClosed = []
         watcher.stop(); ui.terminal.stopAll(); buffers.removeAll(); active = nil; conflicts.removeAll()
     }
     /// Closes the project and returns to the start page. Files are saved first; nothing is deleted.
@@ -358,7 +363,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         if let tools { ui.terminal.configure(project: url, tools: tools) }
         UserDefaults.standard.set(url.path, forKey: "lastProject")
         let files = TeXProject.sourceFiles(in: url)
-        if let main = files.first(where: { $0.lastPathComponent == "main.tex" }) ?? files.first { openFile(main) }
+        if let main = files.first(where: { $0.lastPathComponent == "main.tex" }) ?? files.first { openFile(main) } else { showEmptyEditor() }
         watcher.start(url); refreshGit()
         if tools != nil, ui.autoBuildEnabled { scheduleBuild() }
         overleaf.projectChanged(); completionIndex = ProjectIndex(); refreshCompletionIndex()
@@ -402,11 +407,34 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         guard let buffer = buffers.first(where: { $0.url == url }) else { return }
         do { try buffer.save() } catch { self.error(error.localizedDescription); return }
         buffers.removeAll { $0 === buffer }
+        recentlyClosed.removeAll { $0 == url }; recentlyClosed.insert(url, at: 0); recentlyClosed = Array(recentlyClosed.prefix(8))
         if active === buffer {
             if let next = buffers.last { openFile(next.url) }
-            else { active = nil; ui.editor.clear(); ui.editor.textView.isEditable = false; ui.explorer.reveal(url.appendingPathComponent("\u{0}")); ui.setTitle(project: project?.lastPathComponent ?? "BetterTeX", file: nil); ui.terminal.contextFile = nil }
+            else { active = nil; ui.editor.clear(); ui.editor.textView.isEditable = false; ui.explorer.reveal(url.appendingPathComponent("\u{0}")); ui.setTitle(project: project?.lastPathComponent ?? "BetterTeX", file: nil); ui.terminal.contextFile = nil; showEmptyEditor() }
         }
         refreshTabs(); overleaf.attachActiveDoc()
+    }
+    /// With every tab closed, the editor offers the main file, then recently closed and other source files.
+    func showEmptyEditor() {
+        guard let project, active == nil else { return }
+        let sources = TeXProject.sourceFiles(in: project)
+        let main = mainFile(among: sources)
+        var files: [URL] = []
+        for url in recentlyClosed + sources where url != main && !files.contains(url) && FileManager.default.fileExists(atPath: url.path) { files.append(url) }
+        ui.editor.showEmpty(main: main, files: files, project: project)
+    }
+    /// The file that is compiled: the last build's root, the main file chosen for the project, else a file with \documentclass (main.tex first).
+    private func mainFile(among sources: [URL]) -> URL? {
+        if let compiledRoot, sources.contains(compiledRoot) { return compiledRoot }
+        if let project, let chosen = TeXProject.chosenMain(for: project), FileManager.default.fileExists(atPath: chosen.path) { return chosen }
+        func declaresDocument(_ url: URL) -> Bool {
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+            defer { try? handle.close() }
+            let head = String(decoding: handle.readData(ofLength: 8192), as: UTF8.self)
+            return head.contains("\\documentclass")
+        }
+        let roots = sources.filter(declaresDocument)
+        return roots.first { $0.lastPathComponent == "main.tex" } ?? roots.first ?? sources.first { $0.lastPathComponent == "main.tex" } ?? sources.first
     }
     func refreshTabs() { ui.editor.updateTabs(buffers, active: active?.url); ui.explorer.dirty = Set(buffers.filter(\.dirty).map(\.url)); window.isDocumentEdited = buffers.contains { $0.dirty } }
     func edited(_ text: String) {

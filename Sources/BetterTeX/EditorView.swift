@@ -481,6 +481,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
     var onOutline: (([OutlineItem]) -> Void)?
     var onInsertImage: (() -> Void)?
     private let insertBar = Surface()
+    /// Covers the editor while no file is open.
+    let emptyState = EditorEmptyState()
     private let overview = OverviewRuler()
     /// Supplies candidates for what is being typed; nil turns completion off.
     var completions: ((CompletionRequest) -> [CompletionItem])?
@@ -572,8 +574,14 @@ final class EditorPane: Surface, NSTextViewDelegate {
         ])
         setBreadcrumb(file: "", section: nil)
         updateColors()
+        emptyState.isHidden = true; emptyState.translatesAutoresizingMaskIntoConstraints = false; addSubview(emptyState)
+        NSLayoutConstraint.activate([emptyState.topAnchor.constraint(equalTo: topAnchor), emptyState.leadingAnchor.constraint(equalTo: leadingAnchor), emptyState.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), emptyState.bottomAnchor.constraint(equalTo: bottomAnchor)])
     }
     required init?(coder: NSCoder) { fatalError() }
+    /// Shows the no-file state over the editor; loading a file hides it again.
+    func showEmpty(main: URL?, files: [URL], project: URL?) {
+        popup.dismiss(); emptyState.configure(main: main, files: files, project: project); emptyState.isHidden = false
+    }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateColors() }
     private var baselineOffset: CGFloat = 3
     /// Applies the saved editor font, size and matching fixed line height.
@@ -633,7 +641,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         storage.addAttributes([.paragraphStyle: paragraph, .baselineOffset: baselineOffset, .font: textView.font ?? Theme.editorFont()], range: NSRange(location: 0, length: storage.length))
     }
     func load(_ buffer: EditorBuffer, project: URL) {
-        popup.dismiss()
+        popup.dismiss(); emptyState.isHidden = true
         isBib = buffer.url.pathExtension.lowercased() == "bib"; if !isBib { textView.entryBands = [] }
         loading = true; textView.string = buffer.text; applyParagraphStyle(); textView.undoManager?.removeAllActions()
         textView.setSelectedRange(NSRange(location: min(buffer.selection.location, (buffer.text as NSString).length), length: 0))
