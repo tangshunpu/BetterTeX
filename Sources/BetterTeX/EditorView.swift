@@ -54,6 +54,12 @@ final class CodeTextView: NSTextView {
     var onSync: (() -> Void)?
     var onDropImages: (([URL]) -> Void)?
     var onPasteImage: ((Data) -> Void)?
+    var onInsertSnippet: ((Snippet) -> Void)?
+    var sourceContext: (() -> AgentSourceContext?)?
+    var onAttachContext: ((AgentSourceContext) -> Void)?
+    var onProofread: ((AgentSourceContext) -> Void)?
+    var onRevealInPDF: (() -> Void)?
+    var onContextMenu: (() -> Void)?
     /// Offered every key press first; returns true when the completion list consumed it.
     var onCompletionKey: ((NSEvent) -> Bool)?
     var onResign: (() -> Void)?
@@ -62,6 +68,97 @@ final class CodeTextView: NSTextView {
         super.keyDown(with: event)
     }
     override func resignFirstResponder() -> Bool { onResign?(); return super.resignFirstResponder() }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        onContextMenu?()
+        let position = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+        return editingMenu(at: position)
+    }
+    /// Preserve a right-clicked selection; elsewhere, insert at the clicked position.
+    func editingMenu(at position: Int) -> NSMenu {
+        let position = min(max(0, position), (string as NSString).length)
+        let selection = selectedRange()
+        if selection.length == 0 || position < selection.location || position > NSMaxRange(selection) {
+            setSelectedRange(NSRange(location: position, length: 0))
+        }
+        let menu = NSMenu(); menu.autoenablesItems = false; menu.allowsContextMenuPlugIns = false
+        addGrammarItems(to: menu, at: position)
+        if let context = sourceContext?(), context.canProofread {
+            if onAttachContext != nil {
+                menu.addItem(ClosureMenuItem(L10n.tr("加入 Agent 上下文"), symbol: "text.badge.plus") { [weak self] in self?.onAttachContext?(context) })
+            }
+            if onProofread != nil {
+                let item = ClosureMenuItem(L10n.tr("校对选中文字"), symbol: "text.badge.checkmark") { [weak self] in self?.onProofread?(context) }
+                item.toolTip = L10n.tr("由当前 Agent 校对，在对话中查看修订和说明")
+                menu.addItem(item)
+            }
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+        }
+        if onRevealInPDF != nil {
+            menu.addItem(ClosureMenuItem(L10n.tr("在 PDF 中定位"), symbol: "scope") { [weak self] in self?.onRevealInPDF?() })
+            menu.addItem(.separator())
+        }
+        if isEditable, onInsertSnippet != nil {
+            let insert = NSMenu(title: L10n.tr("插入"))
+            for snippet in Snippet.allCases {
+                insert.addItem(ClosureMenuItem(snippet == .image ? L10n.tr("图片…") : snippet.title, symbol: snippet.symbol) { [weak self] in self?.onInsertSnippet?(snippet) })
+                if snippet == .image || snippet == .section { insert.addItem(.separator()) }
+            }
+            let item = NSMenuItem(title: L10n.tr("插入"), action: nil, keyEquivalent: ""); item.submenu = insert
+            menu.addItem(item); menu.addItem(.separator())
+        }
+        func edit(_ title: String, _ action: Selector, _ key: String, enabled: Bool) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = self; item.isEnabled = enabled; menu.addItem(item)
+        }
+        let selected = selectedRange().length > 0
+        edit(L10n.tr("剪切"), #selector(cut(_:)), "x", enabled: isEditable && selected)
+        edit(L10n.tr("复制"), #selector(copy(_:)), "c", enabled: selected)
+        let canPaste = NSPasteboard.general.availableType(from: [.string, .fileURL, .png, .tiff]) != nil
+        edit(L10n.tr("粘贴"), #selector(paste(_:)), "v", enabled: isEditable && canPaste)
+        edit(L10n.tr("全选"), #selector(selectAll(_:)), "a", enabled: !string.isEmpty)
+        return menu
+    }
+    // MARK: Grammar
+    /// Problems from the last grammar check, kept in place while typing until the next one arrives.
+    var grammarIssues: [GrammarIssue] = [] { didSet { needsDisplay = true } }
+    enum GrammarAction { case replace(String), ignore, learn }
+    var grammarSuggestions: ((GrammarIssue) -> [String])?
+    var onGrammarAction: ((GrammarIssue, GrammarAction) -> Void)?
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        guard super.shouldChangeText(in: affectedCharRange, replacementString: replacementString) else { return false }
+        if !grammarIssues.isEmpty { grammarIssues = GrammarIssue.shift(grammarIssues, editing: affectedCharRange, replacementLength: (replacementString as NSString?)?.length ?? 0) }
+        return true
+    }
+    private func addGrammarItems(to menu: NSMenu, at position: Int) {
+        guard let issue = grammarIssues.first(where: { NSLocationInRange(position, $0.range) || NSMaxRange($0.range) == position }) else { return }
+        let header = NSMenuItem(title: issue.message, action: nil, keyEquivalent: ""); header.isEnabled = false
+        header.image = Theme.symbol(issue.isSpelling ? "textformat.abc.dottedunderline" : "text.badge.checkmark", size: 12)
+        menu.addItem(header)
+        for suggestion in (grammarSuggestions?(issue) ?? []).prefix(6) {
+            menu.addItem(ClosureMenuItem(suggestion.isEmpty ? L10n.tr("删除") : suggestion, symbol: "arrow.right") { [weak self] in self?.onGrammarAction?(issue, .replace(suggestion)) })
+        }
+        menu.addItem(ClosureMenuItem(L10n.tr("忽略此处"), symbol: "eye.slash") { [weak self] in self?.onGrammarAction?(issue, .ignore) })
+        if issue.isSpelling { menu.addItem(ClosureMenuItem(L10n.tr("加入词典"), symbol: "book") { [weak self] in self?.onGrammarAction?(issue, .learn) }) }
+        menu.addItem(.separator())
+    }
+    private func drawGrammarIssues(in dirty: NSRect) {
+        guard let layoutManager, let textContainer, !grammarIssues.isEmpty else { return }
+        let length = (string as NSString).length, origin = textContainerOrigin
+        let visible = layoutManager.characterRange(forGlyphRange: layoutManager.glyphRange(forBoundingRect: dirty.offsetBy(dx: -origin.x, dy: -origin.y), in: textContainer), actualGlyphRange: nil)
+        for issue in grammarIssues where NSMaxRange(issue.range) <= length && NSIntersectionRange(issue.range, visible).length > 0 {
+            (issue.isSpelling ? Theme.red : Theme.accent).withAlphaComponent(0.85).setStroke()
+            let glyphs = layoutManager.glyphRange(forCharacterRange: issue.range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: textContainer) { rect, _ in
+                let line = rect.offsetBy(dx: origin.x, dy: origin.y)
+                // A gentle wave just under the baseline area of the line fragment.
+                let path = NSBezierPath(); path.lineWidth = 1.1
+                let y = line.maxY - 2, step: CGFloat = 2
+                var x = line.minX; path.move(to: NSPoint(x: x, y: y)); var up = true
+                while x < line.maxX { x = min(x + step, line.maxX); path.line(to: NSPoint(x: x, y: up ? y - 1.5 : y)); up.toggle() }
+                path.stroke()
+            }
+        }
+    }
     private func imageURLs(on pasteboard: NSPasteboard) -> [URL] {
         ((pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []).filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) }
     }
@@ -133,7 +230,10 @@ final class CodeTextView: NSTextView {
     }
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
+        drawEntryBands(in: rect)
+        drawStructure(in: rect)
         if let line = currentLineRect { Theme.accent.withAlphaComponent(0.10).setFill(); line.fill(using: .sourceOver) }
+        drawSyncMark()
         guard let layoutManager, let textContainer, !commentRanges.isEmpty else { return }
         let length = (string as NSString).length, origin = textContainerOrigin
         NSColor.systemYellow.withAlphaComponent(0.28).setFill()
@@ -144,6 +244,134 @@ final class CodeTextView: NSTextView {
             }
         }
     }
+    /// Header lines of .bib entries: a tinted full-width band plus a stripe in the entry type's colour.
+    var entryBands: [(range: NSRange, color: NSColor)] = [] { didSet { needsDisplay = true } }
+    private func drawEntryBands(in dirty: NSRect) {
+        guard let layoutManager, let textContainer, !entryBands.isEmpty else { return }
+        let length = (string as NSString).length
+        for band in entryBands where NSMaxRange(band.range) <= length {
+            let glyphs = layoutManager.glyphRange(forCharacterRange: band.range, actualCharacterRange: nil)
+            let line = layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer)
+            let rect = NSRect(x: 0, y: line.minY + textContainerInset.height, width: bounds.width, height: line.height)
+            guard rect.intersects(dirty) else { continue }
+            band.color.withAlphaComponent(0.09).setFill(); rect.fill(using: .sourceOver)
+            band.color.withAlphaComponent(0.85).setFill(); NSRect(x: 0, y: rect.minY, width: 3, height: rect.height).fill(using: .sourceOver)
+        }
+    }
+    // MARK: Document structure
+    /// Sections and floats of the open .tex file; drives the rules, tints, badges and gutter scope bars.
+    var structure = TexStructure() {
+        didSet {
+            guard structure != oldValue else { return }
+            headingStarts = Dictionary(structure.headings.map { ($0.line.location, $0.kind) }, uniquingKeysWith: { a, _ in a })
+            needsDisplay = true; enclosingScrollView?.verticalRulerView?.needsDisplay = true
+        }
+    }
+    /// Line start → heading kind, so the ruler can tint heading line numbers cheaply.
+    private(set) var headingStarts: [Int: TexStructure.HeadingKind] = [:]
+    /// The full-width rect of the lines covering `range`, in view coordinates.
+    func lineBand(_ range: NSRange) -> NSRect? {
+        guard let layoutManager, let textContainer else { return nil }
+        let length = (string as NSString).length
+        var range = NSIntersectionRange(range, NSRange(location: 0, length: length))
+        // Drop the trailing line break so the band stops at the last line, not the one after it.
+        if range.length > 1, (string as NSString).character(at: NSMaxRange(range) - 1) == 10 { range.length -= 1 }
+        guard range.length > 0 else { return nil }
+        let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        guard glyphs.length > 0 else { return nil }
+        let first = layoutManager.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+        let last = layoutManager.lineFragmentRect(forGlyphAt: NSMaxRange(glyphs) - 1, effectiveRange: nil)
+        let top = first.minY + textContainerInset.height
+        return NSRect(x: 0, y: top, width: bounds.width, height: last.maxY + textContainerInset.height - top)
+    }
+    private func drawStructure(in dirty: NSRect) {
+        guard !structure.headings.isEmpty || !structure.blocks.isEmpty else { return }
+        let visible = visibleRect
+        for block in structure.blocks {
+            guard let band = lineBand(block.range), band.intersects(dirty) else { continue }
+            let color = Theme.structure(block.kind)
+            color.withAlphaComponent(0.045).setFill(); band.fill(using: .sourceOver)
+            color.withAlphaComponent(0.55).setFill(); NSRect(x: 0, y: band.minY, width: 2, height: band.height).fill(using: .sourceOver)
+            if let header = lineBand(block.header) {
+                let name: String
+                switch block.kind { case .figure: name = "Figure"; case .table: name = "Table"; case .algorithm: name = "Algorithm" }
+                drawBadge("\(name) \(block.number)", color: color, line: header, visible: visible)
+            }
+        }
+        for heading in structure.headings {
+            guard let band = lineBand(heading.line), band.insetBy(dx: 0, dy: -3).intersects(dirty) else { continue }
+            let color = Theme.structure(heading.kind)
+            switch heading.kind {
+            case .part, .chapter, .section:
+                let major = heading.kind != .section
+                color.withAlphaComponent(major ? 0.12 : 0.085).setFill(); band.fill(using: .sourceOver)
+                color.setFill(); NSRect(x: 0, y: band.minY, width: 3, height: band.height).fill(using: .sourceOver)
+                // A rule above the heading splits the source into chapters/sections at a glance.
+                color.withAlphaComponent(major ? 0.7 : 0.45).setFill()
+                NSRect(x: 0, y: band.minY - (major ? 1 : 0.5), width: bounds.width, height: major ? 2 : 1).fill(using: .sourceOver)
+            case .subsection:
+                color.withAlphaComponent(0.06).setFill(); band.fill(using: .sourceOver)
+                color.withAlphaComponent(0.8).setFill(); NSRect(x: 0, y: band.minY, width: 2, height: band.height).fill(using: .sourceOver)
+                let rule = NSBezierPath(); rule.move(to: NSPoint(x: 0, y: band.minY)); rule.line(to: NSPoint(x: bounds.width, y: band.minY))
+                rule.lineWidth = 1; rule.setLineDash([4, 3], count: 2, phase: 0)
+                color.withAlphaComponent(0.35).setStroke(); rule.stroke()
+            case .subsubsection, .paragraph:
+                color.withAlphaComponent(0.6).setFill(); NSRect(x: 0, y: band.minY, width: 2, height: band.height).fill(using: .sourceOver)
+            }
+            // "§ 2.1 Related Work": the number alone says little, so name the section too.
+            var title = heading.title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            if title.count > 40 { title = title.prefix(39).trimmingCharacters(in: .whitespaces) + "…" }
+            let label = [heading.number.isEmpty ? "" : "§ \(heading.number)", title].filter { !$0.isEmpty }.joined(separator: " ")
+            if !label.isEmpty { drawBadge(label, color: color, line: band, visible: visible) }
+        }
+    }
+    /// A small pill at the right edge of the visible text, naming what the line starts.
+    private func drawBadge(_ text: String, color: NSColor, line: NSRect, visible: NSRect) {
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: color]
+        let size = (text as NSString).size(withAttributes: attributes)
+        let pill = NSRect(x: visible.maxX - size.width - 18, y: line.minY + (min(line.height, 22) - size.height - 2) / 2, width: size.width + 10, height: size.height + 2)
+        Theme.canvas.withAlphaComponent(0.85).setFill(); NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
+        color.withAlphaComponent(0.14).setFill(); NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
+        (text as NSString).draw(at: NSPoint(x: pill.minX + 5, y: pill.minY + 1), withAttributes: attributes)
+    }
+    // MARK: Jump marks
+    /// The sentence and word a PDF → source jump landed on, drawn like the PDF side's marks.
+    private var syncMark: (sentence: NSRange, word: NSRange?)?
+    private var syncFade: CGFloat = 1
+    private var syncToken = 0
+    func flashSync(sentence: NSRange, word: NSRange?, hold: Double = 2.2) {
+        syncToken += 1; let token = syncToken
+        syncMark = (sentence, word); syncFade = 1; needsDisplay = true
+        let steps = 12
+        for step in 1...steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + hold + Double(step) * 0.03) { [weak self] in
+                guard let self, self.syncToken == token else { return }
+                let fade = 1 - CGFloat(step) / CGFloat(steps)
+                self.syncFade = fade * fade
+                if step == steps { self.syncMark = nil }
+                self.needsDisplay = true
+            }
+        }
+    }
+    private func drawSyncMark() {
+        guard let mark = syncMark, let layoutManager, let textContainer else { return }
+        let length = (string as NSString).length, origin = textContainerOrigin
+        func fill(_ range: NSRange, alpha: CGFloat, inset: NSSize) {
+            let range = NSIntersectionRange(range, NSRange(location: 0, length: length))
+            guard range.length > 0 else { return }
+            Theme.syncTint.withAlphaComponent(alpha * syncFade).setFill()
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: textContainer) { rect, _ in
+                let box = rect.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: inset.width, dy: inset.height)
+                guard box.width > 0 else { return }
+                let radius = min(box.height * 0.3, 4)
+                NSBezierPath(roundedRect: box, xRadius: radius, yRadius: radius).fill()
+            }
+        }
+        fill(mark.sentence, alpha: Theme.syncSentenceAlpha, inset: NSSize(width: -2, height: 0.5))
+        if let word = mark.word { fill(word, alpha: Theme.syncWordAlpha, inset: NSSize(width: -1.5, height: 1)) }
+    }
+
     // MARK: Collaboration overlays
     struct RemoteCursor { let offset: Int; let color: NSColor; let name: String }
     /// Carets of collaborators editing this document.
@@ -165,6 +393,7 @@ final class CodeTextView: NSTextView {
     }
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        drawGrammarIssues(in: dirtyRect)
         for cursor in remoteCursors {
             guard let caret = caretRect(at: cursor.offset), caret.intersects(visibleRect.insetBy(dx: 0, dy: -40)) else { continue }
             cursor.color.setFill(); NSRect(x: caret.minX - 1, y: caret.minY, width: 2, height: caret.height).fill()
@@ -197,17 +426,116 @@ final class LineRuler: NSRulerView {
     var problems: [Int: NSColor] = [:] { didSet { needsDisplay = true } }
     private var kinds: [Int: LineChange.Kind] = [:]
     private var deletions = Set<Int>()
+    /// Word-level detail of a hunk against the last commit, shown when the change strip is hovered.
+    var changeDetail: ((LineChange.Hunk) -> [WordDiff.Segment]?)?
+    private var hovered: LineChange? { didSet { if oldValue != hovered { needsDisplay = true } } }
+    private let popover = NSPopover()
+    private var showJob: DispatchWorkItem?
+    private var watchTimer: Timer?
+    private var misses = 0
+    /// The change strip (and deletion wedge) plus a little slack, measured from the right edge.
+    private static let hoverWidth: CGFloat = 14
     init(scroll: NSScrollView, text: CodeTextView) {
         self.text = text; super.init(scrollView: scroll, orientation: .verticalRuler)
         clientView = text; ruleThickness = 50
+        popover.behavior = .applicationDefined; popover.animates = false
     }
     required init(coder: NSCoder) { fatalError() }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas(); trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+    override func mouseMoved(with event: NSEvent) { hover(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseEntered(with event: NSEvent) { hover(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseExited(with event: NSEvent) { if !popover.isShown { showJob?.cancel(); hovered = nil } }
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(NSRect(x: bounds.width - Self.hoverWidth, y: 0, width: Self.hoverWidth, height: bounds.height), cursor: .pointingHand)
+    }
+    /// Closes the change popover, e.g. when the editor scrolls under it.
+    func dismissChange() { showJob?.cancel(); watchTimer?.invalidate(); watchTimer = nil; if popover.isShown { popover.close() }; hovered = nil }
+
+    private func hover(at point: NSPoint) {
+        guard point.x >= bounds.width - Self.hoverWidth, let (change, rect) = change(at: point) else {
+            showJob?.cancel(); if !popover.isShown { hovered = nil }; return
+        }
+        guard change.hunk != hovered?.hunk || !popover.isShown else { return }
+        hovered = change; showJob?.cancel()
+        let job = DispatchWorkItem { [weak self] in self?.show(change, at: rect) }
+        showJob = job
+        // Open at once when moving between hunks; otherwise wait a beat so passing over does nothing.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (popover.isShown ? 0 : 0.25), execute: job)
+    }
+
+    /// The change under `point` and the rect of its hovered line, in ruler coordinates.
+    private func change(at point: NSPoint) -> (LineChange, NSRect)? {
+        guard let text, let layout = text.layoutManager, let container = text.textContainer, layout.numberOfGlyphs > 0 else { return nil }
+        let visible = text.visibleRect, inset = text.textContainerInset.height
+        let glyph = layout.glyphIndex(for: NSPoint(x: 0, y: point.y + visible.minY - inset), in: container)
+        let fragment = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let char = layout.characterIndexForGlyph(at: glyph)
+        let line = lineNumber(at: char)
+        let rect = NSRect(x: bounds.width - 9, y: fragment.minY + inset - visible.minY, width: 6, height: fragment.height)
+        if let found = changes.first(where: { $0.kind != .deleted && $0.lines.contains(line) }) { return (found, rect) }
+        // A deletion's wedge straddles the top of the line the removed text preceded.
+        let offset = point.y - rect.minY
+        let target = offset < 6 ? line : offset > rect.height - 6 ? line + 1 : nil
+        if let target, let found = changes.first(where: { $0.kind == .deleted && $0.lines.lowerBound == target }) { return (found, rect) }
+        return nil
+    }
+    private var lineCache: (start: Int, line: Int)?
+    private func lineNumber(at char: Int) -> Int {
+        guard let text else { return 1 }
+        let string = text.string as NSString
+        let start = string.lineRange(for: NSRange(location: min(char, string.length), length: 0)).location
+        if let lineCache, lineCache.start == start { return lineCache.line }
+        var count = 1
+        string.enumerateSubstrings(in: NSRange(location: 0, length: start), options: [.byLines, .substringNotRequired]) { _, _, _, _ in count += 1 }
+        lineCache = (start, count); return count
+    }
+
+    private func lines(of change: LineChange) -> String {
+        guard let hunk = change.hunk else { return "" }
+        if hunk.newCount == 0 { return L10n.tr("第 \(change.lines.lowerBound) 行前的删除") }
+        let last = hunk.newStart + hunk.newCount - 1
+        return last == hunk.newStart ? L10n.tr("第 \(last) 行") : L10n.tr("第 \(hunk.newStart)–\(last) 行")
+    }
+    private func show(_ change: LineChange, at rect: NSRect) {
+        guard let hunk = change.hunk, let segments = changeDetail?(hunk), window != nil else { return }
+        // As wide as the editor allows, so a paragraph wraps into a few readable lines.
+        let room = (enclosingScrollView?.contentView.bounds.width ?? 600) - 60
+        let content = ChangeDetailView(segments: segments, lines: lines(of: change), hint: L10n.tr("点击竖条放大"),
+                                       width: min(760, max(420, room)), maxHeight: 460, fontSize: 13)
+        let controller = NSViewController(); controller.view = content
+        popover.contentViewController = controller; popover.contentSize = content.preferredSize
+        if popover.isShown { popover.positioningRect = rect } else { popover.show(relativeTo: rect, of: self, preferredEdge: .maxX) }
+        misses = 0; watchTimer?.invalidate()
+        watchTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in self?.watchPointer() }
+    }
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard point.x >= bounds.width - Self.hoverWidth, let (change, _) = change(at: point), let hunk = change.hunk,
+              let segments = changeDetail?(hunk) else { super.mouseDown(with: event); return }
+        dismissChange()
+        ChangeDetailWindow.shared.show(segments: segments, lines: lines(of: change), near: window)
+    }
+    /// Keeps the popover while the pointer is on the strip or inside the popover, so its text
+    /// can be read and selected; closes it a moment after the pointer leaves both.
+    private func watchPointer() {
+        guard let window, popover.isShown else { dismissChange(); return }
+        let mouse = NSEvent.mouseLocation
+        let strip = window.convertToScreen(convert(NSRect(x: bounds.width - Self.hoverWidth, y: 0, width: Self.hoverWidth, height: bounds.height), to: nil))
+        let inside = (popover.contentViewController?.view.window?.frame.insetBy(dx: -6, dy: -6).contains(mouse) ?? false) || strip.contains(mouse)
+        misses = inside ? 0 : misses + 1
+        if misses >= 3 { dismissChange() }
+    }
     override func drawHashMarksAndLabels(in rect: NSRect) {
         Theme.canvas.setFill(); bounds.fill()
         guard let text, let layout = text.layoutManager, let container = text.textContainer, layout.numberOfGlyphs > 0 else { return }
         let visible = text.visibleRect
         let current = text.currentLineRect
         if let current { Theme.accent.withAlphaComponent(0.10).setFill(); NSRect(x: 0, y: current.minY - visible.minY, width: bounds.width, height: current.height).fill(using: .sourceOver) }
+        drawScopes(of: text, visible: visible)
         let glyphs = layout.glyphRange(forBoundingRect: visible, in: container)
         let string = text.string as NSString
         let firstChar = min(layout.characterIndexForGlyph(at: min(glyphs.location, max(0, layout.numberOfGlyphs - 1))), string.length)
@@ -220,7 +548,8 @@ final class LineRuler: NSRulerView {
             let top = lineRect.minY + text.textContainerInset.height - visible.minY
             if let kind = kinds[line], kind != .deleted {
                 (kind == .added ? Theme.green : Theme.accent).setFill()
-                NSRect(x: ruleThickness - 7, y: top, width: 3, height: lineRect.height).fill()
+                let lit = hovered.map { $0.kind != .deleted && $0.hunk != nil && Self.covers($0.hunk!, line) } ?? false
+                NSRect(x: ruleThickness - (lit ? 8 : 7), y: top, width: lit ? 5 : 3, height: lineRect.height).fill()
             }
             if char == 0 || string.character(at: char - 1) == 10 {
                 if deletions.contains(line) {
@@ -231,7 +560,8 @@ final class LineRuler: NSRulerView {
                 let y = lineRect.minY + text.textContainerInset.height
                 let active = current.map { y >= $0.minY - 0.5 && y < $0.maxY - 0.5 } ?? false
                 let label = "\(line)" as NSString
-                let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .regular), .foregroundColor: problems[line] ?? (active ? Theme.text : Theme.lineNumber)]
+                let heading = text.headingStarts[char].map(Theme.structure)
+                let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: heading == nil ? .regular : .semibold), .foregroundColor: problems[line] ?? heading ?? (active ? Theme.text : Theme.lineNumber)]
                 let size = label.size(withAttributes: attrs)
                 label.draw(at: NSPoint(x: ruleThickness - size.width - 16, y: y - visible.minY + (lineRect.height - size.height) / 2 - 2), withAttributes: attrs)
             }
@@ -240,6 +570,223 @@ final class LineRuler: NSRulerView {
             guard NSMaxRange(effective) > glyph else { break }; glyph = NSMaxRange(effective)
         }
     }
+}
+
+extension LineRuler {
+    /// Bars down the gutter's left edge spanning the section, subsection … and float that hold the caret,
+    /// one lane per level in that level's colour, so the extent of "where am I" is visible while scrolling.
+    func drawScopes(of text: CodeTextView, visible: NSRect) {
+        let caret = text.selectedRange().location
+        var lanes: [(NSRange, NSColor)] = text.structure.path(at: caret).suffix(3).map { ($0.scope, Theme.structure($0.kind)) }
+        if let block = text.structure.block(at: caret) { lanes.append((block.range, Theme.structure(block.kind))) }
+        for (index, lane) in lanes.enumerated() {
+            guard let band = text.lineBand(lane.0) else { continue }
+            let rect = NSRect(x: 2 + CGFloat(index) * 4, y: band.minY - visible.minY, width: 2.5, height: band.height)
+            guard rect.intersects(bounds) else { continue }
+            lane.1.withAlphaComponent(0.8).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 1.25, yRadius: 1.25).fill()
+        }
+    }
+    static func covers(_ hunk: LineChange.Hunk, _ line: Int) -> Bool { line >= hunk.newStart && line < hunk.newStart + hunk.newCount }
+}
+
+/// The body of the change popover and of the change window: a header naming the agents involved,
+/// the lines and the word counts, over a word-level diff of the hunk.
+final class ChangeDetailView: NSView {
+    /// The size that shows everything up to `maxHeight`, for sizing a popover.
+    private(set) var preferredSize = NSSize.zero
+    private let scroll = NSScrollView()
+    private var body: NSTextView!
+    init(segments: [WordDiff.Segment], lines: String, hint: String?, width: CGFloat, maxHeight: CGFloat, fontSize: CGFloat) {
+        super.init(frame: .zero)
+        let authors = AgentProvider.allCases.filter { provider in segments.contains { $0.author == provider } }
+        let added = ChangeDetailView.words(segments, .inserted), removed = ChangeDetailView.words(segments, .deleted)
+
+        let header = NSStackView(); header.spacing = 6; header.alignment = .centerY
+        for author in authors {
+            let logo = NSImageView(); logo.image = AgentLogo.image(for: author.rawValue, side: 18) ?? Theme.symbol("sparkles", size: 13)
+            logo.toolTip = L10n.tr("由 \(author.rawValue) 修改"); header.addArrangedSubview(logo)
+        }
+        let title = authors.isEmpty ? L10n.tr("相对上次提交的更改") : L10n.tr("\(authors.map(\.rawValue).joined(separator: " · ")) 的修改")
+        let titleLabel = Theme.label(title, size: 13, color: Theme.text, weight: .semibold)
+        let detail = Theme.label(([lines] + (hint.map { [$0] } ?? [])).joined(separator: " · "), size: 11.5, color: Theme.muted)
+        for label in [titleLabel, detail] { label.lineBreakMode = .byTruncatingTail; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        header.addArrangedSubview(titleLabel); header.addArrangedSubview(detail)
+        let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal); header.addArrangedSubview(spacer)
+        let stats = NSMutableAttributedString()
+        let statFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        if added > 0 { stats.append(NSAttributedString(string: "+\(added)", attributes: [.font: statFont, .foregroundColor: Theme.green])) }
+        if removed > 0 { stats.append(NSAttributedString(string: (added > 0 ? "  " : "") + "\u{2212}\(removed)", attributes: [.font: statFont, .foregroundColor: Theme.red])) }
+        let statLabel = NSTextField(labelWithAttributedString: stats); statLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        header.addArrangedSubview(statLabel)
+        header.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
+
+        let divider = NSBox(); divider.boxType = .separator
+
+        // The text view wraps at the scroll view's width, so it reflows when a window is resized.
+        scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true; scroll.scrollerStyle = .overlay; scroll.horizontalScrollElasticity = .none
+        let body = NSTextView(frame: NSRect(x: 0, y: 0, width: width, height: 10)); self.body = body
+        body.isEditable = false; body.isSelectable = true; body.drawsBackground = false
+        body.isVerticallyResizable = true; body.isHorizontallyResizable = false; body.autoresizingMask = []
+        body.minSize = NSSize(width: 0, height: 0); body.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        body.textContainerInset = NSSize(width: 14, height: 12)
+        body.textContainer?.lineFragmentPadding = 0; body.textContainer?.widthTracksTextView = true
+        body.textContainer?.containerSize = NSSize(width: width - 28, height: .greatestFiniteMagnitude)
+        body.textStorage?.setAttributedString(ChangeDetailView.render(segments, fontSize: fontSize))
+        body.layoutManager?.ensureLayout(for: body.textContainer!)
+        let textHeight = ceil(body.layoutManager?.usedRect(for: body.textContainer!).height ?? 0) + 24
+        body.frame.size.height = textHeight
+        scroll.documentView = body
+
+        for view in [header, divider, scroll] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        let headerHeight: CGFloat = 40
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: topAnchor), header.leadingAnchor.constraint(equalTo: leadingAnchor), header.trailingAnchor.constraint(equalTo: trailingAnchor), header.heightAnchor.constraint(equalToConstant: headerHeight),
+            divider.topAnchor.constraint(equalTo: header.bottomAnchor), divider.leadingAnchor.constraint(equalTo: leadingAnchor), divider.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: divider.bottomAnchor), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+        preferredSize = NSSize(width: width, height: headerHeight + 1 + min(textHeight, maxHeight))
+        frame.size = preferredSize
+        wantsLayer = true
+        setAccessibilityLabel(title)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    // An opaque card: the popover's translucent material let the editor's text show through.
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = Theme.canvas.cgColor }
+    /// The text always spans exactly the visible width and never scrolls sideways, however the
+    /// popover or window resizes the view on the way in.
+    override func layout() {
+        super.layout()
+        let width = scroll.contentSize.width
+        guard width > 0, let body, let container = body.textContainer, let layout = body.layoutManager else { return }
+        if abs(body.frame.width - width) > 0.5 {
+            container.containerSize = NSSize(width: width - body.textContainerInset.width * 2, height: .greatestFiniteMagnitude)
+            layout.ensureLayout(for: container)
+            let height = max(scroll.contentSize.height, ceil(layout.usedRect(for: container).height) + body.textContainerInset.height * 2)
+            body.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        }
+        let clip = scroll.contentView
+        if clip.bounds.origin.x != 0 { clip.scroll(to: NSPoint(x: 0, y: clip.bounds.origin.y)); scroll.reflectScrolledClipView(clip) }
+    }
+
+    static func words(_ segments: [WordDiff.Segment], _ kind: WordDiff.Kind) -> Int {
+        segments.filter { $0.kind == kind }.reduce(0) { $0 + WordDiff.tokenCount($1.text) }
+    }
+
+    /// Light edits read best inline. A block that was mostly rewritten turns into confetti that
+    /// way, so it is shown as the committed text over the current text, each with its changes marked.
+    static func render(_ segments: [WordDiff.Segment], fontSize: CGFloat) -> NSAttributedString {
+        let kept = words(segments, .equal), changed = words(segments, .inserted) + words(segments, .deleted)
+        let rewritten = segments.contains { $0.kind == .deleted } && segments.contains { $0.kind == .inserted } && changed > 12 && changed > kept
+        // The header already names a sole author; inline logos only help tell mixed authors apart.
+        let mixed = Set(segments.filter { $0.kind != .equal }.map { $0.author?.rawValue ?? "" }).count > 1
+        return rewritten ? renderBlocks(segments, fontSize: fontSize, logos: mixed) : renderInline(segments, fontSize: fontSize, logos: mixed)
+    }
+
+    private static func base(_ fontSize: CGFloat) -> [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 4
+        return [.font: Theme.editorFont().withSize(fontSize), .paragraphStyle: paragraph, .foregroundColor: Theme.text]
+    }
+    private static func logo(_ author: AgentProvider, fontSize: CGFloat) -> NSAttributedString? {
+        guard let image = AgentLogo.image(for: author.rawValue, side: fontSize + 1) else { return nil }
+        let attachment = NSTextAttachment(); attachment.image = image
+        attachment.bounds = NSRect(x: 0, y: -3, width: fontSize + 1, height: fontSize + 1)
+        let mark = NSMutableAttributedString(attachment: attachment)
+        mark.append(NSAttributedString(string: "\u{2009}", attributes: base(fontSize)))
+        mark.addAttribute(.toolTip, value: L10n.tr("由 \(author.rawValue) 修改"), range: NSRange(location: 0, length: mark.length))
+        return mark
+    }
+    private static func style(_ kind: WordDiff.Kind, strong: Bool, fontSize: CGFloat) -> [NSAttributedString.Key: Any] {
+        var attributes = base(fontSize)
+        switch kind {
+        case .equal: break
+        case .inserted:
+            attributes[.backgroundColor] = Theme.green.withAlphaComponent(strong ? 0.30 : 0.22)
+        case .deleted:
+            attributes[.foregroundColor] = Theme.red
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            attributes[.strikethroughColor] = Theme.red.withAlphaComponent(0.7)
+            attributes[.backgroundColor] = Theme.red.withAlphaComponent(strong ? 0.18 : 0.10)
+        }
+        return attributes
+    }
+
+    static func renderInline(_ segments: [WordDiff.Segment], fontSize: CGFloat, logos: Bool) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        var lastAuthor: AgentProvider?
+        for (index, segment) in segments.enumerated() {
+            var text = segment.text
+            if index > 0, segment.spaceBefore { result.append(NSAttributedString(string: " ", attributes: base(fontSize))) }
+            if segment.kind == .equal {
+                // Long unchanged stretches are cut to their ends so the eye lands on the edits.
+                let keep = 80, first = index == 0, last = index == segments.count - 1
+                if text.count > keep * 2 + 10 || ((first || last) && text.count > keep + 10) {
+                    let head = first ? "" : String(text.prefix(keep)), tail = last ? "" : String(text.suffix(keep))
+                    text = head + (first ? "" : " ") + "\u{2026}" + (last ? "" : " ") + tail
+                }
+                var attributes = base(fontSize); attributes[.foregroundColor] = Theme.muted
+                result.append(NSAttributedString(string: text, attributes: attributes)); lastAuthor = nil
+                continue
+            }
+            if logos, let author = segment.author, author != lastAuthor, let mark = logo(author, fontSize: fontSize) { result.append(mark) }
+            lastAuthor = segment.author
+            var attributes = style(segment.kind, strong: false, fontSize: fontSize)
+            if let author = segment.author { attributes[.toolTip] = L10n.tr("由 \(author.rawValue) 修改") }
+            result.append(NSAttributedString(string: text, attributes: attributes))
+        }
+        return result
+    }
+
+    static func renderBlocks(_ segments: [WordDiff.Segment], fontSize: CGFloat, logos: Bool) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        func caption(_ text: String, _ color: NSColor) {
+            let paragraph = NSMutableParagraphStyle(); paragraph.paragraphSpacingBefore = result.length == 0 ? 0 : 14; paragraph.paragraphSpacing = 6
+            result.append(NSAttributedString(string: text + "\n", attributes: [.font: NSFont.systemFont(ofSize: fontSize - 1.5, weight: .semibold), .foregroundColor: color, .paragraphStyle: paragraph]))
+        }
+        func block(_ kind: WordDiff.Kind) {
+            var lastAuthor: AgentProvider?, first = true
+            for segment in segments where segment.kind == .equal || segment.kind == kind {
+                if !first, segment.spaceBefore { result.append(NSAttributedString(string: " ", attributes: base(fontSize))) }
+                first = false
+                if segment.kind == .equal { result.append(NSAttributedString(string: segment.text, attributes: base(fontSize))); lastAuthor = nil; continue }
+                if logos, let author = segment.author, author != lastAuthor, let mark = logo(author, fontSize: fontSize) { result.append(mark) }
+                lastAuthor = segment.author
+                var attributes = style(kind, strong: true, fontSize: fontSize)
+                if kind == .deleted { attributes[.strikethroughStyle] = nil }
+                if let author = segment.author { attributes[.toolTip] = L10n.tr("由 \(author.rawValue) 修改") }
+                result.append(NSAttributedString(string: segment.text, attributes: attributes))
+            }
+            result.append(NSAttributedString(string: "\n", attributes: base(fontSize)))
+        }
+        caption(L10n.tr("\u{2212} 上次提交"), Theme.red); block(.deleted)
+        caption(L10n.tr("+ 现在"), Theme.green); block(.inserted)
+        return result
+    }
+}
+
+/// A resizable window with the full diff of one hunk, opened by clicking the change strip.
+final class ChangeDetailWindow: NSPanel {
+    static let shared = ChangeDetailWindow()
+    private init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 760, height: 520), styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered, defer: true)
+        isFloatingPanel = true; hidesOnDeactivate = true; isReleasedWhenClosed = false; minSize = NSSize(width: 420, height: 240)
+        setFrameAutosaveName("BetterTeXChangeDetail")
+    }
+    func show(segments: [WordDiff.Segment], lines: String, near parent: NSWindow?) {
+        let opening = !isVisible
+        let width = max(minSize.width, opening ? 760 : frame.width)
+        let view = ChangeDetailView(segments: segments, lines: lines, hint: nil, width: width, maxHeight: 2000, fontSize: 14)
+        title = lines; contentView = view
+        if opening {
+            let size = NSSize(width: width, height: min(max(view.preferredSize.height, 240), (parent?.frame.height ?? 900) * 0.8))
+            setContentSize(size)
+            if let parent { setFrameOrigin(NSPoint(x: parent.frame.midX - frame.width / 2, y: parent.frame.midY - frame.height / 2)) }
+        }
+        makeKeyAndOrderFront(nil)
+    }
+    override func cancelOperation(_ sender: Any?) { close() }
 }
 
 /// A document tab: filled when active, with a file-type tile and a trailing control that
@@ -402,6 +949,10 @@ final class EditorPane: Surface, NSTextViewDelegate {
     private var highlighting: DispatchWorkItem?
     private var outlining: DispatchWorkItem?
     private var loading = false
+    /// The text changed since `textView.structure` was last scanned.
+    private var structureStale = true
+    /// The open file is a BibTeX database: bib highlighting and entry-type completion.
+    private(set) var isBib = false
     var onChange: ((String) -> Void)?
     var onSelection: ((Int, Int) -> Void)?
     var onSelectTab: ((URL) -> Void)?
@@ -409,6 +960,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
     var onOutline: (([OutlineItem]) -> Void)?
     var onInsertImage: (() -> Void)?
     private let insertBar = Surface()
+    /// Covers the editor while no file is open.
+    let emptyState = EditorEmptyState()
     private let overview = OverviewRuler()
     /// Supplies candidates for what is being typed; nil turns completion off.
     var completions: ((CompletionRequest) -> [CompletionItem])?
@@ -420,6 +973,30 @@ final class EditorPane: Surface, NSTextViewDelegate {
     private var gitChanges: [LineChange] = []
     private var problemLines: [(line: Int, error: Bool)] = []
     private var overviewJob: DispatchWorkItem?
+    /// Checks .tex files for English grammar and spelling.
+    var grammarEnabled = false {
+        didSet { guard grammarEnabled != oldValue else { return }; textView.grammarIssues = []; scheduleGrammar(after: 0) }
+    }
+    private var fileURL: URL?
+    private var grammarJob: DispatchWorkItem?
+    private static let grammarQueue = DispatchQueue(label: "BetterTeX.Grammar", qos: .utility)
+    private func scheduleGrammar(after delay: TimeInterval) {
+        grammarJob?.cancel()
+        guard grammarEnabled, let url = fileURL, url.pathExtension.lowercased() == "tex" else { return }
+        let job = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let text = self.textView.string
+            guard (text as NSString).length < 400_000 else { return }
+            Self.grammarQueue.async {
+                let issues = GrammarChecker.shared.check(text)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.grammarEnabled, self.fileURL == url, self.textView.string == text else { return }
+                    self.textView.grammarIssues = issues
+                }
+            }
+        }
+        grammarJob = job; DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: job)
+    }
     var lineColumn: (Int, Int) {
         let ns = textView.string as NSString; let position = min(textView.selectedRange().location, ns.length)
         let prefix = ns.substring(to: position)
@@ -449,6 +1026,25 @@ final class EditorPane: Surface, NSTextViewDelegate {
         scroll.translatesAutoresizingMaskIntoConstraints = false; addSubview(scroll)
         popup.onAccept = { [weak self] in self?.acceptCompletion($0) }
         textView.onResign = { [weak self] in self?.popup.dismiss() }
+        textView.onContextMenu = { [weak self] in self?.popup.dismiss() }
+        textView.onInsertSnippet = { [weak self] in self?.insert($0) }
+        textView.grammarSuggestions = { [weak self] issue in
+            guard let self else { return [] }
+            return GrammarChecker.shared.suggestions(for: issue, in: self.textView.string)
+        }
+        textView.onGrammarAction = { [weak self] issue, action in
+            guard let self else { return }
+            let text = self.textView.string as NSString
+            guard NSMaxRange(issue.range) <= text.length else { return }
+            let flagged = text.substring(with: issue.range).lowercased()
+            /// Drops every underline of this rule on the same text, e.g. all occurrences of a learned word.
+            func dropMatching() { self.textView.grammarIssues.removeAll { $0.rule == issue.rule && NSMaxRange($0.range) <= text.length && text.substring(with: $0.range).lowercased() == flagged } }
+            switch action {
+            case .replace(let replacement): self.textView.insertText(replacement, replacementRange: issue.range)
+            case .ignore: GrammarChecker.shared.ignore(issue, in: self.textView.string); dropMatching()
+            case .learn: GrammarChecker.shared.learn(text.substring(with: issue.range)); dropMatching()
+            }
+        }
         textView.onCompletionKey = { [weak self] event in
             guard let self, self.popup.isVisible else { return false }
             switch event.keyCode {
@@ -464,16 +1060,16 @@ final class EditorPane: Surface, NSTextViewDelegate {
         overview.onJump = { [weak self] fraction in
             guard let self else { return }
             let height = self.textView.bounds.height, visible = self.scroll.contentView.bounds.height
-            self.scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, min(height - visible, fraction * height - visible / 2)))); self.scroll.reflectScrolledClipView(self.scroll.contentView)
+            self.scrollEditor(toY: fraction * height - visible / 2)
         }
         scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.borderType = .noBorder
+        scroll.hasHorizontalScroller = false; scroll.horizontalScrollElasticity = .none
         scroll.drawsBackground = false
         textView.minSize = NSSize(width: 0, height: 0); textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true; textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]; textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainerInset = NSSize(width: 0, height: 12); textView.textContainer?.lineFragmentPadding = 2
-        textView.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
         textView.isRichText = false; textView.allowsUndo = true; textView.usesFindBar = true
         textView.isAutomaticQuoteSubstitutionEnabled = false; textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false; textView.isAutomaticSpellingCorrectionEnabled = false
@@ -481,9 +1077,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
         textView.isAutomaticTextCompletionEnabled = false
         if #available(macOS 15.0, *) { textView.writingToolsBehavior = .none }
         textView.delegate = self
-        let paragraph = NSMutableParagraphStyle(); paragraph.minimumLineHeight = 22; paragraph.maximumLineHeight = 22
-        textView.defaultParagraphStyle = paragraph; textView.typingAttributes[.paragraphStyle] = paragraph
-        textView.typingAttributes[.baselineOffset] = 3
+        applyFontPreferences()
+        NotificationCenter.default.addObserver(self, selector: #selector(appearancePreferencesChanged), name: AppearancePreferences.changed, object: nil)
         scroll.documentView = textView
         scroll.verticalRulerView = LineRuler(scroll: scroll, text: textView)
         scroll.hasVerticalRuler = true; scroll.rulersVisible = true
@@ -499,9 +1094,33 @@ final class EditorPane: Surface, NSTextViewDelegate {
         ])
         setBreadcrumb(file: "", section: nil)
         updateColors()
+        emptyState.isHidden = true; emptyState.translatesAutoresizingMaskIntoConstraints = false; addSubview(emptyState)
+        NSLayoutConstraint.activate([emptyState.topAnchor.constraint(equalTo: topAnchor), emptyState.leadingAnchor.constraint(equalTo: leadingAnchor), emptyState.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), emptyState.bottomAnchor.constraint(equalTo: bottomAnchor)])
     }
     required init?(coder: NSCoder) { fatalError() }
+    /// Shows the no-file state over the editor; loading a file hides it again.
+    func showEmpty(main: URL?, files: [URL], project: URL?) {
+        popup.dismiss(); emptyState.configure(main: main, files: files, project: project); emptyState.isHidden = false
+    }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateColors() }
+    private var baselineOffset: CGFloat = 3
+    /// Applies the saved editor font, size and matching fixed line height.
+    private func applyFontPreferences() {
+        let preferences = AppearancePreferences.saved()
+        textView.font = Theme.editorFont(preferences)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = CGFloat(preferences.lineHeight); paragraph.maximumLineHeight = CGFloat(preferences.lineHeight)
+        baselineOffset = CGFloat(preferences.baselineOffset)
+        textView.defaultParagraphStyle = paragraph
+        textView.typingAttributes[.paragraphStyle] = paragraph; textView.typingAttributes[.baselineOffset] = baselineOffset
+        textView.typingAttributes[.font] = textView.font
+    }
+    @objc private func appearancePreferencesChanged() {
+        Theme.scheme = AppearancePreferences.saved().colorScheme
+        applyFontPreferences(); applyParagraphStyle()
+        updateColors(); textView.needsDisplay = true
+        scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true
+    }
     func updateColors() {
         textView.backgroundColor = Theme.canvas; textView.textColor = Theme.code; textView.insertionPointColor = Theme.accent
         textView.selectedTextAttributes = [.backgroundColor: Theme.accent.withAlphaComponent(0.3)]
@@ -532,6 +1151,12 @@ final class EditorPane: Surface, NSTextViewDelegate {
         textView.setSelectedRange(NSRange(location: selection.location + (selection.location >= NSMaxRange(line) ? shift : 0), length: selection.length))
         return true
     }
+    /// "2 Method › 2.1 Data" for the headings around the caret, or nil before the first one.
+    var currentSectionPath: String? {
+        let path = textView.structure.path(at: textView.selectedRange().location).filter { $0.kind != .paragraph }
+        guard !path.isEmpty else { return nil }
+        return path.map { $0.number.isEmpty ? $0.title : "\($0.number) \($0.title)" }.joined(separator: "  ›  ")
+    }
     func setBreadcrumb(file: String? = nil, section: String?) {
         if let file { crumbFile.stringValue = file }
         crumbSection.stringValue = section ?? ""; crumbSection.isHidden = section == nil; crumbArrow.isHidden = section == nil
@@ -539,13 +1164,16 @@ final class EditorPane: Surface, NSTextViewDelegate {
     /// Applies the fixed line height to the whole buffer; plain-text edits inherit it.
     private func applyParagraphStyle() {
         guard let storage = textView.textStorage, let paragraph = textView.defaultParagraphStyle else { return }
-        storage.addAttributes([.paragraphStyle: paragraph, .baselineOffset: 3], range: NSRange(location: 0, length: storage.length))
+        storage.addAttributes([.paragraphStyle: paragraph, .baselineOffset: baselineOffset, .font: textView.font ?? Theme.editorFont()], range: NSRange(location: 0, length: storage.length))
     }
     func load(_ buffer: EditorBuffer, project: URL) {
-        popup.dismiss()
+        popup.dismiss(); emptyState.isHidden = true
+        isBib = buffer.url.pathExtension.lowercased() == "bib"; if !isBib { textView.entryBands = [] }
+        textView.structure = TexStructure(); structureStale = true
         loading = true; textView.string = buffer.text; applyParagraphStyle(); textView.undoManager?.removeAllActions()
         textView.setSelectedRange(NSRange(location: min(buffer.selection.location, (buffer.text as NSString).length), length: 0))
         setBreadcrumb(file: buffer.url.lastPathComponent, section: nil)
+        fileURL = buffer.url; textView.grammarIssues = []; scheduleGrammar(after: 0.2)
         loading = false; highlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview()
         onOutline?(OutlineItem.parse(buffer.text))
     }
@@ -553,7 +1181,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
     private func updateCompletion() {
         let selection = textView.selectedRange()
         guard !completionPaused, let completions, let window, window.firstResponder === textView, !textView.hasMarkedText(), selection.length == 0,
-              let request = CompletionRequest.detect(in: textView.string, cursor: selection.location) else { popup.dismiss(); return }
+              let request = isBib ? CompletionRequest.detect(inBib: textView.string, cursor: selection.location)
+                                  : CompletionRequest.detect(in: textView.string, cursor: selection.location) else { popup.dismiss(); return }
         let items = completions(request)
         guard !items.isEmpty else { popup.dismiss(); return }
         completionRequest = request; completionCursor = selection.location
@@ -569,6 +1198,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         completionPaused = false; completionCursor = edit.caret
         // A snippet that leaves the caret inside braces may have more to offer (\cite{ → keys).
         if item.environment != nil || request.kind == .command && item.caret != nil { updateCompletion() }
+        if request.kind == .bibEntry { scheduleHighlight() }
     }
 
     /// Replaces only the changed span so the caret, scroll position and undo history survive
@@ -579,7 +1209,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         let removed = ops.first { $0.kind == .delete }?.length ?? 0
         let inserted = ops.first { $0.kind == .insert }?.text ?? ""
         let selection = textView.selectedRange()
-        guard textView.isEditable else { loading = true; textView.string = text; loading = false; highlight(); onChange?(text); return }
+        guard textView.isEditable else { loading = true; textView.string = text; loading = false; textView.grammarIssues = []; structureStale = true; highlight(); onChange?(text); return }
         let origin = scroll.contentView.bounds.origin
         completionPaused = true; defer { completionPaused = false }
         textView.insertText(inserted, replacementRange: NSRange(location: first.position, length: removed))
@@ -588,6 +1218,10 @@ final class EditorPane: Surface, NSTextViewDelegate {
         textView.setSelectedRange(NSRange(location: start, length: max(0, end - start)))
     }
     /// Marks lines that differ from the last Git commit.
+    var changeDetail: ((LineChange.Hunk) -> [WordDiff.Segment]?)? {
+        get { (scroll.verticalRulerView as? LineRuler)?.changeDetail }
+        set { (scroll.verticalRulerView as? LineRuler)?.changeDetail = newValue }
+    }
     func setGitChanges(_ changes: [LineChange]) { (scroll.verticalRulerView as? LineRuler)?.changes = changes; gitChanges = changes; updateOverview() }
     /// Marks lines the last build complained about, in the gutter and in the overview.
     func setProblems(errors: Set<Int>, warnings: Set<Int>) {
@@ -614,7 +1248,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
     override func layout() { super.layout(); scheduleOverview() }
     func clear() {
         textView.remoteCursors = []; textView.commentRanges = []; setGitChanges([]); setProblems(errors: [], warnings: [])
-        loading = true; textView.string = ""; loading = false
+        loading = true; textView.string = ""; loading = false; textView.structure = TexStructure()
+        fileURL = nil; grammarJob?.cancel(); textView.grammarIssues = []
         setBreadcrumb(file: "", section: nil); onOutline?([])
     }
     func updateTabs(_ buffers: [EditorBuffer], active: URL?) {
@@ -627,7 +1262,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
     }
     func textDidChange(_ notification: Notification) {
         guard !loading else { return }
-        onChange?(textView.string); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview()
+        structureStale = true
+        onChange?(textView.string); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; scheduleOverview(); scheduleGrammar(after: 0.8)
         // Run after the caret has settled too: typing moves it before this call, other input paths after.
         completionPending = true
         DispatchQueue.main.async { [weak self] in self?.completionPending = false; self?.updateCompletion() }
@@ -639,7 +1275,20 @@ final class EditorPane: Surface, NSTextViewDelegate {
         // Moving the caret without typing closes the list; typing updates `completionCursor` first.
         if popup.isVisible { DispatchQueue.main.async { [weak self] in if let self, !self.completionPending, self.textView.selectedRange().location != self.completionCursor { self.popup.dismiss() } } }
     }
-    @objc func scrolled() { popup.dismiss(); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true }
+    /// The line-number ruler sits over the clip view, so the text's left edge is a negative x.
+    /// Scrolling to x = 0 would slide the text under the ruler; the clip view's own limits give the real edge.
+    private func leftEdgeOrigin(y: CGFloat) -> NSPoint {
+        let clip = scroll.contentView
+        return clip.constrainBoundsRect(NSRect(origin: NSPoint(x: -1_000_000, y: y), size: clip.bounds.size)).origin
+    }
+    private func scrollEditor(toY y: CGFloat) {
+        scroll.contentView.scroll(to: leftEdgeOrigin(y: y)); scroll.reflectScrolledClipView(scroll.contentView)
+    }
+    @objc func scrolled() {
+        // The editor wraps lines, so it never scrolls sideways (a trackpad swipe or a stray jump would cut off text).
+        let origin = scroll.contentView.bounds.origin, edge = leftEdgeOrigin(y: origin.y)
+        if abs(origin.x - edge.x) > 0.5 { scrollEditor(toY: origin.y); return }
+        popup.dismiss(); (scroll.verticalRulerView as? LineRuler)?.dismissChange(); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true }
     func scheduleHighlight() {
         highlighting?.cancel(); let job = DispatchWorkItem { [weak self] in self?.highlight() }; highlighting = job
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: job)
@@ -657,16 +1306,91 @@ final class EditorPane: Surface, NSTextViewDelegate {
         guard range.length < 100_000 else { return }
         // Temporary layout attributes do not affect undo history or saved document formatting.
         layout.addTemporaryAttribute(.foregroundColor, value: Theme.code, forCharacterRange: range)
+        layout.removeTemporaryAttribute(.underlineStyle, forCharacterRange: range)
+        if isBib { highlightBib(range, layout: layout); return }
         for (regex, color) in Self.patterns {
             for match in regex.matches(in: textView.string, range: range) { layout.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: match.range) }
         }
+        if structureStale { structureStale = false; textView.structure = TexStructure.scan(textView.string) }
+        // Heading titles take their level's colour, so sections read apart from body text.
+        for heading in textView.structure.headings where NSMaxRange(heading.titleRange) <= ns.length && NSIntersectionRange(heading.titleRange, range).length > 0 {
+            layout.addTemporaryAttribute(.foregroundColor, value: Theme.structure(heading.kind), forCharacterRange: heading.titleRange)
+        }
+    }
+
+    // MARK: BibTeX
+    static func bibColor(_ family: BibEntryType.Family) -> NSColor {
+        switch family {
+        case .journal: return .systemBlue
+        case .conference: return .systemPurple
+        case .book: return .systemOrange
+        case .thesis: return .systemGreen
+        case .report: return .systemTeal
+        case .web: return .systemPink
+        case .other: return .systemBrown
+        case .special: return .systemGray
+        }
+    }
+    private static func regex(_ pattern: String) -> NSRegularExpression { try! NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]) }
+    /// @type{key,   — groups: type, key
+    private static let bibHeader = regex("^[ \\t]*@([a-zA-Z]+)[ \\t]*[{(][ \\t]*([^,\\s{}()]*)")
+    /// field =      — group: name
+    private static let bibField = regex("^[ \\t]*([a-zA-Z][\\w:.+-]*)[ \\t]*=")
+    private static let bibPatterns: [(NSRegularExpression, NSColor)] = [
+        (regex("\\\\[a-zA-Z@]+|\\\\[^a-zA-Z\\s]"), Theme.command), (regex("[{}]"), Theme.brace),
+        (regex("\"(?:[^\"\\\\]|\\\\.)*\""), Theme.option), (regex("(?<==)[ \\t]*\\d+"), Theme.option)
+    ]
+    private func highlightBib(_ range: NSRange, layout: NSLayoutManager) {
+        let text = textView.string, ns = text as NSString
+        for (regex, color) in Self.bibPatterns {
+            for match in regex.matches(in: text, range: range) { layout.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: match.range) }
+        }
+        for match in Self.bibField.matches(in: text, range: range) {
+            layout.addTemporaryAttribute(.foregroundColor, value: Theme.environment, forCharacterRange: match.range(at: 1))
+        }
+        var bands: [(range: NSRange, color: NSColor)] = []
+        for match in Self.bibHeader.matches(in: text, range: range) {
+            let type = ns.substring(with: match.range(at: 1))
+            let color = Self.bibColor(BibEntryType.family(of: type))
+            layout.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: NSRange(location: match.range(at: 1).location - 1, length: match.range(at: 1).length + 1))
+            if match.range(at: 2).length > 0 {
+                layout.addTemporaryAttribute(.foregroundColor, value: Theme.text, forCharacterRange: match.range(at: 2))
+                layout.addTemporaryAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, forCharacterRange: match.range(at: 2))
+                layout.addTemporaryAttribute(.underlineColor, value: color.withAlphaComponent(0.6), forCharacterRange: match.range(at: 2))
+            }
+            bands.append((ns.lineRange(for: match.range), color))
+        }
+        // Lines outside an entry ("junk" in BibTeX terms) and % lines read as comments.
+        for match in Self.bibComment.matches(in: text, range: range) { layout.addTemporaryAttribute(.foregroundColor, value: Theme.comment, forCharacterRange: match.range) }
+        textView.entryBands = bands
+    }
+    private static let bibComment = regex("^[ \\t]*%[^\\n]*")
+    /// Puts the caret at a UTF-16 offset and briefly marks `sentence` around it.
+    func reveal(offset: Int, sentence: NSRange) {
+        let length = (textView.string as NSString).length
+        let caret = NSRange(location: min(max(0, offset), length), length: 0)
+        let mark = NSIntersectionRange(sentence, NSRange(location: 0, length: length))
+        textView.setSelectedRange(caret); textView.scrollRangeToVisible(mark.length > 0 ? mark : caret)
+        let word = TextSync.wordRange(in: textView.string, at: caret.location)
+        textView.flashSync(sentence: mark.length > 0 ? mark : Self.trimmedLine(textView.string, at: caret.location), word: word)
+        window?.makeFirstResponder(textView)
     }
     func goTo(line: Int, column: Int = 0) {
         let ns = textView.string as NSString; var location = 0
         for _ in 1..<max(1, line) { if location >= ns.length { break }; location = NSMaxRange(ns.lineRange(for: NSRange(location: location, length: 0))) }
         let range = ns.lineRange(for: NSRange(location: min(location, ns.length), length: 0))
         let target = NSRange(location: min(range.location + max(0, column), NSMaxRange(range)), length: 0)
-        textView.setSelectedRange(target); textView.scrollRangeToVisible(target); textView.showFindIndicator(for: range)
+        textView.setSelectedRange(target); textView.scrollRangeToVisible(target)
+        textView.flashSync(sentence: Self.trimmedLine(textView.string, at: target.location), word: nil, hold: 1.4)
         window?.makeFirstResponder(textView)
+    }
+    /// The line holding `offset`, without its line break or surrounding blanks.
+    static func trimmedLine(_ text: String, at offset: Int) -> NSRange {
+        let ns = text as NSString
+        let line = ns.lineRange(for: NSRange(location: min(max(0, offset), ns.length), length: 0))
+        var start = line.location, end = NSMaxRange(line)
+        while start < end, let c = UnicodeScalar(ns.character(at: start)), CharacterSet.whitespacesAndNewlines.contains(c) { start += 1 }
+        while end > start, let c = UnicodeScalar(ns.character(at: end - 1)), CharacterSet.whitespacesAndNewlines.contains(c) { end -= 1 }
+        return NSRange(location: start, length: end - start)
     }
 }

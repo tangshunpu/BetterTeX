@@ -6,6 +6,23 @@ private final class CompletionRow: NSTableRowView {
     override var isEmphasized: Bool { get { true } set {} }
 }
 
+/// Switches its label colors when the row is selected, so they stay legible on the accent fill.
+private final class CompletionCell: NSTableCellView {
+    let label: NSTextField, detail: NSTextField
+    init(label: NSTextField, detail: NSTextField) {
+        self.label = label; self.detail = detail
+        super.init(frame: .zero)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet {
+            let selected = backgroundStyle == .emphasized
+            label.textColor = selected ? .alternateSelectedControlTextColor : Theme.text
+            detail.textColor = selected ? NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.8) : Theme.muted
+        }
+    }
+}
+
 /// The completion list shown under the caret. It never becomes key: typing stays in the editor,
 /// which forwards the arrow, return, tab and escape keys here while the list is open.
 final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegate {
@@ -65,6 +82,6 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
         let detail = Theme.label(item.detail, size: 11.5, color: Theme.muted); detail.lineBreakMode = .byTruncatingTail
         detail.setContentCompressionResistancePriority(.init(100), for: .horizontal); detail.setContentHuggingPriority(.init(1), for: .horizontal)
         let line = NSStackView(views: [label, detail]); line.spacing = 10; line.alignment = .centerY
-        let cell = NSView(); cell.pinRow(line, leading: 8, trailing: 8); return cell
+        let cell = CompletionCell(label: label, detail: detail); cell.pinRow(line, leading: 8, trailing: 8); return cell
     }
 }

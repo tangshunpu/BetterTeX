@@ -103,6 +103,9 @@ final class PaneSplitController: NSViewController, NSSplitViewDelegate {
         items.append(item); item.owner = self; addChild(item.viewController)
         let pane = item.viewController.view
         pane.translatesAutoresizingMaskIntoConstraints = true; pane.autoresizingMask = []
+        // A pane never paints into its neighbour, even while its content is wider than its slot.
+        pane.wantsLayer = true; pane.layer?.masksToBounds = true
+        if #available(macOS 14, *) { pane.clipsToBounds = true }
         splitView.addSubview(pane)
     }
     func resizePanes() {
@@ -116,9 +119,7 @@ final class PaneSplitController: NSViewController, NSSplitViewDelegate {
         let available = max(0, (vertical ? bounds.width : bounds.height) - splitView.dividerThickness)
         let wanted: CGFloat
         switch sizing { case .fixedFirst: wanted = firstSize; case .fixedLast: wanted = available - lastSize; case .proportional: wanted = available * fraction }
-        let lower = max(0, items[0].minimumThickness, available - items[1].maximumThickness)
-        let upper = min(available, items[0].maximumThickness, available - items[1].minimumThickness)
-        let firstLength = max(0, min(available, max(lower, min(upper, wanted))))
+        let firstLength = Self.firstLength(available: available, wanted: wanted, first: (items[0].minimumThickness, items[0].maximumThickness), last: (items[1].minimumThickness, items[1].maximumThickness))
         let remaining = max(0, available - firstLength)
         if vertical {
             first.frame = NSRect(x: 0, y: 0, width: firstLength, height: bounds.height)
@@ -129,6 +130,18 @@ final class PaneSplitController: NSViewController, NSSplitViewDelegate {
         }
         splitView.needsDisplay = true
         splitView.window?.invalidateCursorRects(for: splitView); splitView.updateTrackingAreas()
+    }
+    /// Clamps the first pane between both panes' limits. When the two minimums do not both fit,
+    /// the space is shared in proportion to them, so neither pane is pushed past the other's edge.
+    static func firstLength(available: CGFloat, wanted: CGFloat, first: (min: CGFloat, max: CGFloat), last: (min: CGFloat, max: CGFloat)) -> CGFloat {
+        guard available > 0 else { return 0 }
+        if first.min + last.min > available {
+            let total = first.min + last.min
+            return total > 0 ? (available * first.min / total).rounded() : available / 2
+        }
+        let lower = max(0, first.min, available - last.max)
+        let upper = min(available, first.max, available - last.min)
+        return max(0, min(available, lower > upper ? lower : min(upper, max(lower, wanted))))
     }
     func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) { resizePanes() }
     func splitViewDidResizeSubviews(_ notification: Notification) {

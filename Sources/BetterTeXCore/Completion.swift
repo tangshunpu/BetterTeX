@@ -15,7 +15,7 @@ public struct CompletionItem: Equatable {
     }
 }
 
-public enum CompletionKind: Equatable { case command, citation, reference, environment, graphics, input, bibliography, package }
+public enum CompletionKind: Equatable { case command, citation, reference, environment, graphics, input, bibliography, package, bibEntry }
 
 /// What is being typed at the caret and which span a completion would replace.
 public struct CompletionRequest: Equatable {
@@ -247,6 +247,7 @@ public enum Completer {
         case .input: candidates = index.inputs.map { CompletionItem(label: $0) }
         case .bibliography: candidates = index.bibliographies.map { CompletionItem(label: request.command.lowercased() == "bibliography" && $0.hasSuffix(".bib") ? String($0.dropLast(4)) : $0) }
         case .package: candidates = packages.map { CompletionItem(label: $0) }
+        case .bibEntry: candidates = BibEntryType.items()
         case .environment:
             candidates = unique(index.environments + environments).map {
                 CompletionItem(label: $0, detail: index.environments.contains($0) ? L10n.tr("项目定义") : request.command == "begin" ? EnvironmentTemplate.detail(for: $0) : "",
@@ -265,15 +266,17 @@ public enum Completer {
                 list.append(CompletionItem(label: "\\item[]", detail: L10n.tr("带标签的列表项"), insert: "\\item[] ", caret: 6))
             }
             for name in plain where seen.insert(name).inserted { list.append(CompletionItem(label: "\\" + name)) }
-            // Only explicit shortcuts may replace a command; \frame, \matrix, etc. have real package meanings.
-            let shortcuts = [("fig", "figure"), ("tbl", "table"), ("subfig", "subfigure"),
-                             ("itemize", "itemize"), ("enumerate", "enumerate"), ("description", "description")]
+            // Abbreviations, then every environment by its own name (\figure → \begin{figure}…\end{figure}).
+            // Names that are also real commands (\frame, \matrix, …) and commands defined by the project stay commands.
+            let shortcuts = [("fig", "figure"), ("tbl", "table"), ("subfig", "subfigure")]
+                + unique(index.environments + environments).filter { !commandEnvironments.contains($0) && $0.range(of: #"^[a-zA-Z@]+\*?$"#, options: .regularExpression) != nil }.map { ($0, $0) }
             for (shortcut, name) in shortcuts where seen.insert(shortcut).inserted {
-                list.append(CompletionItem(label: "\\" + shortcut, detail: L10n.tr("快捷模板") + " · " + EnvironmentTemplate.detail(for: name), environment: name))
+                let detail = index.environments.contains(name) ? L10n.tr("项目定义") : EnvironmentTemplate.detail(for: name)
+                list.append(CompletionItem(label: "\\" + shortcut, detail: [L10n.tr("快捷模板"), detail].filter { !$0.isEmpty }.joined(separator: " · "), environment: name))
             }
             candidates = list
         }
-        let needle = (request.kind == .command ? "\\" + request.prefix : request.prefix).lowercased()
+        let needle = (request.kind == .command ? "\\" + request.prefix : request.kind == .bibEntry ? "@" + request.prefix : request.prefix).lowercased()
         guard !needle.isEmpty else { return Array(candidates.prefix(limit)) }
         var starts: [CompletionItem] = [], contains: [CompletionItem] = [], described: [CompletionItem] = []
         for item in candidates {
@@ -283,17 +286,32 @@ public enum Completer {
             else if request.kind == .citation, item.detail.lowercased().contains(needle) { described.append(item) }
         }
         // Shorter names first among prefix matches, so \in is not buried under \infty, \int…
-        starts.sort { $0.label.count == $1.label.count ? $0.label < $1.label : $0.label.count < $1.label.count }
+        // Entry types keep their most-common-first order (@in → inproceedings before inbook).
+        if request.kind != .bibEntry { starts.sort { $0.label.count == $1.label.count ? $0.label < $1.label : $0.label.count < $1.label.count } }
         let result = Array((starts + contains + described).prefix(limit))
         // Typing a complete name that needs no expansion leaves nothing to offer.
         if request.kind == .command, result.count == 1, result[0].environment == nil, result[0].insert.lowercased() == needle { return [] }
         return result
     }
+    /// Environments whose bare name is also a command people type on purpose (\frame{…}, tikz \matrix, beamer \column, plain \cases).
+    static let commandEnvironments: Set<String> = ["frame", "matrix", "column", "cases"]
     private static func unique(_ values: [String]) -> [String] { var seen = Set<String>(); return values.filter { seen.insert($0).inserted } }
 
     /// The edit that accepting `item` makes: the range to replace, its new text and the caret afterwards.
     public static func apply(_ item: CompletionItem, to request: CompletionRequest, in text: String) -> (range: NSRange, replacement: String, caret: Int) {
         let ns = text as NSString; var range = request.range; var replacement = item.insert
+        if request.kind == .bibEntry {
+            let newline = text.contains("\r\n") ? "\r\n" : "\n"
+            let lineEnd = NSMaxRange(ns.lineRange(for: NSRange(location: NSMaxRange(range), length: 0)))
+            let rest = ns.substring(with: NSRange(location: NSMaxRange(range), length: lineEnd - NSMaxRange(range)))
+            // Only the type name when the entry already continues on this line (@art|icle{key, …).
+            if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let tail = bibTypeTail.firstMatch(in: text, options: [.anchored], range: NSRange(location: NSMaxRange(range), length: ns.length - NSMaxRange(range))) { range.length += tail.range.length }
+                return (range, item.label, range.location + (item.label as NSString).length)
+            }
+            let full = BibEntryType.items(newline: newline).first { $0.label == item.label } ?? item
+            return (range, full.insert, range.location + (full.caret ?? (full.insert as NSString).length))
+        }
         if request.kind == .command {
             guard let environment = item.environment else { return (range, replacement, range.location + (item.caret ?? (replacement as NSString).length)) }
             replacement = "\\begin{\(environment)}"
@@ -324,5 +342,6 @@ public enum Completer {
         }
         return (range, replacement, caret)
     }
+    private static let bibTypeTail = try! NSRegularExpression(pattern: "[a-zA-Z]+")
     private static let environmentNameTail = try! NSRegularExpression(pattern: #"[\p{L}\p{N}*@:_-]+"#)
 }

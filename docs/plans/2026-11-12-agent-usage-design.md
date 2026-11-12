@@ -1,0 +1,19 @@
+# Agent quota and context usage
+
+Place quota and context on one slim 18-point line directly above the composer card, aligned with the card's text inset: the remaining-quota label with a 44 × 4 point track at the leading edge, and a 12-point context ring with its percentage at the trailing edge. The card's first row stays with the context chip. The line hides with the composer (Shell, Output, live CLI sessions, folded rail). Do not add another toolbar, panel or setting. Both controls open the same small details menu.
+
+- Quota means the remaining percentage in the most constrained reported account window. The bar shrinks as quota is consumed, becoming orange at 25% remaining and red at 10%; unknown or stale data uses a neutral dashed track. The menu shows each period, reset time, plan when reported, and observation time. A passed reset time or five-minute-old snapshot is stale, not a fabricated 100% recovery. Missing quota is unknown, not zero.
+- Context means the latest model request's token footprint divided by its reported capacity. Never divide accumulated turn/session billing tokens by a model limit. The ring shows the percentage used; its track stays neutral with a dash when the capacity or usage is missing. Warn at 75% and 90%, and expose the meaning and percentage to accessibility.
+- Codex quota uses a short-lived local `codex app-server` connection with initialize/initialized followed only by `account/rateLimits/read`. Refresh at most once per minute while visible or on explicit refresh. Do not read credentials, trigger a login, start model turns, or use private HTTP endpoints.
+- Codex context reads only the active thread's bounded rollout tail off the main thread. Use `last_token_usage.total_tokens` and `model_context_window`; clear on a compaction event until a new count arrives. Reuse the log's timestamped quota if it is newer. Poll during a running turn and once after it ends, and refresh on history resume.
+- Claude context uses the latest top-level assistant request's input, cache-read and cache-write counts, matching its status-line formula. Use `modelUsage[actualModel].contextWindow` only for capacity; its accumulated token counts and subagent usage do not feed the ring. Handle compaction and model switches without keeping mismatched capacities.
+- Claude quota uses a short-lived `claude -p --input-format stream-json` process that receives only the `get_usage` control request (the data behind `/usage`, with `skip_behaviors`), then exits. No prompt is sent, so no model turn starts; MCP servers, skills and session persistence are off. It reports the 5-hour and 7-day windows plus per-model weekly windows, and nothing for API-key or third-party-provider sessions. Same cadence as Codex. `rate_limit_event` still updates the display during a turn when it carries a utilization or a refusal; a status-only event does not replace polled windows. The response shape is marked experimental by the CLI, so unknown shapes read as unavailable.
+- New sessions clear context. Project changes cancel background reads. Codex and Claude displays remain independent; Shell and Output hide the composer as before. Background failures stay inside usage details rather than interrupting editing.
+
+Primary references, checked against the locally installed CLI schema on 2026-11-12:
+
+- [Codex app-server protocol](https://developers.openai.com/codex/app-server)
+- [Claude Code status-line data and context calculation](https://code.claude.com/docs/en/statusline)
+- [Claude SDK message types and model usage](https://code.claude.com/docs/en/agent-sdk/typescript)
+
+Validation: protocol fixtures for quota refresh/timeout/cancellation, current-vs-cumulative token counts, caches/subagents, compaction/model changes, expiry/unknown data; AppKit tests for provider changes, refresh actions and narrow composer layout. A read-only Codex quota integration test is opt-in; no model request is needed.

@@ -109,6 +109,39 @@ private final class StatusDot: NSView {
     }
 }
 
+/// A slim bar in the status bar for long transfers: indeterminate while preparing or waiting, filling while bytes move.
+final class TransferBar: NSProgressIndicator {
+    enum State: Equatable { case hidden, waiting, fraction(Double) }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        style = .bar; controlSize = .small; minValue = 0; maxValue = 1; isDisplayedWhenStopped = false
+        translatesAutoresizingMaskIntoConstraints = false; widthAnchor.constraint(equalToConstant: 120).isActive = true
+        isHidden = true; alphaValue = 0
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    var state: State = .hidden {
+        didSet {
+            guard state != oldValue else { return }
+            switch state {
+            case .hidden:
+                NSAnimationContext.runAnimationGroup({ $0.duration = 0.25; animator().alphaValue = 0 }) { [weak self] in
+                    guard let self, self.state == .hidden else { return }
+                    self.stopAnimation(nil); self.isHidden = true
+                }
+            case .waiting:
+                isIndeterminate = true; startAnimation(nil); reveal()
+            case .fraction(let value):
+                if isIndeterminate { stopAnimation(nil); isIndeterminate = false }
+                doubleValue = min(max(value, 0), 1); reveal()
+            }
+        }
+    }
+    private func reveal() {
+        guard isHidden || alphaValue < 1 else { return }
+        isHidden = false; NSAnimationContext.runAnimationGroup { $0.duration = 0.2; animator().alphaValue = 1 }
+    }
+}
+
 /// The whole window content: title bar, sidebar, editor / PDF / agent panes and status bar.
 final class WorkspaceView: Surface {
     enum Activity { case idle, busy, failed }
@@ -122,13 +155,14 @@ final class WorkspaceView: Surface {
     let welcome = WelcomeView()
     let status = Theme.label(L10n.tr("正在检测本机工具…"), size: 11.5, color: Theme.soft)
     let branch = Theme.label("", size: 11.5, color: Theme.muted)
+    let transfer = TransferBar()
     let position = Theme.label("Ln 1, Col 1", size: 11.5, color: Theme.muted)
     private let projectLabel = Theme.label("BetterTeX", size: 13.5, weight: .semibold)
     private let fileLabel = Theme.label("", size: 13.5, color: Theme.muted, weight: .medium)
     private let slash = Theme.label("/", size: 13.5, color: Theme.muted)
     private let errorLabel = Theme.label("", size: 11.5, color: Theme.muted)
     private let warningLabel = Theme.label("", size: 11.5, color: Theme.muted)
-    private let toolLabel = Theme.label("", size: 11.5, color: Theme.muted)
+    private var toolButton: ActionButton!
     private let syncLabel = Theme.label("SyncTeX", size: 11.5, color: Theme.muted)
     private let syncIcon = NSImageView()
     private let statusDot = StatusDot()
@@ -171,6 +205,10 @@ final class WorkspaceView: Surface {
     var onOpenFile: ((URL) -> Void)?
     var onHome: (() -> Void)?
     var onOverleaf: ((NSView) -> Void)?
+    var onShowTools: (() -> Void)?
+    var onDetectTools: (() -> Void)?
+    /// The error (true) or warning (false) count in the status bar was clicked; the view anchors the menu.
+    var onShowProblems: ((Bool, NSView) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame); fill = Theme.base
@@ -219,24 +257,29 @@ final class WorkspaceView: Surface {
         mainSplit.splitView.isVertical = true; bodySplit.splitView.isVertical = true; documentSplit.splitView.isVertical = true
         mainSplit.sizing = .fixedFirst; mainSplit.persistenceKey = "layout.sidebarSizes"; bodySplit.sizing = .fixedLast
         func item(_ view: NSView, min: CGFloat) -> PaneItem { let vc = NSViewController(); vc.view = view; let item = PaneItem(viewController: vc); item.minimumThickness = min; return item }
-        explorerItem = item(explorer, min: 200); explorerItem.maximumThickness = 340; explorerItem.canCollapse = true
+        explorerItem = item(explorer, min: 140); explorerItem.maximumThickness = 640; explorerItem.canCollapse = true
         mainSplit.addSplitViewItem(explorerItem)
-        let bodyItem = PaneItem(viewController: bodySplit); bodyItem.minimumThickness = 900; mainSplit.addSplitViewItem(bodyItem)
+        let bodyItem = PaneItem(viewController: bodySplit); bodyItem.minimumThickness = 400; mainSplit.addSplitViewItem(bodyItem)
         docItem = PaneItem(viewController: documentSplit)
-        terminalItem = item(terminal, min: 380); terminalItem.canCollapse = true
-        editorItem = item(editor, min: 250); pdfItem = item(preview, min: 340); pdfItem.canCollapse = true
+        terminalItem = item(terminal, min: 240); terminalItem.canCollapse = true
+        editorItem = item(editor, min: 160); pdfItem = item(preview, min: 180); pdfItem.canCollapse = true
         applyDocking()
 
         // Status bar
+        toolButton = ActionButton(L10n.tr("本机工具"), symbol: "chevron.up.chevron.down", style: .plain) { [weak self] in self?.showToolsMenu() }
+        toolButton.toolTip = L10n.tr("查看或重新检测本机工具")
         let bottom = Surface(); bottom.fill = Theme.sidebar; bottom.lineColor = Theme.line; bottom.topLine = true
         statusDot.size(13, 13); syncIcon.image = Theme.symbol("checkmark", size: 9, weight: .bold); syncIcon.contentTintColor = Theme.green
         let sync = NSStackView(views: [syncLabel, syncIcon]); sync.spacing = 4
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let bottomRow = NSStackView(views: [statusDot, status, errorLabel, warningLabel, spacer, branch, toolLabel, sync, position, Theme.label("UTF-8", size: 11.5, color: Theme.muted), Theme.label("LaTeX", size: 11.5, color: Theme.muted)])
-        bottomRow.spacing = 16; bottomRow.setCustomSpacing(6, after: statusDot); bottomRow.alignment = .centerY; bottom.pinRow(bottomRow, leading: 12, trailing: 14)
+        let bottomRow = NSStackView(views: [statusDot, status, transfer, errorLabel, warningLabel, spacer, branch, toolButton, sync, position, Theme.label("UTF-8", size: 11.5, color: Theme.muted), Theme.label("LaTeX", size: 11.5, color: Theme.muted)])
+        bottomRow.spacing = 16; bottomRow.setCustomSpacing(6, after: statusDot); bottomRow.setCustomSpacing(10, after: status); bottomRow.alignment = .centerY; bottom.pinRow(bottomRow, leading: 12, trailing: 14)
         position.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular)
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); status.lineBreakMode = .byTruncatingTail
-        for label in [errorLabel, warningLabel, branch, toolLabel] { label.isHidden = true }
+        for label in [errorLabel, warningLabel, branch] { label.isHidden = true }
+        errorLabel.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(errorsClicked)))
+        warningLabel.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(warningsClicked)))
+        errorLabel.toolTip = L10n.tr("查看编译错误"); warningLabel.toolTip = L10n.tr("查看编译警告")
         sync.isHidden = true; syncLabel.superview?.isHidden = true
         activity = .idle
 
@@ -252,6 +295,7 @@ final class WorkspaceView: Surface {
         terminal.header.onMove = { [weak self] in self?.movePanel("agent", to: $0) }
         preview.header.onMove = { [weak self] in self?.movePanel("pdf", to: $0) }
         preview.onAuto = { [weak self] in self?.onAuto?($0) }
+        preview.onReadingMode = { [weak self] in self?.setReadingMode($0) }
         explorer.onSearch = { [weak self] in self?.search.focus() }
         for header in [terminal.header, preview.header] {
             let id = header.panelID
@@ -279,7 +323,7 @@ final class WorkspaceView: Surface {
         layoutSubtreeIfNeeded()
         mainSplit.resetPreferredSizes(first: 236); resetPaneSizes()
         documentSplit.view.layoutSubtreeIfNeeded()
-        preview.pdfView.autoScales = true
+        preview.applyZoom()
     }
     /// In full screen the traffic lights disappear, so the title bar content moves to the edge.
     func setFullScreen(_ fullScreen: Bool) { headerLeading.constant = fullScreen ? 14 : 84 }
@@ -287,10 +331,18 @@ final class WorkspaceView: Surface {
         projectLabel.stringValue = project; fileLabel.stringValue = file ?? ""
         fileLabel.isHidden = file == nil; slash.isHidden = file == nil
     }
+    private func showToolsMenu() {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        menu.addItem(ClosureMenuItem(L10n.tr("本机工具…"), symbol: "wrench.and.screwdriver") { [weak self] in self?.onShowTools?() })
+        menu.addItem(ClosureMenuItem(L10n.tr("重新检测工具"), symbol: "arrow.clockwise") { [weak self] in self?.onDetectTools?() })
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: toolButton.bounds.height + 4), in: toolButton)
+    }
     func setTools(engines: Int, syncTeX: Bool) {
-        toolLabel.stringValue = engines == 0 ? L10n.tr("TeX 未安装") : L10n.tr("\(engines) 个引擎"); toolLabel.isHidden = false
+        toolButton.setTitle(engines == 0 ? L10n.tr("TeX 未安装") : L10n.tr("\(engines) 个引擎"))
         syncLabel.superview?.isHidden = !syncTeX
     }
+    @objc private func errorsClicked() { onShowProblems?(true, errorLabel) }
+    @objc private func warningsClicked() { onShowProblems?(false, warningLabel) }
     func setDiagnostics(errors: Int, warnings: Int) {
         errorLabel.stringValue = L10n.tr("\(errors) 错误"); warningLabel.stringValue = L10n.tr("\(warnings) 警告")
         errorLabel.textColor = errors > 0 ? Theme.red : Theme.muted; warningLabel.textColor = warnings > 0 ? Theme.orange : Theme.muted
@@ -302,9 +354,10 @@ final class WorkspaceView: Surface {
         pullButton.toolTip = L10n.tr("从 \(name) 拉取 · git pull --ff-only"); pushButton.toolTip = L10n.tr("提交并推送到 \(name)")
     }
     func setBranch(_ text: String) { branch.stringValue = text; branch.isHidden = text.isEmpty }
-    func toggleSidebar() { explorerItem.isCollapsed.toggle() }
+    func toggleSidebar() { if readingState != nil { setReadingMode(false) }; explorerItem.isCollapsed.toggle() }
     /// ⌘J folds the Agent panel to a rail and back; a fully hidden panel comes back unfolded.
     func toggleTerminal() {
+        if readingState != nil { setReadingMode(false) }
         if terminalItem.isCollapsed { terminalItem.isCollapsed = false; setAgentFolded(false) } else { setAgentFolded(!agentFolded) }
     }
     func setAgentFolded(_ folded: Bool) {
@@ -313,12 +366,27 @@ final class WorkspaceView: Surface {
     }
     private func applyAgentFold() {
         bodySplit.freezeSizes = agentFolded
-        terminalItem.minimumThickness = agentFolded ? TerminalPanel.railThickness : (agentDock == .bottom ? 240 : 380)
-        terminalItem.maximumThickness = agentFolded ? TerminalPanel.railThickness : (agentDock == .bottom ? 520 : 1000)
+        terminalItem.minimumThickness = agentFolded ? TerminalPanel.railThickness : (agentDock == .bottom ? 140 : 240)
+        terminalItem.maximumThickness = agentFolded ? TerminalPanel.railThickness : .greatestFiniteMagnitude
         terminal.setFolded(agentFolded, horizontal: agentDock == .bottom)
     }
-    func togglePDF() { pdfItem.isCollapsed.toggle() }
-    func showOutput() { terminalItem.isCollapsed = false; if agentFolded { setAgentFolded(false) }; terminal.select("Output") }
+    func togglePDF() { if readingState != nil { setReadingMode(false) }; pdfItem.isCollapsed.toggle() }
+    /// Panes hidden by reading mode, restored as they were when it ends.
+    private var readingState: (explorer: Bool, editor: Bool, agent: Bool)?
+    func toggleReadingMode() { setReadingMode(readingState == nil) }
+    func setReadingMode(_ on: Bool) {
+        guard on != (readingState != nil) else { return }
+        if on {
+            readingState = (explorerItem.isCollapsed, editorItem.isCollapsed, terminalItem.isCollapsed)
+            pdfItem.isCollapsed = false; explorerItem.isCollapsed = true; editorItem.isCollapsed = true; terminalItem.isCollapsed = true
+        } else if let state = readingState {
+            readingState = nil
+            explorerItem.isCollapsed = state.explorer; editorItem.isCollapsed = state.editor; terminalItem.isCollapsed = state.agent
+        }
+        layoutSubtreeIfNeeded(); preview.setReadingMode(on)
+    }
+    func showOutput() { setReadingMode(false); terminalItem.isCollapsed = false; if agentFolded { setAgentFolded(false) }; terminal.select("Output") }
+    func showAgent() { setReadingMode(false); terminalItem.isCollapsed = false; if agentFolded { setAgentFolded(false) } }
     private var buildingIndicator: DispatchWorkItem?
     func setBuilding(_ building: Bool) {
         buildingIndicator?.cancel(); buildingIndicator = nil
@@ -405,14 +473,14 @@ final class WorkspaceView: Surface {
     // MARK: Docking
     private func applyDocking() {
         documentSplit.splitView.isVertical = pdfDock != .bottom
-        editorItem.minimumThickness = pdfDock == .bottom ? 160 : 250
-        pdfItem.minimumThickness = pdfDock == .bottom ? 180 : 340
+        editorItem.minimumThickness = pdfDock == .bottom ? 100 : 160
+        pdfItem.minimumThickness = pdfDock == .bottom ? 120 : 180
         documentSplit.persistenceKey = "layout.pdfSizes.\(pdfDock.rawValue)"
         documentSplit.replaceItems(pdfDock == .left ? [pdfItem, editorItem] : [editorItem, pdfItem])
         bodySplit.splitView.isVertical = agentDock != .bottom
         bodySplit.sizing = agentDock == .left ? .fixedFirst : .fixedLast
         bodySplit.persistenceKey = "layout.agentSizes.\(agentDock.rawValue)"
-        docItem.minimumThickness = agentDock == .bottom ? 220 : (pdfDock == .bottom ? 340 : 600)
+        docItem.minimumThickness = agentDock == .bottom ? 160 : (pdfDock == .bottom ? 200 : 360)
         applyAgentFold()
         bodySplit.replaceItems(agentDock == .left ? [terminalItem, docItem] : [docItem, terminalItem])
         terminal.header.position = agentDock; preview.header.position = pdfDock
@@ -423,6 +491,7 @@ final class WorkspaceView: Surface {
         documentSplit.resetPreferredSizes(ratio: 0.5)
     }
     func movePanel(_ panel: String, to position: DockPosition) {
+        setReadingMode(false)
         if panel == "agent" { agentDock = position; terminalItem.isCollapsed = false }
         else { pdfDock = position; pdfItem.isCollapsed = false }
         UserDefaults.standard.set(agentDock.rawValue, forKey: "layout.agentDock")
@@ -433,6 +502,7 @@ final class WorkspaceView: Surface {
         if let pair = item.representedObject as? [String], let position = DockPosition(rawValue: pair[1]) { movePanel(pair[0], to: position) }
     }
     @objc func resetLayout() {
+        setReadingMode(false)
         for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix("layout.") { UserDefaults.standard.removeObject(forKey: key) }
         agentDock = .right; pdfDock = .right; agentFolded = false; explorerItem.isCollapsed = false; terminalItem.isCollapsed = false; pdfItem.isCollapsed = false
         applyDocking(); mainSplit.resetPreferredSizes(first: 236)

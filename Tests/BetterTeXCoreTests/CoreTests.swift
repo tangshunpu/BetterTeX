@@ -26,7 +26,22 @@ final class CoreTests: XCTestCase {
     func testAmbiguousProjectDoesNotChooseArbitraryRoot() throws {
         try write("a.tex", "\\documentclass{article}"); try write("b.tex", "\\documentclass{book}")
         let child = try write("section.tex", "A section")
+        XCTAssertThrowsError(try TeXProject.root(active: child, project: directory)) { error in
+            XCTAssertEqual((error as? AmbiguousMainError)?.candidates.map(\.lastPathComponent), ["a.tex", "b.tex"])
+        }
+    }
+    func testChosenMainResolvesAmbiguityUntilItStopsBeingAMainFile() throws {
+        try write("a.tex", "\\documentclass{article}"); let b = try write("sub/b.tex", "\\documentclass{book}")
+        let child = try write("section.tex", "A section")
+        defer { TeXProject.setChosenMain(nil, for: directory) }
+        TeXProject.setChosenMain(b, for: directory)
+        XCTAssertEqual(try TeXProject.root(active: child, project: directory).resolvingSymlinksInPath().path, b.resolvingSymlinksInPath().path)
+        // An open main file still builds itself.
+        let a = directory.appendingPathComponent("a.tex")
+        XCTAssertEqual(try TeXProject.root(active: a, project: directory).lastPathComponent, "a.tex")
+        try FileManager.default.removeItem(at: b); try write("c.tex", "\\documentclass{article}")
         XCTAssertThrowsError(try TeXProject.root(active: child, project: directory))
+        TeXProject.setChosenMain(nil, for: directory); XCTAssertNil(TeXProject.chosenMain(for: directory))
     }
     func testEngineDirectiveAndOverride() {
         XCTAssertEqual(TeXProject.engine(for: "% !TEX program = lualatex", selected: .automatic), .luaLaTeX)
@@ -335,6 +350,25 @@ final class WarningTests: XCTestCase {
         XCTAssertEqual(warnings.map(\.key), ["tang2025osd", "fig:a-very-long-label-name-that-wraps-in-the-log", "other"])
         XCTAssertEqual(warnings[0].message, L10n.tr("未定义的引用文献：") + "tang2025osd"); XCTAssertEqual(warnings[1].message, L10n.tr("未定义的交叉引用：") + warnings[1].key)
         XCTAssertTrue(TeXWarning.parse("Output written on main.pdf").isEmpty)
+    }
+    func testListsEveryWarningWithItsContinuationLines() {
+        let wrapped = "LaTeX Warning: Reference `fig:a-very-long-label-name-that-wraps-in-the-logs' on"
+        XCTAssertEqual(wrapped.count, 79)
+        let log = """
+        Package hyperref Warning: Token not allowed in a PDF string (Unicode):
+        (hyperref)                removing `math shift' on input line 12.
+        \(wrapped)
+         page 1 undefined on input line 42.
+        Overfull \\hbox (3.0pt too wide) in paragraph at lines 5--6
+        LaTeX Warning: There were undefined references.
+        """
+        let messages = TeXWarning.messages(log)
+        XCTAssertEqual(messages, [
+            "Package hyperref Warning: Token not allowed in a PDF string (Unicode): removing `math shift' on input line 12.",
+            wrapped + " page 1 undefined on input line 42.",
+            "LaTeX Warning: There were undefined references."
+        ])
+        XCTAssertEqual(TeXWarning.parse(messages[1]).first?.line, 42)
     }
 }
 

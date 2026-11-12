@@ -19,6 +19,18 @@ public struct OverleafProject: Equatable {
     public let accessLevel: String
     /// When the project last changed on Overleaf, if the server says.
     public var lastUpdated: Date? = nil
+    /// In the account's trash (still reachable, gone once the trash is emptied) or archived.
+    public var trashed = false
+    public var archived = false
+}
+
+/// Whether the project behind a link still exists for this account.
+public enum OverleafProjectState: Equatable {
+    case active, trashed
+    /// Deleted, or this account can no longer open it: Overleaf's page answers both the same way.
+    case missing
+    /// Overleaf said outright that this account's access was removed.
+    case noAccess
 }
 
 public struct OverleafMessage {
@@ -71,6 +83,7 @@ public final class OverleafClient {
             let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             let detail = object?["message"] as? String ?? (object?["message"] as? [String: Any])?["text"] as? String ?? object?["error"] as? String ?? ""
             if http.statusCode == 403 && detail.isEmpty { throw OverleafError.http(403, L10n.tr("没有权限，或登录已失效")) }
+            if http.statusCode == 413 { throw OverleafError.http(413, L10n.tr("上传内容超过 Overleaf 的大小上限（50 MB）")) }
             if http.statusCode == 429 { throw OverleafError.http(429, L10n.tr("请求过于频繁，请稍后再试")) }
             throw OverleafError.http(http.statusCode, detail)
         }
@@ -103,11 +116,12 @@ public final class OverleafClient {
     private func object(_ data: Data) -> [String: Any] { (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:] }
 
     // MARK: Projects
-    public func projects() async throws -> [OverleafProject] {
+    /// The account's projects; trashed and archived ones only when `includeTrashed`.
+    public func projects(includeTrashed: Bool = false) async throws -> [OverleafProject] {
         // The dashboard endpoint knows when each project last changed; older servers only have the plain list.
         if let data = try? await send("POST", "api/project", json: ["filters": [String: Any](), "page": ["size": 2000], "sort": ["by": "lastUpdated", "order": "desc"]]),
            let list = object(data)["projects"] as? [[String: Any]], !list.isEmpty {
-            let detailed = list.filter { $0["trashed"] as? Bool != true && $0["archived"] as? Bool != true }.compactMap(Self.project)
+            let detailed = list.compactMap(Self.project).filter { includeTrashed || (!$0.trashed && !$0.archived) }
             if !detailed.isEmpty { return detailed }
         }
         let data = try await send("GET", "user/projects")
@@ -120,7 +134,21 @@ public final class OverleafClient {
             let precise = ISO8601DateFormatter(); precise.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             return precise.date(from: text) ?? ISO8601DateFormatter().date(from: text)
         }
-        return OverleafProject(id: id, name: name, accessLevel: item["accessLevel"] as? String ?? "", lastUpdated: updated)
+        return OverleafProject(id: id, name: name, accessLevel: item["accessLevel"] as? String ?? "", lastUpdated: updated,
+                               trashed: item["trashed"] as? Bool == true, archived: item["archived"] as? Bool == true)
+    }
+
+    /// Asks Overleaf directly whether `projectID` still opens for this account. Network failures throw,
+    /// so a flaky connection is never mistaken for a deleted project.
+    public func projectState(_ projectID: String) async throws -> OverleafProjectState {
+        var request = URLRequest(url: url("project/\(projectID)")); request.setValue("text/html", forHTTPHeaderField: "Accept")
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OverleafError.message(L10n.tr("Overleaf 没有响应。")) }
+        if http.url?.path.hasPrefix("/login") == true || http.statusCode == 401 { throw OverleafError.notLoggedIn }
+        if http.statusCode == 404 || http.statusCode == 403 || http.url?.path.hasPrefix("/restricted") == true { return .missing }
+        guard (200..<300).contains(http.statusCode) else { throw OverleafError.http(http.statusCode, "") }
+        let listed = try? await projects(includeTrashed: true).first { $0.id == projectID }
+        return listed?.trashed == true ? .trashed : .active
     }
 
     /// Downloads the whole project as a zip archive; the caller removes the file.
@@ -131,7 +159,10 @@ public final class OverleafClient {
         try FileManager.default.moveItem(at: file, to: target); return target
     }
 
-    private func multipart(_ path: String, query: [String: String], fields: [(String, String)], fileName: String, file: Data) async throws -> [String: Any] {
+    /// Called with (bytes sent, total bytes) while a request body uploads.
+    public typealias UploadProgress = @Sendable (Int64, Int64) -> Void
+
+    private func multipart(_ path: String, query: [String: String], fields: [(String, String)], fileName: String, file: Data, progress: UploadProgress? = nil) async throws -> [String: Any] {
         let boundary = "BetterTeX-\(UUID().uuidString)"
         var body = Data()
         func line(_ text: String) { body.append(Data((text + "\r\n").utf8)) }
@@ -144,7 +175,7 @@ public final class OverleafClient {
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.setValue(try await token(), forHTTPHeaderField: "X-Csrf-Token")
-            let (data, response) = try await session.upload(for: request, from: body)
+            let (data, response) = try await session.upload(for: request, from: body, delegate: progress.map(UploadObserver.init))
             _ = try check(response, data); return object(data)
         }
         do { return try await attempt() }
@@ -161,10 +192,15 @@ public final class OverleafClient {
     }
 
     /// Uploads a zip archive as a brand-new project and returns its id.
-    public func createProject(name: String, archive: URL) async throws -> String {
-        let result = try await multipart("project/new/upload", query: [:], fields: [("name", name + ".zip")], fileName: name + ".zip", file: try Data(contentsOf: archive))
+    public func createProject(name: String, archive: URL, progress: UploadProgress? = nil) async throws -> String {
+        let result = try await multipart("project/new/upload", query: [:], fields: [("name", name + ".zip")], fileName: name + ".zip", file: try Data(contentsOf: archive), progress: progress)
         guard let id = result["project_id"] as? String else { throw OverleafError.message(L10n.tr("Overleaf 未能创建项目：\(result["error"] as? String ?? L10n.tr("未知错误"))")) }
         return id
+    }
+
+    /// Overleaf names a project created from a zip after the main file's \title, so the caller renames it back.
+    public func rename(projectID: String, to name: String) async throws {
+        try await send("POST", "project/\(projectID)/rename", json: ["newProjectName": name])
     }
 
     public func delete(projectID: String, entity: OverleafEntity) async throws {
@@ -296,5 +332,14 @@ public final class OverleafSocket: NSObject, URLSessionWebSocketDelegate {
         guard !closed else { return }
         closed = true; isOpen = false; acks.removeAll()
         task?.send(.string("0::")) { _ in }; task?.cancel(with: .normalClosure, reason: nil); task = nil
+    }
+}
+
+/// Forwards body-upload progress of one task.
+private final class UploadObserver: NSObject, URLSessionTaskDelegate {
+    let report: OverleafClient.UploadProgress
+    init(_ report: @escaping OverleafClient.UploadProgress) { self.report = report }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        report(totalBytesSent, totalBytesExpectedToSend)
     }
 }

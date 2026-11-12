@@ -1,4 +1,5 @@
 import AppKit
+import BetterTeXCore
 
 /// The iOS-style palette from the BetterTeX UI design: grouped dark surfaces, translucent
 /// grey fills and system tint colours, with light-appearance counterparts.
@@ -8,6 +9,29 @@ enum Theme {
     static let orange = NSColor.systemOrange
     static let red = NSColor.systemRed
     static let indigo = adaptive(0x5856D6, 0x5E5CE6)
+    /// Source ↔ PDF jump marks: one muted slate blue, a faint wash over the sentence and a firmer
+    /// rounded pill on the exact word. PDF pages are always white paper, so they use the light value.
+    static let syncTint = adaptive(0x5F7299, 0x9DADD6)
+    static let syncPaperTint = NSColor(hex: 0x5F7299)
+    static let syncSentenceAlpha: CGFloat = 0.13
+    static let syncWordAlpha: CGFloat = 0.34
+    /// Document structure in the editor: one hue per heading level and per float kind,
+    /// shared by the section rules, the float tints, the gutter scope bars and their badges.
+    static func structure(_ kind: TexStructure.HeadingKind) -> NSColor {
+        switch kind {
+        case .part, .chapter: return .systemPink
+        case .section: return indigo
+        case .subsection: return .systemTeal
+        case .subsubsection, .paragraph: return .systemGray
+        }
+    }
+    static func structure(_ kind: TexStructure.BlockKind) -> NSColor {
+        switch kind {
+        case .figure: return .systemGreen
+        case .table: return .systemOrange
+        case .algorithm: return .systemPurple
+        }
+    }
     // Surfaces
     static let base = adaptive(0xF2F2F7, 0x1C1C1E)
     static let header = adaptive(0xF7F7FA, 0x28282A)
@@ -27,13 +51,14 @@ enum Theme {
     static let soft = adaptive(0x3A3A3C, 0xD1D1D6)
     static let muted = adaptive(0x6C6C70, 0x98989F)
     static let faint = adaptive(0x8E8E93, 0x636366)
-    // Syntax
-    static let command = adaptive(0xAD3DA4, 0xFF7AB2)
-    static let option = adaptive(0x78492A, 0xD9C97C)
-    static let brace = adaptive(0x6C6C70, 0xA1A1A6)
-    static let code = adaptive(0x1C1C1E, 0xE1E1E3)
-    static let comment = adaptive(0x707F8C, 0x8E959E)
-    static let environment = adaptive(0x03638C, 0xACF2E4)
+    // Syntax: resolved against the chosen editor colour scheme at draw time.
+    static var scheme: EditorColorScheme = AppearancePreferences.saved().colorScheme
+    static let command = syntax(\.command)
+    static let option = syntax(\.option)
+    static let brace = syntax(\.brace)
+    static let code = syntax(\.code)
+    static let comment = syntax(\.comment)
+    static let environment = syntax(\.environment)
     static let lineNumber = adaptive(0x8E8E93, 0x8E8E93)
 
     static func adaptive(_ light: UInt32, _ dark: UInt32, lightAlpha: CGFloat = 1, darkAlpha: CGFloat = 1) -> NSColor {
@@ -54,6 +79,57 @@ enum Theme {
         let view = Chip(fill: Theme.adaptive(0x3C3C43, 0xFFFFFF, lightAlpha: 0.18, darkAlpha: 0.14), radius: 0)
         view.widthAnchor.constraint(equalToConstant: 1).isActive = true; view.heightAnchor.constraint(equalToConstant: height).isActive = true
         return view
+    }
+}
+
+/// Light and dark hex pairs for one syntax palette.
+struct SyntaxPalette {
+    var command: (UInt32, UInt32), option: (UInt32, UInt32), brace: (UInt32, UInt32)
+    var code: (UInt32, UInt32), comment: (UInt32, UInt32), environment: (UInt32, UInt32)
+    static func of(_ scheme: EditorColorScheme) -> SyntaxPalette {
+        switch scheme {
+        case .standard:
+            return SyntaxPalette(command: (0xAD3DA4, 0xFF7AB2), option: (0x78492A, 0xD9C97C), brace: (0x6C6C70, 0xA1A1A6),
+                                 code: (0x1C1C1E, 0xE1E1E3), comment: (0x707F8C, 0x8E959E), environment: (0x03638C, 0xACF2E4))
+        case .github:
+            return SyntaxPalette(command: (0xCF222E, 0xFF7B72), option: (0x0A3069, 0xA5D6FF), brace: (0x57606A, 0x8B949E),
+                                 code: (0x1F2328, 0xE6EDF3), comment: (0x6E7781, 0x8B949E), environment: (0x8250DF, 0xD2A8FF))
+        case .solarized:
+            return SyntaxPalette(command: (0x268BD2, 0x268BD2), option: (0x2AA198, 0x2AA198), brace: (0x6C71C4, 0x6C71C4),
+                                 code: (0x586E75, 0x93A1A1), comment: (0x93A1A1, 0x657B83), environment: (0xB58900, 0xB58900))
+        case .tomorrow:
+            return SyntaxPalette(command: (0x8959A8, 0xB294BB), option: (0x718C00, 0xB5BD68), brace: (0x4D4D4C, 0xC5C8C6),
+                                 code: (0x4D4D4C, 0xC5C8C6), comment: (0x8E908C, 0x969896), environment: (0x4271AE, 0x81A2BE))
+        }
+    }
+}
+
+extension Theme {
+    fileprivate static func syntax(_ key: KeyPath<SyntaxPalette, (UInt32, UInt32)>) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let pair = SyntaxPalette.of(Theme.scheme)[keyPath: key]
+            return NSColor(hex: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? pair.1 : pair.0)
+        }
+    }
+    /// The editor font for the saved family and size, falling back to the system monospaced font.
+    static func editorFont(_ preferences: AppearancePreferences = .saved()) -> NSFont {
+        let size = CGFloat(preferences.fontSize)
+        if !preferences.fontName.isEmpty, let font = NSFontManager.shared.font(withFamily: preferences.fontName, traits: [], weight: 5, size: size) { return font }
+        return .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+    /// Installed fixed-pitch font families, for the settings picker.
+    static func monospacedFamilies() -> [String] {
+        let manager = NSFontManager.shared
+        return manager.availableFontFamilies.filter { family in
+            manager.font(withFamily: family, traits: [], weight: 5, size: 12)?.isFixedPitch == true
+        }
+    }
+    static func applyAppTheme(_ theme: AppTheme = AppearancePreferences.saved().theme) {
+        switch theme {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 }
 
@@ -151,7 +227,9 @@ final class ActionButton: NSButton {
             if style == .prominent { keyEquivalent = "\r" }
             return
         }
-        isBordered = false; wantsLayer = true; layer?.cornerCurve = .continuous; focusRingType = .none
+        isBordered = false; wantsLayer = true; focusRingType = .none
+        // A continuous (squircle) curve at half the height bulges into an oval; round shapes use a true arc.
+        layer?.cornerCurve = [.pill, .tinted, .circle, .send].contains(style) ? .circular : .continuous
         setButtonType(.momentaryChange)
         let glyph: CGFloat = style == .pill ? 10 : style == .tool ? 11 : style == .send ? 12 : style == .chip || style == .plain ? 9 : 15
         if let symbol { image = Theme.symbol(symbol, size: glyph, weight: style == .send || style == .pill ? .bold : .medium, description: title) }
@@ -161,7 +239,7 @@ final class ActionButton: NSButton {
         switch style {
         case .icon, .accentIcon: size(30, 30)
         case .circle: size(34, 34)
-        case .send: size(26, 26)
+        case .send: size(28, 28)
         case .chip: size(nil, 32)
         case .pill: size(nil, 32)
         case .tinted: size(nil, 30)
@@ -197,6 +275,9 @@ final class ActionButton: NSButton {
         size.width += style == .tool ? 18 : 24
         return size
     }
+    // NSButton pads its frame around the alignment rect that constraints size; a round button's
+    // layer fills the frame, so without this a 28 × 28 circle is drawn 28.5 × 33.5 — an egg.
+    override var alignmentRectInsets: NSEdgeInsets { style == .send || style == .circle ? NSEdgeInsets() : super.alignmentRectInsets }
     override var wantsUpdateLayer: Bool { style != .push && style != .prominent }
     override func updateLayer() {
         let pressed = isHighlighted
@@ -268,7 +349,8 @@ final class SegmentedTabs: NSView {
         thumb.shadow = { let s = NSShadow(); s.shadowColor = NSColor.black.withAlphaComponent(0.16); s.shadowBlurRadius = 4; s.shadowOffset = NSSize(width: 0, height: -2); return s }()
         addSubview(thumb)
         for title in titles {
-            let label = Theme.label(title, size: 12, weight: .medium); label.alignment = .center; label.lineBreakMode = .byClipping
+            let label = Theme.label(title, size: 12, weight: .medium); label.alignment = .center; label.lineBreakMode = .byTruncatingTail
+            label.toolTip = title
             labels.append(label); addSubview(label)
         }
         size(nil, 30); setAccessibilityRole(.tabGroup)
@@ -276,15 +358,24 @@ final class SegmentedTabs: NSView {
     required init?(coder: NSCoder) { fatalError() }
     override var isFlipped: Bool { true }
     /// Segments share the width in proportion to their titles, so short titles leave room for long ones.
+    /// When they do not all fit, the selected one keeps its full title and the others share what is left.
     private var segmentFrames: [NSRect] {
-        let natural = labels.map { $0.intrinsicContentSize.width + 10 }
-        let total = max(1, natural.reduce(0, +)), available = bounds.width - 4
+        let natural = labels.map { $0.intrinsicContentSize.width + 12 }
+        let widths = Self.segmentWidths(natural: natural, available: bounds.width - 4, selected: selected)
         var x: CGFloat = 2
-        return natural.map { width in
-            let scaled = width / total * available
-            defer { x += scaled }
-            return NSRect(x: x, y: 2, width: scaled, height: bounds.height - 4)
+        return widths.map { width in
+            defer { x += width }
+            return NSRect(x: x, y: 2, width: width, height: bounds.height - 4)
         }
+    }
+    static func segmentWidths(natural: [CGFloat], available: CGFloat, selected: Int) -> [CGFloat] {
+        let total = max(1, natural.reduce(0, +))
+        guard total > available, natural.indices.contains(selected), natural.count > 1 else {
+            return natural.map { $0 / total * max(0, available) }
+        }
+        let kept = min(natural[selected], max(0, available) * 0.55)
+        let rest = max(0, available - kept) / CGFloat(natural.count - 1)
+        return natural.indices.map { $0 == selected ? kept : rest }
     }
     private func frame(for index: Int) -> NSRect { let frames = segmentFrames; return frames.indices.contains(index) ? frames[index] : .zero }
     override func layout() {
@@ -303,6 +394,8 @@ final class SegmentedTabs: NSView {
             label.textColor = on ? Theme.adaptive(0x1C1C1E, 0xFFFFFF) : Theme.text
         }
         guard selected >= 0 else { return }
+        // Segment widths depend on which one is selected when space is short.
+        needsLayout = true
         if animated {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.22; context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)

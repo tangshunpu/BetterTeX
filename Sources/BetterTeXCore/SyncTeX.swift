@@ -9,6 +9,15 @@ public struct PDFLocation {
     }
 }
 public struct SourceLocation { public let file: URL; public let line: Int; public let column: Int }
+/// One box SyncTeX attributes to a source line, in PDF points from the page's top-left corner.
+/// `h`/`v` are the box's left edge and baseline; it extends `height` above the baseline.
+public struct SyncBox: Equatable {
+    public let page: Int
+    public let x: Double, y: Double
+    public let h: Double, v: Double
+    public let width: Double, height: Double
+    public var location: PDFLocation { PDFLocation(page: page, x: x, y: y) }
+}
 
 public enum SyncTeX {
     public static func fields(_ output: String) -> [String: String] {
@@ -24,6 +33,31 @@ public enum SyncTeX {
         guard let page = Int(values["Page"] ?? ""), page > 0,
               let x = Double(values["x"] ?? values["h"] ?? ""), let y = Double(values["y"] ?? values["v"] ?? "") else { return nil }
         return PDFLocation(page: page, x: x, y: y)
+    }
+    /// Every box in a `synctex view` result; one source line usually spans several.
+    public static func parseBoxes(_ output: String) -> [SyncBox] {
+        var boxes: [SyncBox] = []; var current: [String: String] = [:]
+        func flush() {
+            if let page = Int(current["Page"] ?? ""), page > 0, let x = Double(current["x"] ?? ""), let y = Double(current["y"] ?? "") {
+                boxes.append(SyncBox(page: page, x: x, y: y, h: Double(current["h"] ?? "") ?? x, v: Double(current["v"] ?? "") ?? y,
+                                     width: Double(current["W"] ?? "") ?? 0, height: Double(current["H"] ?? "") ?? 0))
+            }
+            current = [:]
+        }
+        for line in output.components(separatedBy: .newlines) {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<colon]), value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            if key == "Output" || key == "Page" && current["Page"] != nil { flush() }
+            current[key] = value
+        }
+        flush()
+        return boxes
+    }
+    public static func boxes(file: URL, line: Int, pdf: URL, tools: Toolchain) -> [SyncBox] {
+        guard let binary = tools["synctex"],
+              let result = try? ProcessRunner().run(binary, ["view", "-i", "\(line):0:\(file.path)", "-o", pdf.path], environment: tools.environment, timeout: 10),
+              result.succeeded else { return [] }
+        return parseBoxes(result.output)
     }
     public static func parseInverse(_ output: String, directory: URL) -> SourceLocation? {
         let values = fields(output)

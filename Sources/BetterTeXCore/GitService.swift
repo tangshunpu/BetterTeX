@@ -19,7 +19,16 @@ public struct LineChange: Equatable {
     public let kind: Kind
     /// 1-based lines in the current file. For `deleted`, the single line the removed text sat before.
     public let lines: ClosedRange<Int>
-    public init(_ kind: Kind, _ lines: ClosedRange<Int>) { self.kind = kind; self.lines = lines }
+    /// The whole `git diff` hunk this run came from (both halves of a grown replacement share it).
+    public let hunk: Hunk?
+    /// 1-based line spans of a hunk; a count of 0 means nothing on that side.
+    public struct Hunk: Equatable {
+        public let oldStart: Int, oldCount: Int, newStart: Int, newCount: Int
+        public init(oldStart: Int, oldCount: Int, newStart: Int, newCount: Int) { self.oldStart = oldStart; self.oldCount = oldCount; self.newStart = newStart; self.newCount = newCount }
+    }
+    public init(_ kind: Kind, _ lines: ClosedRange<Int>, hunk: Hunk? = nil) { self.kind = kind; self.lines = lines; self.hunk = hunk }
+    /// Two runs are the same change when they mark the same lines; the hunk is supporting detail.
+    public static func == (lhs: LineChange, rhs: LineChange) -> Bool { lhs.kind == rhs.kind && lhs.lines == rhs.lines }
 
     /// Reads the hunk headers of `git diff -U0` output.
     public static func parse(diff: String) -> [LineChange] {
@@ -33,13 +42,14 @@ public struct LineChange: Equatable {
                 return (start, numbers.count > 1 ? Int(numbers[1]) ?? 1 : 1)
             }
             guard let old = span(fields[1]), let new = span(fields[2]) else { continue }
-            if new.count == 0 { let at = new.start + 1; changes.append(LineChange(.deleted, at...at)) }
-            else if old.count == 0 { changes.append(LineChange(.added, new.start...(new.start + new.count - 1))) }
+            let hunk = Hunk(oldStart: old.start, oldCount: old.count, newStart: new.start, newCount: new.count)
+            if new.count == 0 { let at = new.start + 1; changes.append(LineChange(.deleted, at...at, hunk: hunk)) }
+            else if old.count == 0 { changes.append(LineChange(.added, new.start...(new.start + new.count - 1), hunk: hunk)) }
             else {
                 // A replacement that grew: the first lines count as modified, the surplus as added.
                 let rewritten = min(old.count, new.count)
-                changes.append(LineChange(.modified, new.start...(new.start + rewritten - 1)))
-                if new.count > rewritten { changes.append(LineChange(.added, (new.start + rewritten)...(new.start + new.count - 1))) }
+                changes.append(LineChange(.modified, new.start...(new.start + rewritten - 1), hunk: hunk))
+                if new.count > rewritten { changes.append(LineChange(.added, (new.start + rewritten)...(new.start + new.count - 1), hunk: hunk)) }
             }
         }
         return changes
@@ -91,10 +101,17 @@ public final class GitService {
             guard let ignored = try? command(["-C", root, "check-ignore", "-q", "--", path]), !ignored.succeeded,
                   let text = try? String(contentsOf: file, encoding: .utf8), !text.isEmpty else { return [] }
             let lines = text.components(separatedBy: "\n").count - (text.hasSuffix("\n") ? 1 : 0)
-            return [LineChange(.added, 1...max(1, lines))]
+            return [LineChange(.added, 1...max(1, lines), hunk: LineChange.Hunk(oldStart: 0, oldCount: 0, newStart: 1, newCount: max(1, lines)))]
         }
         guard let diff = try? checked(["-C", root, "diff", "--no-color", "--no-ext-diff", "-U0", "HEAD", "--", path]) else { return [] }
         return LineChange.parse(diff: diff)
+    }
+    /// The committed text of `file`, or nil when it is untracked or outside a repository.
+    public func headText(file: URL) -> String? {
+        guard let root = try? checked(["rev-parse", "--show-toplevel"]).trimmingCharacters(in: .newlines), !root.isEmpty else { return nil }
+        let path = file.resolvingSymlinksInPath().path
+        guard path.hasPrefix(root + "/") else { return nil }
+        return try? checked(["-C", root, "show", "HEAD:" + String(path.dropFirst(root.count + 1))])
     }
     public func pull() throws -> String { try checked(["pull", "--ff-only"]) }
     public func push() throws -> String { try checked(["push"]) }

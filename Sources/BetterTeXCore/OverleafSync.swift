@@ -92,6 +92,11 @@ public enum SyncPlanner {
         }
         return actions
     }
+    /// Whether removing `deletions` of the `tracked` synced files locally is unusual enough to ask first:
+    /// more than five, or most of a small project (an emptied or replaced Overleaf project looks like this).
+    public static func needsDeletionReview(deletions: Int, tracked: Int) -> Bool {
+        deletions > 5 || (deletions >= 2 && deletions * 2 > tracked)
+    }
 }
 
 /// The link between a local folder and an Overleaf project, stored in `.bettertex/overleaf.json`.
@@ -166,16 +171,35 @@ public enum OverleafFiles {
         var result: [String: String] = [:]
         let base = root.standardizedFileURL.resolvingSymlinksInPath().path
         guard let iterator = FileManager.default.enumerator(at: URL(fileURLWithPath: base), includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) else { return result }
+        var compiled: Set<String> = []  // "dir/name" stems that LaTeX left a run record for
         while let url = iterator.nextObject() as? URL {
             let path = url.resolvingSymlinksInPath().path
             guard path.hasPrefix(base + "/") else { continue }
             let relative = String(path.dropFirst(base.count + 1))
+            if let stem = compiledStem(relative) { compiled.insert(stem.precomposedStringWithCanonicalMapping) }
             if isIgnored(relative) { if (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile != true { iterator.skipDescendants() }; continue }
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]), values.isRegularFile == true, (values.fileSize ?? 0) <= 50_000_000,
                   let data = try? Data(contentsOf: url) else { continue }
             result[relative.precomposedStringWithCanonicalMapping] = hash(data)
         }
+        // A PDF sitting next to its own .log/.fls/.synctex is a compiled document, not a source figure.
+        for path in result.keys where path.lowercased().hasSuffix(".pdf") && compiled.contains(String(path.dropLast(4))) { result[path] = nil }
         return result
+    }
+    /// The path without extension when `path` is a record a LaTeX run writes beside its output PDF.
+    static func compiledStem(_ path: String) -> String? {
+        let lower = path.lowercased()
+        for suffix in [".synctex.gz", ".synctex", ".log", ".fls", ".fdb_latexmk"] where lower.hasSuffix(suffix) { return String(path.dropLast(suffix.count)) }
+        return nil
+    }
+    /// Overleaf refuses project archives above this size (HTTP 413).
+    public static let maxArchiveBytes = 50 * 1024 * 1024
+    /// The biggest files of `project` that would be uploaded, largest first.
+    public static func largestFiles(_ project: URL, limit: Int = 5) -> [(path: String, bytes: Int)] {
+        let sized = scan(project).keys.map { path -> (path: String, bytes: Int) in
+            (path, (try? project.appendingPathComponent(path).resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        return Array(sized.sorted { $0.bytes > $1.bytes }.prefix(limit))
     }
 
     /// Unpacks a project archive downloaded from Overleaf.
@@ -199,5 +223,11 @@ public enum OverleafFiles {
         try? manager.removeItem(at: archive)
         let result = try ProcessRunner().run("/usr/bin/ditto", ["-c", "-k", "--norsrc", "--noextattr", staging.path, archive.path], timeout: 180)
         guard result.succeeded else { throw BetterTeXError.message(L10n.tr("无法打包项目：\(result.output)")) }
+        let size = (try? archive.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        if size > maxArchiveBytes {
+            let mb = { (bytes: Int) in String(format: "%.1f MB", Double(bytes) / 1_048_576) }
+            let biggest = largestFiles(project).map { "· \($0.path) (\(mb($0.bytes)))" }.joined(separator: "\n")
+            throw BetterTeXError.message(L10n.tr("项目压缩后有 \(mb(size))，超过 Overleaf 的 50 MB 上传上限。最大的文件：\n\(biggest)"))
+        }
     }
 }
