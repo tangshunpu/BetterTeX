@@ -66,6 +66,8 @@
 
 还需要本机装有 TeX 发行版，例如 [MacTeX](https://www.tug.org/mactex/) 或 [TinyTeX](https://yihui.org/tinytex/)。Agent 面板是可选的，使用你 Mac 上已登录的 [Codex CLI](https://github.com/openai/codex) 和 [Claude Code](https://claude.com/claude-code)。
 
+**Agent 网络连接。** BetterTeX 将登录 shell 中已有的代理环境变量传给本机 CLI；没有配置代理变量时保持直连。应用不修改系统或 CLI 的代理设置，也不内置代理地址。修改 shell 配置后，在「工作区 → 本机工具」中点「重新检测」，再重试消息。
+
 ## 从源码构建
 
 ```sh

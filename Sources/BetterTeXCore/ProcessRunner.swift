@@ -80,14 +80,40 @@ public struct Toolchain {
         self.environment = environment; self.paths = paths
     }
 
+    // Finder-launched apps do not inherit shell exports. Read only the path and proxy
+    // settings needed by local tools, without importing unrelated shell credentials.
+    private static let loginEnvironmentKeys = ["PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"]
+    static func loginEnvironment(shell: String, inheriting environment: [String: String]) -> [String: String]? {
+        let exports = loginEnvironmentKeys.map { key in
+            "if [ \"${\(key)+x}\" = x ]; then printf '\(key)=%s\\0' \"$\(key)\"; fi"
+        }.joined(separator: "\n")
+        // NUL-delimited framing tolerates startup messages, spaces, '=' and newlines.
+        let command = "printf '\\0BETTERTEX_ENV_BEGIN\\0'\n" + exports + "\nprintf 'BETTERTEX_ENV_END\\0'"
+        guard let result = try? ProcessRunner().run(shell, ["-ilc", command], environment: environment, timeout: 6), result.succeeded,
+              let start = result.output.range(of: "\0BETTERTEX_ENV_BEGIN\0"),
+              let end = result.output.range(of: "\0BETTERTEX_ENV_END\0", range: start.upperBound..<result.output.endIndex) else { return nil }
+        var values: [String: String] = [:]
+        for entry in result.output[start.upperBound..<end.lowerBound].split(separator: "\0") {
+            guard let equal = entry.firstIndex(of: "=") else { continue }
+            let key = String(entry[..<equal])
+            if loginEnvironmentKeys.contains(key) { values[key] = String(entry[entry.index(after: equal)...]) }
+        }
+        return values
+    }
+
     public static func discover() -> Toolchain {
-        var env = ProcessInfo.processInfo.environment
+        discover(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func discover(environment: [String: String]) -> Toolchain {
+        var env = environment
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let shell = env["SHELL"] ?? "/bin/zsh"
-        let loginPath = try? ProcessRunner().run(shell, ["-ilc", "printf '\\nBETTERTEX_PATH=%s\\n' \"$PATH\""], timeout: 6)
-        let resolved = loginPath?.output.components(separatedBy: "\n")
-            .first(where: { $0.hasPrefix("BETTERTEX_PATH=") })?.dropFirst("BETTERTEX_PATH=".count)
-        let candidates = [String(resolved ?? ""), env["PATH"] ?? "", "/Library/TeX/texbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "\(home)/.local/bin:\(home)/.cargo/bin:\(home)/.npm-global/bin"]
+        let login = loginEnvironment(shell: shell, inheriting: env)
+        if let login {
+            for key in loginEnvironmentKeys where key != "PATH" { env[key] = login[key] }
+        }
+        let candidates = [login?["PATH"] ?? "", env["PATH"] ?? "", "/Library/TeX/texbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin", "\(home)/.local/bin:\(home)/.cargo/bin:\(home)/.npm-global/bin"]
         var directories = candidates.joined(separator: ":").split(separator: ":").map(String.init)
         for base in ["\(home)/Library/TinyTeX/bin", "\(home)/.TinyTeX/bin"] {
             if let items = try? FileManager.default.contentsOfDirectory(atPath: base) {

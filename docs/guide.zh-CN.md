@@ -98,6 +98,8 @@ Agent 面板可用标题栏的 » 按钮或 ⌘J 折叠成一条窄条，窄条�
 
 需自行安装并登录 Codex CLI 或 Claude Code。应用直接使用现有配置，不提供 API 代理、不接管账户、不自动同意目录信任提示或 Agent 操作。未安装时可在「工作区 → 本机工具」查看状态，安装后点「重新检测」。
 
+Agent 连接沿用登录 shell 中已有的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 及其小写形式，避免从 Finder/Dock 启动时遗漏终端中的网络配置。没有代理变量时保持直连；应用不读取或修改系统代理，不写死代理地址，也不改写 CLI 配置。修改 shell 配置后点「工作区 → 本机工具 → 重新检测」并重试消息，或重启应用。所选服务仍需本机网络及账户能够正常访问。
+
 Agent 输入区参考 VS Code 的 Claude Code / Codex 插件：一张卡片里依次是上下文标签、可自动增高的多行输入框（↩ 发送，⇧↩ 换行），以及「+」、模型菜单、思考强度菜单和发送按钮。模型与强度直接从向上弹出的菜单里选，也可输入自定义模型 ID；有会话在运行时菜单里提供「用当前配置新建会话」。Codex 从本机 `models_cache.json` 读取可见模型和支持的强度；Claude 提供 CLI 的 `opus`、`sonnet`、`haiku` 别名。具体可用模型、额度和强度仍由当前 CLI 与账户决定。保留「CLI 默认」时不覆盖原有配置。
 
 Agent 标题栏的时钟按钮列出当前项目最近的 Codex 与 Claude 会话（各 12 条，按时间倒序，标题取首条提示），选择后以 `codex resume <id>` 或 `claude --resume <id>` 恢复；已有会话在运行时会先确认。历史只读取 CLI 自己保存在 `~/.codex/sessions` 与 `~/.claude/projects` 下的日志开头，不写入也不上传。

@@ -66,6 +66,8 @@ Sign in to Overleaf in a dedicated window. Once signed in, your Overleaf project
 
 You also need a TeX distribution such as [MacTeX](https://www.tug.org/mactex/) or [TinyTeX](https://yihui.org/tinytex/). The agent panel is optional and uses the [Codex CLI](https://github.com/openai/codex) and [Claude Code](https://claude.com/claude-code) already signed in on your Mac.
 
+**Agent networking.** BetterTeX passes your login shell’s proxy environment variables to the locally installed CLIs. Without configured proxy variables, connections remain direct. It does not change system or CLI proxy settings, and no proxy address is built in. After changing your shell configuration, use **Workspace → Local Tools → Detect Again** and retry the message.
+
 ## Build from source
 
 ```sh
