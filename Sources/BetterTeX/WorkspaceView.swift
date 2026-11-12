@@ -319,6 +319,7 @@ final class WorkspaceView: Surface {
     }
     func togglePDF() { pdfItem.isCollapsed.toggle() }
     func showOutput() { terminalItem.isCollapsed = false; if agentFolded { setAgentFolded(false) }; terminal.select("Output") }
+    func showAgent() { terminalItem.isCollapsed = false; if agentFolded { setAgentFolded(false) } }
     private var buildingIndicator: DispatchWorkItem?
     func setBuilding(_ building: Bool) {
         buildingIndicator?.cancel(); buildingIndicator = nil

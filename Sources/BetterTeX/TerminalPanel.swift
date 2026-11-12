@@ -73,7 +73,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     var tools: Toolchain?
     var onError: ((String) -> Void)?
     var onDiagnostic: ((String, Int) -> Void)?
-    var currentContext: (() -> String?)?
+    var currentContext: (() -> AgentSourceContext?)?
+    private(set) var attachedContext: AgentSourceContext?
     /// Project-relative path of the file being edited, mentioned in prompts sent from the composer.
     var contextFile: String? { didSet { updateContextChip() } }
     /// Lines covered by the editor selection; when set, the selected source is sent with the prompt.
@@ -81,7 +82,6 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private var selectedProvider: AgentProvider = .codex
     private var configurations: [AgentProvider: AgentConfiguration] = [:]
     private var modelButton: ActionButton!
-    private var pendingPrompt: String?
     private var pendingResume: AgentSession?
     private var history: [AgentSession] = []
     private var historyButton: ActionButton!
@@ -133,7 +133,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         composerScroll.drawsBackground = false; composerScroll.borderType = .noBorder
         composerScroll.hasVerticalScroller = true; composerScroll.autohidesScrollers = true; composerScroll.documentView = composer
         composerHeight = composerScroll.heightAnchor.constraint(equalToConstant: 22); composerHeight.isActive = true
-        let attach = ActionButton("", symbol: "plus") { [weak self] in self?.attachContext() }; attach.toolTip = L10n.tr("将当前文件 / 选区加入 CLI 输入")
+        let attach = ActionButton("", symbol: "plus") { [weak self] in self?.attachContext() }; attach.toolTip = L10n.tr("加入 Agent 上下文")
         modelButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showModelMenu() }; modelButton.toolTip = L10n.tr("选择模型")
         effortButton = ActionButton("", symbol: "chevron.down", style: .plain) { [weak self] in self?.showEffortMenu() }; effortButton.toolTip = L10n.tr("选择思考强度")
         for button in [modelButton!, effortButton!] { button.cell?.lineBreakMode = .byTruncatingTail; button.setContentCompressionResistancePriority(.init(200), for: .horizontal) }
@@ -244,21 +244,24 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateColors(); updateContextChip() }
     func updateColors() { logView.backgroundColor = Theme.base; logView.textColor = Theme.muted }
     private func updateContextChip() {
-        contextChip.isHidden = contextFile == nil
-        let name = (contextFile as NSString?)?.lastPathComponent ?? ""
+        let file = attachedContext?.file ?? contextFile
+        let lines = attachedContext == nil ? contextLines : attachedContext?.lines
+        contextChip.isHidden = file == nil
+        let name = (file as NSString?)?.lastPathComponent ?? ""
         let off: [NSAttributedString.Key: Any] = includeContext ? [:] : [.strikethroughStyle: NSUnderlineStyle.single.rawValue]
         let text = NSMutableAttributedString(string: "@", attributes: [.foregroundColor: includeContext ? Theme.accent : Theme.muted, .font: NSFont.systemFont(ofSize: 12, weight: .semibold)])
         text.append(NSAttributedString(string: name, attributes: [.foregroundColor: includeContext ? Theme.text : Theme.muted, .font: NSFont.systemFont(ofSize: 12)].merging(off) { $1 }))
-        if let lines = contextLines {
+        if let lines {
             let range = lines.lowerBound == lines.upperBound ? ":\(lines.lowerBound)" : ":\(lines.lowerBound)-\(lines.upperBound)"
             text.append(NSAttributedString(string: range, attributes: [.foregroundColor: Theme.muted, .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)].merging(off) { $1 }))
         }
         contextLabel.attributedStringValue = text
-        let what = contextLines == nil ? L10n.tr("当前文件") : L10n.tr("所选的 \(contextLines!.count) 行源码")
+        let what = lines == nil ? L10n.tr("当前文件") : L10n.tr("所选的 \(lines!.count) 行源码")
         contextChip.toolTip = includeContext ? L10n.tr("发送时附带\(what) · 点按以取消") : L10n.tr("发送时不附带上下文 · 点按以附带\(what)")
+        if let attachedContext { contextChip.toolTip = L10n.tr("已固定上下文：\(attachedContext.reference) · 点按以取消") }
         contextChip.setAccessibilityLabel(L10n.tr("附带上下文 \(name)")); contextChip.setAccessibilityValue(includeContext)
     }
-    @objc private func toggleContext() { includeContext.toggle(); updateContextChip() }
+    @objc private func toggleContext() { includeContext.toggle(); attachedContext = nil; updateContextChip() }
     @objc private func focusComposer() { window?.makeFirstResponder(composer) }
     private func setComposer(_ text: String) { composer.string = text; textDidChange(Notification(name: NSText.didChangeNotification)) }
     private func buildRail() {
@@ -345,42 +348,43 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         NSLayoutConstraint.activate([empty.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), empty.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), empty.centerYAnchor.constraint(equalTo: content.centerYAnchor)])
         needsLayout = true
     }
-    /// Sends the composer text to the agent CLI, launching it with the prompt if needed.
+    /// Pin the source without replacing a draft or starting an agent turn.
+    func attach(_ context: AgentSourceContext) {
+        selectConversation()
+        attachedContext = context; includeContext = true; updateContextChip(); focusComposer()
+        hint.stringValue = L10n.tr("上下文已加入 · 输入消息后发送")
+    }
+    private func selectConversation() {
+        if activeChat == nil { select(selectedProvider == .claude ? "Claude" : "Agent") }
+    }
+    /// An explicit selection is the complete proofreading scope. Leave the current draft intact.
+    @discardableResult func proofread(_ context: AgentSourceContext) -> Bool {
+        guard context.canProofread else { return false }
+        selectConversation()
+        let display = L10n.tr("校对选中文字") + " · " + context.reference
+        return sendAgent(prompt: context.proofreadingPrompt, display: display, sandbox: .readOnly)
+    }
+    /// Shared dispatch keeps provider, availability and busy handling consistent for quick actions.
+    @discardableResult private func sendAgent(prompt: String, display: String, sandbox: CodexSandbox) -> Bool {
+        guard let chat = activeChat else { return false }
+        let provider = chat.provider, agent = provider.rawValue
+        guard !chat.running else { hint.stringValue = L10n.tr("\(agent) 还在处理上一条 · 等它完成或先点停止"); return false }
+        guard let project else { hint.stringValue = L10n.tr("请先打开一个项目"); return false }
+        guard let tools else { hint.stringValue = L10n.tr("正在检测本机工具，请稍候。"); return false }
+        guard let executable = tools[agent.lowercased()] else { onError?(L10n.tr("未检测到 \(agent.lowercased())。请先安装并登录 \(agent) CLI，然后在「工作区」菜单重新检测工具。")); return false }
+        return chat.send(prompt: prompt, display: display, executable: executable, directory: project, environment: tools.environment, configuration: configurations[provider] ?? AgentConfiguration(), sandbox: sandbox)
+    }
+    /// Sends the composer text to the current native conversation.
     @objc private func sendPrompt() {
         let text = composer.string.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{1b}", with: "")
         guard !text.isEmpty else { return }
-        // Anything that is not the Claude terminal goes to the Codex conversation.
-        if active != "Agent", active != "Claude" { select(selectedProvider == .claude ? "Claude" : "Agent") }
-        if let chat = activeChat {
-            let provider = chat.provider, agent = provider.rawValue
-            guard !chat.running else { hint.stringValue = L10n.tr("\(agent) 还在处理上一条 · 等它完成或先点停止"); return }
-            guard let project, let tools else { hint.stringValue = L10n.tr("请先打开一个项目"); return }
-            guard let codex = tools[agent.lowercased()] else { onError?(L10n.tr("未检测到 \(agent.lowercased())。请先安装并登录 \(agent) CLI，然后在「工作区」菜单重新检测工具。")); return }
-            var prompt = text
-            if includeContext, let file = contextFile {
-                if contextLines != nil, let excerpt = currentContext?() { prompt = L10n.tr("当前文件与选中的内容：\n") + excerpt.replacingOccurrences(of: "\u{1b}", with: "") + "\n\n" + text }
-                else { prompt = L10n.tr("当前文件：\(file)\n\n") + text }
-            }
-            chat.send(prompt: prompt, display: text, executable: codex, directory: project, environment: tools.environment, configuration: configurations[provider] ?? AgentConfiguration(), sandbox: sandbox)
-            setComposer(""); return
-        }
-        let name = AgentProvider(rawValue: active)?.rawValue ?? selectedProvider.rawValue
-        var message = text
-        if includeContext, let file = contextFile {
-            // A selection travels as a fenced excerpt; otherwise the file is only mentioned.
-            if contextLines != nil, let excerpt = currentContext?() { message = excerpt.replacingOccurrences(of: "\u{1b}", with: "") + "\n" + text }
-            else { message = "@\(file) " + text }
-        }
-        if let terminal = terminals[name] {
-            guard terminal.getTerminal().bracketedPasteMode else { hint.stringValue = L10n.tr("等待 CLI 进入输入界面后再发送"); return }
-            if active != name { select(name) }
-            terminal.send(txt: "\u{1b}[200~" + message + "\u{1b}[201~")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak terminal] in terminal?.send(txt: "\r") }
-        } else {
-            pendingPrompt = message; select(name); pendingPrompt = nil
-            guard terminals[name] != nil else { return }
-        }
-        setComposer(""); hint.stringValue = L10n.tr("已发送给 \(name)"); updateComposerMode()
+        selectConversation()
+        let context = includeContext ? (attachedContext ?? currentContext?()) : nil
+        let prompt = context.map { $0.excerpt.replacingOccurrences(of: "\u{1b}", with: "") + "\n\n" + text } ?? text
+        // Keep the attachment visible in the transcript, so the scope is clear after switching files.
+        let display = context.map { $0.reference + "\n\n" + text } ?? text
+        guard sendAgent(prompt: prompt, display: display, sandbox: sandbox) else { return }
+        attachedContext = nil; updateContextChip(); setComposer("")
     }
     func select(_ requested: String) {
         // "Codex" is the conversation tab; there is no separate Codex terminal.
@@ -405,7 +409,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             let settings = name == "Shell" ? [] : try (configurations[selectedProvider] ?? AgentConfiguration()).arguments(for: selectedProvider)
             if name == "Shell" { args = ["-l"] }
             else if let session = pendingResume, session.provider == selectedProvider { args = try AgentHistory.resumeArguments(for: session) + settings }
-            else { args = settings + (pendingPrompt.map { [$0] } ?? []) }
+            else { args = settings }
         }
         catch { showEmpty(); onError?(error.localizedDescription); return }
         let terminal = AdaptiveTerminal(frame: NSRect(x: 0, y: 0, width: max(240, content.bounds.width), height: max(100, content.bounds.height)), font: .monospacedSystemFont(ofSize: 12, weight: .regular), options: options)
@@ -577,10 +581,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         } else { launch() }
     }
     private func attachContext() {
-        guard AgentProvider(rawValue: active) != nil, let terminal = terminals[active], let text = currentContext?() else { hint.stringValue = L10n.tr("先启动 Agent，再选择要附加的源码"); return }
-        guard terminal.getTerminal().bracketedPasteMode else { hint.stringValue = L10n.tr("等待 CLI 进入输入界面后再附加上下文"); return }
-        terminal.send(txt: "\u{1b}[200~" + text.replacingOccurrences(of: "\u{1b}", with: "") + "\u{1b}[201~")
-        window?.makeFirstResponder(terminal); hint.stringValue = L10n.tr("上下文已加入输入 · 在 CLI 中确认发送")
+        guard let context = currentContext?() else { return }
+        attach(context)
     }
     func stopActive() {
         guard let terminal = terminals.removeValue(forKey: active) else { return }
@@ -589,7 +591,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     }
     func stopAll() {
         for terminal in terminals.values { terminal.processDelegate = nil; terminal.terminate() }
-        terminals.removeAll(); chat.reset(); claudeChat.reset(); logView.string = ""; select("Agent")
+        terminals.removeAll(); chat.reset(); claudeChat.reset(); logView.string = ""
+        attachedContext = nil; includeContext = true; setComposer(""); updateContextChip(); select("Agent")
     }
     func append(_ text: String) {
         let storage = logView.textStorage!

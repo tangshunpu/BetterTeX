@@ -54,6 +54,11 @@ final class CodeTextView: NSTextView {
     var onSync: (() -> Void)?
     var onDropImages: (([URL]) -> Void)?
     var onPasteImage: ((Data) -> Void)?
+    var onInsertSnippet: ((Snippet) -> Void)?
+    var sourceContext: (() -> AgentSourceContext?)?
+    var onAttachContext: ((AgentSourceContext) -> Void)?
+    var onProofread: ((AgentSourceContext) -> Void)?
+    var onContextMenu: (() -> Void)?
     /// Offered every key press first; returns true when the completion list consumed it.
     var onCompletionKey: ((NSEvent) -> Bool)?
     var onResign: (() -> Void)?
@@ -62,6 +67,51 @@ final class CodeTextView: NSTextView {
         super.keyDown(with: event)
     }
     override func resignFirstResponder() -> Bool { onResign?(); return super.resignFirstResponder() }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        onContextMenu?()
+        let position = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+        return editingMenu(at: position)
+    }
+    /// Preserve a right-clicked selection; elsewhere, insert at the clicked position.
+    func editingMenu(at position: Int) -> NSMenu {
+        let position = min(max(0, position), (string as NSString).length)
+        let selection = selectedRange()
+        if selection.length == 0 || position < selection.location || position > NSMaxRange(selection) {
+            setSelectedRange(NSRange(location: position, length: 0))
+        }
+        let menu = NSMenu(); menu.autoenablesItems = false; menu.allowsContextMenuPlugIns = false
+        if let context = sourceContext?(), context.canProofread {
+            if onAttachContext != nil {
+                menu.addItem(ClosureMenuItem(L10n.tr("加入 Agent 上下文"), symbol: "text.badge.plus") { [weak self] in self?.onAttachContext?(context) })
+            }
+            if onProofread != nil {
+                let item = ClosureMenuItem(L10n.tr("校对选中文字"), symbol: "text.badge.checkmark") { [weak self] in self?.onProofread?(context) }
+                item.toolTip = L10n.tr("由当前 Agent 校对，在对话中查看修订和说明")
+                menu.addItem(item)
+            }
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+        }
+        if isEditable, onInsertSnippet != nil {
+            let insert = NSMenu(title: L10n.tr("插入"))
+            for snippet in Snippet.allCases {
+                insert.addItem(ClosureMenuItem(snippet == .image ? L10n.tr("图片…") : snippet.title, symbol: snippet.symbol) { [weak self] in self?.onInsertSnippet?(snippet) })
+                if snippet == .image || snippet == .section { insert.addItem(.separator()) }
+            }
+            let item = NSMenuItem(title: L10n.tr("插入"), action: nil, keyEquivalent: ""); item.submenu = insert
+            menu.addItem(item); menu.addItem(.separator())
+        }
+        func edit(_ title: String, _ action: Selector, _ key: String, enabled: Bool) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = self; item.isEnabled = enabled; menu.addItem(item)
+        }
+        let selected = selectedRange().length > 0
+        edit(L10n.tr("剪切"), #selector(cut(_:)), "x", enabled: isEditable && selected)
+        edit(L10n.tr("复制"), #selector(copy(_:)), "c", enabled: selected)
+        let canPaste = NSPasteboard.general.availableType(from: [.string, .fileURL, .png, .tiff]) != nil
+        edit(L10n.tr("粘贴"), #selector(paste(_:)), "v", enabled: isEditable && canPaste)
+        edit(L10n.tr("全选"), #selector(selectAll(_:)), "a", enabled: !string.isEmpty)
+        return menu
+    }
     private func imageURLs(on pasteboard: NSPasteboard) -> [URL] {
         ((pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []).filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) }
     }
@@ -449,6 +499,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
         scroll.translatesAutoresizingMaskIntoConstraints = false; addSubview(scroll)
         popup.onAccept = { [weak self] in self?.acceptCompletion($0) }
         textView.onResign = { [weak self] in self?.popup.dismiss() }
+        textView.onContextMenu = { [weak self] in self?.popup.dismiss() }
+        textView.onInsertSnippet = { [weak self] in self?.insert($0) }
         textView.onCompletionKey = { [weak self] event in
             guard let self, self.popup.isVisible else { return false }
             switch event.keyCode {

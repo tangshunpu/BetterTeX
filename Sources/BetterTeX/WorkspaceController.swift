@@ -109,23 +109,32 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         ui.editor.onInsertImage = { [weak self] in self?.pickImage() }
         ui.editor.textView.onDropImages = { [weak self] in self?.insertImages($0) }
         ui.editor.textView.onPasteImage = { [weak self] in self?.insertPastedImage($0) }
+        ui.editor.textView.sourceContext = { [weak self] in self?.editorContext() }
+        ui.editor.textView.onAttachContext = { [weak self] context in
+            guard let self else { return }
+            self.ui.showAgent(); self.ui.terminal.attach(context)
+        }
+        ui.editor.textView.onProofread = { [weak self] context in
+            guard let self else { return }
+            self.ui.showAgent(); self.ui.terminal.proofread(context)
+        }
         ui.preview.pdfView.onInverse = { [weak self] in self?.inverseSync(page: $0, x: $1, y: $2) }
         ui.preview.onExport = { [weak self] in self?.exportPDF() }
         ui.terminal.onError = { [weak self] in self?.error($0) }
         ui.terminal.onOpenFile = { [weak self] in self?.openFile($0) }
-        ui.terminal.currentContext = { [weak self] in
-            guard let self, let file = self.active?.url else { return nil }
-            let text = self.ui.editor.textView.string as NSString
-            let range = self.ui.editor.textView.selectedRange()
-            let path = file.path.replacingOccurrences(of: (self.project?.path ?? "") + "/", with: "")
-            let selection = range.length > 0 && NSMaxRange(range) <= text.length ? "\n```tex\n" + text.substring(with: range) + "\n```" : ""
-            return "@\(path)" + selection
-        }
+        ui.terminal.currentContext = { [weak self] in self?.editorContext() }
         ui.terminal.onDiagnostic = { [weak self] path, line in
             guard let self, let root = self.compiledRoot ?? self.active?.url else { return }
             self.openFile(URL(fileURLWithPath: path, relativeTo: root.deletingLastPathComponent()).standardizedFileURL, line: line)
         }
         watcher.onChange = { [weak self] in self?.externalChanges() }
+    }
+    private func editorContext() -> AgentSourceContext? {
+        guard let file = active?.url else { return nil }
+        let filePath = file.resolvingSymlinksInPath().path
+        let prefix = (project?.resolvingSymlinksInPath().path ?? "") + "/"
+        let path = filePath.hasPrefix(prefix) ? String(filePath.dropFirst(prefix.count)) : filePath
+        return AgentSourceContext(file: path, source: ui.editor.textView.string, range: ui.editor.textView.selectedRange())
     }
     /// Keeps the title bar content clear of the traffic lights, which hide in full screen.
     func positionTrafficLights() {
@@ -344,7 +353,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             ui.editor.load(buffer, project: project ?? url.deletingLastPathComponent()); refreshTabs(); ui.explorer.reveal(url)
             let root = project ?? url.deletingLastPathComponent()
             ui.setTitle(project: root.lastPathComponent, file: url.lastPathComponent)
-            ui.terminal.contextFile = url.path.replacingOccurrences(of: root.path + "/", with: "")
+            ui.terminal.contextFile = editorContext()?.file
             if let line { ui.editor.goTo(line: line, column: column) }
             overleaf.attachActiveDoc(); ui.editor.setGitChanges([]); refreshGitMarkers(); refreshProblems()
         } catch { self.error(error.localizedDescription) }

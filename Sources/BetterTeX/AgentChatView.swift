@@ -65,8 +65,8 @@ final class AgentChatView: NSView {
 
     // MARK: Conversation
     /// Starts a turn. `display` is what the user typed; `prompt` may add file context to it.
-    func send(prompt: String, display: String, executable: String, directory: URL, environment: [String: String], configuration: AgentConfiguration, sandbox: CodexSandbox) {
-        guard !running else { return }
+    @discardableResult func send(prompt: String, display: String, executable: String, directory: URL, environment: [String: String], configuration: AgentConfiguration, sandbox: CodexSandbox) -> Bool {
+        guard !running else { return false }
         // Both CLIs speak through the same event model; only the process differs.
         let token = NSObject()
         let run: (@escaping (CodexEvent) -> Void) throws -> (status: Int32, stderr: String)
@@ -81,7 +81,7 @@ final class AgentChatView: NSView {
                 let process = ClaudeTurn(); cancelTurn = { process.cancel() }
                 run = { try process.run(request, executable: executable, directory: directory, environment: environment, onEvent: $0) }
             }
-        } catch { append("s\(UUID().uuidString)", .status(error.localizedDescription, failed: true)); return }
+        } catch { append("s\(UUID().uuidString)", .status(error.localizedDescription, failed: true)); return false }
         turnNumber += 1; let number = turnNumber; turnStarted = false
         self.directory = directory
         append("u\(number)", .user(display))
@@ -104,6 +104,7 @@ final class AgentChatView: NSView {
                 }
             }
         }
+        return true
     }
     func stop() {
         guard running, turn != nil else { return }
