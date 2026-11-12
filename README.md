@@ -8,7 +8,7 @@
 Write, compile and preview in one window — with Overleaf sync and your coding agents built in.<br>
 Word-level jumps between source and PDF, in a **2.8 MB** download.
 
-[![Release](https://img.shields.io/badge/release-v0.1.0--alpha.4-0A84FF?style=flat-square)](https://github.com/tangshunpu/BetterTeX/releases)
+[![Release](https://img.shields.io/badge/release-v0.1.0--alpha.5-0A84FF?style=flat-square)](https://github.com/tangshunpu/BetterTeX/releases)
 [![Platform](https://img.shields.io/badge/macOS-13%2B-1C1C1E?style=flat-square&logo=apple&logoColor=white)](#install)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-8E8E93?style=flat-square)](#install)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?style=flat-square&logo=swift&logoColor=white)](https://swift.org)

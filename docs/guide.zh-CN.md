@@ -26,11 +26,11 @@
 
 ```sh
 BETTERTEX_UPDATE_SIGNING_KEY="$HOME/Library/Application Support/BetterTeX/ReleaseSigning/ed25519-private.key" \
-BETTERTEX_VERSION=0.1.0-alpha.4 CONFIGURATION=release ./script/build_and_run.sh --build-only
+BETTERTEX_VERSION=0.1.0-alpha.5 CONFIGURATION=release ./script/build_and_run.sh --build-only
 ./script/make_dmg.sh
 ```
 
-将 `dist/BetterTeX-0.1.0-alpha.4-macOS-arm64.zip`、对应的 `.zip.sig`（Intel 构建为 `x86_64`）和 DMG 一起上传到对应 GitHub Release。GitHub 上传后提供资产的 `sha256:` digest，更新器会验证它。打包会把完整版本写入 `BetterTeXReleaseVersion`；`CFBundleShortVersionString` 保留三段数字，`CFBundleVersion` 默认使用 Git 提交计数，也可通过 `BETTERTEX_BUILD_NUMBER` 覆盖。当前包采用 ad-hoc 代码签名，自动更新另外使用 Ed25519 发布者签名。应用内固定公钥 `Sources/BetterTeXCore/Resources/UpdateSigningPublicKey.txt`，在解压前验证签名；即使 GitHub Release 及其 SHA-256 字段被篡改，没有对应私钥也不能通过自动安装校验。将来若使用 Developer ID 签名，更新还必须保持同一签名团队。
+将 `dist/BetterTeX-0.1.0-alpha.5-macOS-arm64.zip`、对应的 `.zip.sig`（Intel 构建为 `x86_64`）和 DMG 一起上传到对应 GitHub Release。GitHub 上传后提供资产的 `sha256:` digest，更新器会验证它。打包会把完整版本写入 `BetterTeXReleaseVersion`；`CFBundleShortVersionString` 保留三段数字，`CFBundleVersion` 默认使用 Git 提交计数，也可通过 `BETTERTEX_BUILD_NUMBER` 覆盖。当前包采用 ad-hoc 代码签名，自动更新另外使用 Ed25519 发布者签名。应用内固定公钥 `Sources/BetterTeXCore/Resources/UpdateSigningPublicKey.txt`，在解压前验证签名；即使 GitHub Release 及其 SHA-256 字段被篡改，没有对应私钥也不能通过自动安装校验。将来若使用 Developer ID 签名，更新还必须保持同一签名团队。
 
 维护者的私钥存放于仓库外的 `~/Library/Application Support/BetterTeX/ReleaseSigning/ed25519-private.key`，权限为 `0600`。请离线备份，不要将它提交到 Git 或与 Release 一起上传。普通开发构建不需要私钥；只有显式设置 `BETTERTEX_UPDATE_SIGNING_KEY` 才生成 `.sig`，且工具会拒绝与固定公钥不匹配的私钥。不要随意重新生成密钥：旧安装只能信任已内置的公钥，丢失私钥时需要设计受信任的密钥迁移或手动安装新版。
 
