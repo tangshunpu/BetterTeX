@@ -318,7 +318,11 @@ final class CodeTextView: NSTextView {
             case .subsubsection, .paragraph:
                 color.withAlphaComponent(0.6).setFill(); NSRect(x: 0, y: band.minY, width: 2, height: band.height).fill(using: .sourceOver)
             }
-            if !heading.number.isEmpty { drawBadge("§ \(heading.number)", color: color, line: band, visible: visible) }
+            // "§ 2.1 Related Work": the number alone says little, so name the section too.
+            var title = heading.title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            if title.count > 40 { title = title.prefix(39).trimmingCharacters(in: .whitespaces) + "…" }
+            let label = [heading.number.isEmpty ? "" : "§ \(heading.number)", title].filter { !$0.isEmpty }.joined(separator: " ")
+            if !label.isEmpty { drawBadge(label, color: color, line: band, visible: visible) }
         }
     }
     /// A small pill at the right edge of the visible text, naming what the line starts.
