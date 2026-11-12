@@ -24,6 +24,12 @@ public struct TextStream {
 public struct TextMatch: Equatable {
     public let index: Int
     public let weight: Double
+    /// The two texts agree character for character at the position itself, not only around it.
+    public let exact: Bool
+    public init(index: Int, weight: Double, exact: Bool = false) { self.index = index; self.weight = weight; self.exact = exact }
+    /// Ranks matches: one that only lines up with nearby text (the position itself is spelled differently, or
+    /// belongs to a neighbouring column, float or footnote) counts for far less than one that agrees on the spot.
+    public func score(penalty: Double = 0) -> Double { weight * (exact ? 1 : 0.1) / (1 + penalty) }
 }
 
 public enum TextSync {
@@ -168,6 +174,16 @@ public enum TextSync {
         var table: [Pair: [Int]] = [:]
         for start in 0..<(target.count - 1) { table[Pair(first: target.characters[start], second: target.characters[start + 1]), default: []].append(start) }
 
+        /// How many characters agree in a row through `position` when the texts are shifted by `delta`.
+        func agreement(_ delta: Int) -> Int {
+            let landing = position + delta
+            guard landing >= 0, landing < target.count, source.characters[position] == target.characters[landing] else { return 0 }
+            var right = 1, left = 0
+            while right < 12, position + right < source.count, landing + right < target.count, source.characters[position + right] == target.characters[landing + right] { right += 1 }
+            while left < 12, position - left - 1 >= 0, landing - left - 1 >= 0, source.characters[position - left - 1] == target.characters[landing - left - 1] { left += 1 }
+            return left + right
+        }
+        var fallback: TextMatch?
         for (length, minimum) in [(10, 1.0), (7, 1.2), (5, 2.0)] {
             var votes: [(delta: Int, weight: Double, reach: Int)] = []
             for shift in stride(from: -60, through: 60, by: 3) {
@@ -190,15 +206,134 @@ public enum TextSync {
             for cluster in clusters {
                 let weight = cluster.reduce(0) { $0 + $1.weight }
                 guard weight >= minimum else { continue }
-                // The run closest to the position fixes the exact character.
-                let anchor = cluster.min { $0.reach < $1.reach }!
-                let landing = min(max(0, position + anchor.delta), target.count - 1)
-                let score = weight / (1 + (penalty?(landing) ?? 0))
-                if best == nil || score > best!.score { best = (score, TextMatch(index: landing, weight: weight)) }
+                // An alignment that agrees through the position itself fixes the exact character.
+                var agreed: (delta: Int, run: Int)?; var tried = Set<Int>()
+                for vote in cluster.sorted(by: { $0.reach < $1.reach }) where tried.insert(vote.delta).inserted {
+                    let run = agreement(vote.delta)
+                    if run > (agreed?.run ?? 0) { agreed = (vote.delta, run) }
+                    if tried.count >= 8 { break }
+                }
+                let match: TextMatch
+                if let agreed, agreed.run >= 4 {
+                    match = TextMatch(index: position + agreed.delta, weight: weight, exact: true)
+                } else {
+                    // Otherwise the run closest to the position places it as well as the shared text allows.
+                    let anchor = cluster.min { $0.reach < $1.reach }!
+                    match = TextMatch(index: min(max(0, position + anchor.delta), target.count - 1), weight: weight)
+                }
+                let score = match.score(penalty: penalty?(match.index) ?? 0)
+                if best == nil || score > best!.score { best = (score, match) }
             }
-            if let best { return best.match }
+            guard let best else { continue }
+            if best.match.exact { return best.match }
+            if fallback == nil { fallback = best.match }
         }
-        return nil
+        return fallback
+    }
+
+    // MARK: PDF → source
+
+    private static func canonical(_ url: URL) -> String { url.standardizedFileURL.resolvingSymlinksInPath().path }
+
+    /// Where a click in the PDF lands in the sources. `hint` is the file and (current) line SyncTeX named.
+    /// SyncTeX is often a paragraph off and at times names a neighbouring file, so the clicked words are looked
+    /// for in every candidate and the hint only ranks the places found. `offset` is nil when only a line is known.
+    public static func locate(clicked: (stream: TextStream, index: Int, word: String)?, hint: (file: URL, line: Int, text: String)?,
+                              candidates: [(file: URL, text: String)]) -> (file: URL, offset: Int?, line: Int, text: String)? {
+        let fallback: (file: URL, offset: Int?, line: Int, text: String)? = hint.map { ($0.file, nil, $0.line, $0.text) }
+        guard let clicked else { return fallback }
+        var files: [(file: URL, text: String, hint: Int?)] = hint.map { [($0.file, $0.text, $0.line)] } ?? []
+        let hinted = hint.map { canonical($0.file) }
+        var seen: Set<String> = hinted.map { [$0] } ?? []
+        for candidate in candidates where seen.insert(canonical(candidate.file)).inserted { files.append((candidate.file, candidate.text, nil)) }
+
+        var best: (file: URL, text: String, stream: TextStream, starts: [Int], hint: Int?, match: TextMatch, score: Double)?
+        for (file, source, line) in files where !source.isEmpty {
+            let stream = texStream(source); let starts = lineStarts(source)
+            let penalty: (Int) -> Double
+            if let line { penalty = { min(3, Double(abs(TextSync.line(of: stream.offset(at: $0), starts: starts) - line)) / 12) } }
+            else { penalty = { _ in hint == nil ? 0 : 1 } }
+            guard let match = correspond(clicked.index, from: clicked.stream, to: stream, penalty: penalty) else { continue }
+            let score = match.score(penalty: penalty(match.index))
+            if best == nil || score > best!.score { best = (file, source, stream, starts, line, match, score) }
+            // A firm hit on the clicked word in the file SyncTeX named settles it.
+            if line != nil, match.exact, match.weight >= 3 { break }
+        }
+        guard let best else { return fallback }
+        let offset = best.match.exact ? best.stream.offset(at: best.match.index)
+            : settle(clicked: clicked, landing: best.match.index, in: best.stream, text: best.text, starts: best.starts, hint: best.hint)
+        return (best.file, offset, line(of: offset, starts: best.starts), best.text)
+    }
+
+    /// Places a click on something the source spells differently (a macro, an equation, a generated heading or
+    /// number). The shared text on either side bounds a stretch of source; inside it the clicked word is looked
+    /// for literally, then the SyncTeX line is taken if it falls there, then the nearer end.
+    private static func settle(clicked: (stream: TextStream, index: Int, word: String), landing: Int, in target: TextStream,
+                               text: String, starts: [Int], hint: Int?) -> Int {
+        let source = clicked.stream, position = min(max(0, clicked.index), source.count - 1), base = landing - position
+        let ns = text as NSString, gram = 6
+        func agrees(_ start: Int, _ delta: Int) -> Bool {
+            guard start >= 0, start + gram <= source.count, start + delta >= 0, start + delta + gram <= target.count else { return false }
+            for step in 0..<gram where source.characters[start + step] != target.characters[start + delta + step] { return false }
+            return true
+        }
+        func delta(at start: Int) -> Int? {
+            if agrees(start, base) { return base }
+            for spread in 1...30 { if agrees(start, base - spread) { return base - spread }; if agrees(start, base + spread) { return base + spread } }
+            return nil
+        }
+        // The last shared character before the click and the first one after it, as indices of `target`.
+        var left: (reach: Int, index: Int)?, right: (reach: Int, index: Int)?
+        for end in stride(from: position - 1, through: max(gram - 1, position - 90), by: -1) {
+            if let shift = delta(at: end - gram + 1) { left = (position - end, end + shift); break }
+        }
+        if position + 1 < source.count {
+            for start in (position + 1)...min(source.count - 1, position + 90) {
+                if let shift = delta(at: start) { right = (start - position, start + shift); break }
+            }
+        }
+        // Sides that cross belong to different places (a column end next to a footnote): keep the nearer one.
+        if let l = left, let r = right, l.index >= r.index { if l.reach <= r.reach { right = nil } else { left = nil } }
+        guard left != nil || right != nil else { return target.offset(at: landing) }
+        var low = left.map { min(ns.length, target.offset(at: $0.index) + 1) } ?? 0
+        var high = right.map { target.offset(at: $0.index) } ?? ns.length
+        if left == nil { low = max(0, high - 400) }; if right == nil { high = min(ns.length, low + 400) }
+        guard low < high else { return min(low, ns.length) }
+        let span = NSRange(location: low, length: high - low)
+
+        // The word itself, or its longest run of letters or digits (“log10” is \log_{10} in the source).
+        var needles = clicked.word.count >= 2 ? [clicked.word] : []
+        var pieces: [String] = [], piece = ""
+        for character in clicked.word + " " {
+            if let last = piece.last, character.isLetter && last.isLetter || character.isNumber && last.isNumber { piece.append(character); continue }
+            if piece.count >= 3 { pieces.append(piece) }
+            piece = character.isLetter || character.isNumber ? String(character) : ""
+        }
+        needles += pieces.filter { $0 != clicked.word }.sorted { $0.count > $1.count }
+        for needle in needles {
+            var found: Int?; var search = span; var rounds = 0
+            while search.length > 0, rounds < 60 {
+                let hit = ns.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive], range: search)
+                guard hit.location != NSNotFound else { break }
+                if let hint, let current = found {
+                    if abs(line(of: hit.location, starts: starts) - hint) < abs(line(of: current, starts: starts) - hint) { found = hit.location }
+                } else if found == nil { found = hit.location }
+                if hint == nil { break }
+                search = NSRange(location: NSMaxRange(hit), length: NSMaxRange(span) - NSMaxRange(hit)); rounds += 1
+            }
+            if let found { return found }
+        }
+        func skippingBlanks(from start: Int, to limit: Int) -> Int {
+            var at = start
+            while at < limit, let scalar = UnicodeScalar(ns.character(at: at)), CharacterSet.whitespacesAndNewlines.contains(scalar) { at += 1 }
+            return at
+        }
+        if let hint, hint >= line(of: low, starts: starts), hint <= line(of: high, starts: starts), hint - 1 < starts.count {
+            let lineEnd = hint < starts.count ? starts[hint] : ns.length
+            return skippingBlanks(from: max(low, starts[hint - 1]), to: min(high, lineEnd))
+        }
+        if let l = left, right == nil || l.reach <= right!.reach { return skippingBlanks(from: low, to: high) }
+        return high
     }
 
     // MARK: Sentences and lines

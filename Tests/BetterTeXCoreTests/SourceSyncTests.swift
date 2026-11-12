@@ -118,4 +118,47 @@ final class SourceSyncTests: XCTestCase {
         XCTAssertEqual(boxes.count, 2)
         XCTAssertEqual(boxes[1], SyncBox(page: 2, x: 100.5, y: 212, h: 72, v: 214, width: 451, height: 7.5))
     }
+
+    // MARK: PDF → source
+
+    private func click(_ word: String, in pdf: String, occurrence: Int = 0) -> (stream: TextStream, index: Int, word: String) {
+        let ns = pdf as NSString; var range = ns.range(of: word)
+        for _ in 0..<occurrence { range = ns.range(of: word, range: NSRange(location: NSMaxRange(range), length: ns.length - NSMaxRange(range))) }
+        let stream = TextSync.pdfStream(pdf)
+        return (stream, stream.index(atOrAfter: range.location + word.count / 2), word)
+    }
+    private let body = (1...30).map { "Paragraph \($0) discusses a distinct aspect of the layered design in its own words, number \($0 * 7)." }.joined(separator: "\n")
+
+    func testLocateIgnoresAFootnoteThatFollowsTheColumnEnd() throws {
+        let file = URL(fileURLWithPath: "/tmp/main.tex")
+        let tex = "\\author{Ann Author\\thanks{This work was supported by an example grant from the laboratory.}}\n\(body)\nSection five concludes the paper with a short outlook on future directions.\n"
+        // On the page the column ends with the paragraph and the footnote sits right under it.
+        let pdf = "Ann Author\n\(body)\nSection five concludes the paper with a short outlook on future directions.\nThis work was supported by an example grant from the laboratory.\n"
+        // SyncTeX names the footnote's line.
+        let found = try XCTUnwrap(TextSync.locate(clicked: click("directions", in: pdf), hint: (file, 1, tex), candidates: [(file, tex)]))
+        let offset = try XCTUnwrap(found.offset)
+        XCTAssertTrue(NSLocationInRange(offset, (tex as NSString).range(of: "directions")), "line \(found.line)")
+    }
+
+    func testLocateSearchesOtherFilesWhenSyncTeXNamesTheWrongOne() throws {
+        let main = URL(fileURLWithPath: "/tmp/main.tex"), method = URL(fileURLWithPath: "/tmp/sections/method.tex")
+        let mainText = "\(body)\nThe transmit power is normalized so that the average constraint holds everywhere.\n\\input{sections/method}\n"
+        let methodText = "\\section{Proposed Method}\nThis section describes the encoder, the truncation rule and the training objective.\n"
+        let pdf = "\(body)\nThe transmit power is normalized so that the average constraint holds everywhere.\nIII. PROPOSED METHOD\nThis section describes the encoder, the truncation rule and the training objective.\n"
+        let found = try XCTUnwrap(TextSync.locate(clicked: click("normalized", in: pdf), hint: (method, 1, methodText), candidates: [(method, methodText), (main, mainText)]))
+        XCTAssertEqual(found.file, main)
+        XCTAssertTrue(NSLocationInRange(try XCTUnwrap(found.offset), (mainText as NSString).range(of: "normalized")))
+    }
+
+    func testLocatePutsAMacroAndAnEquationWhereTheSourceSpellsThem() throws {
+        let file = URL(fileURLWithPath: "/tmp/main.tex")
+        let tex = "\(body)\nWe propose \\name, a rateless scheme that adapts to the channel without feedback. The quality is defined as\n\\begin{align}\n  Q &= 10\\log_{10}\\frac{255^{2}}{\\mathrm{MSE}},\n\\end{align}\nwhere the error is averaged over all pixels of the reconstructed image.\n"
+        let pdf = "\(body)\nWe propose LayerCast, a rateless scheme that adapts to the channel without feedback. The quality is defined as\nQ = 10 log10\n2552\nMSE , (1)\nwhere the error is averaged over all pixels of the reconstructed image.\n"
+        let ns = tex as NSString
+        let macro = try XCTUnwrap(TextSync.locate(clicked: click("LayerCast", in: pdf), hint: (file, 31, tex), candidates: [(file, tex)]))
+        XCTAssertEqual(macro.offset, ns.range(of: "\\name").location)
+        let equation = try XCTUnwrap(TextSync.locate(clicked: click("MSE", in: pdf), hint: (file, 34, tex), candidates: [(file, tex)]))
+        XCTAssertEqual(equation.offset, ns.range(of: "MSE").location)
+        XCTAssertEqual(equation.line, 33)
+    }
 }

@@ -686,7 +686,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     /// since the build), so the caret lands on the clicked word and its sentence is marked.
     func inverseSync(page: Int, x: Double, y: Double) {
         guard let pdf = compiledPDF, let root = compiledRoot, let tools else { setStatus(L10n.tr("请先编译当前文档以生成 SyncTeX 映射")); return }
-        var clicked: (stream: TextStream, index: Int)?
+        var clicked: (stream: TextStream, index: Int, word: String)?
         if let pdfPage = ui.preview.pdfView.document?.page(at: page - 1) {
             let media = pdfPage.bounds(for: .mediaBox)
             clicked = ui.preview.textPosition(page: page - 1, point: CGPoint(x: media.minX + x, y: media.maxY - y))
@@ -699,27 +699,20 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             func text(of url: URL) -> String? {
                 texts.first { Self.samePath($0.key, url) }?.value ?? (try? String(contentsOf: url, encoding: .utf8))
             }
-            var result: (file: URL, offset: Int?, line: Int, text: String)?
+            var hint: (file: URL, line: Int, text: String)?
             if let synced, let source = text(of: synced.file) {
                 // Reuse an open tab's URL so the same file is not opened twice under another spelling.
                 let file = candidates.first { Self.samePath($0, synced.file) } ?? synced.file
-                let line = snapshot?.lineMap(for: file, current: source)?.current(forCompiled: synced.line) ?? synced.line
-                result = (file, nil, line, source)
+                hint = (file, snapshot?.lineMap(for: file, current: source)?.current(forCompiled: synced.line) ?? synced.line, source)
             }
-            if let clicked {
-                // Search the file SyncTeX named, near its line; without SyncTeX, every open source file.
-                let files: [(URL, String, Int?)] = result.map { [($0.file, $0.text, $0.line)] } ?? candidates.map { ($0, texts[$0] ?? "", nil) }
-                var best: (file: URL, offset: Int, line: Int, text: String, score: Double)?
-                for (file, source, hint) in files where !source.isEmpty {
-                    let stream = TextSync.texStream(source); let starts = TextSync.lineStarts(source)
-                    let penalty: ((Int) -> Double)? = hint.map { hint in { Double(abs(TextSync.line(of: stream.offset(at: $0), starts: starts) - hint)) / 12 } }
-                    guard let match = TextSync.correspond(clicked.index, from: clicked.stream, to: stream, penalty: penalty) else { continue }
-                    let offset = stream.offset(at: match.index)
-                    let score = match.weight / (1 + (penalty?(match.index) ?? 0))
-                    if best == nil || score > best!.score { best = (file, offset, TextSync.line(of: offset, starts: starts), source, score) }
-                }
-                if let best { result = (best.file, best.offset, best.line, best.text) }
+            // SyncTeX can name a neighbouring file, so every source of the last build is searched, not only open tabs.
+            var sources = candidates.map { (file: $0, text: texts[$0] ?? "") }
+            for path in (snapshot?.files.keys.sorted() ?? []) where clicked != nil {
+                let url = URL(fileURLWithPath: path)
+                guard !candidates.contains(where: { Self.samePath($0, url) }), let source = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                sources.append((url, source))
             }
+            let result = TextSync.locate(clicked: clicked, hint: hint, candidates: sources)
             DispatchQueue.main.async {
                 guard let self, self.generation == token else { return }
                 guard let result else { self.setStatus(L10n.tr("此处没有对应的 TeX 源码。")); return }

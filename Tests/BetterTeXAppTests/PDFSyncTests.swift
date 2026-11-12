@@ -52,17 +52,48 @@ final class PDFSyncTests: XCTestCase {
 
         // PDF → source, a click on "marvellous".
         let document = try XCTUnwrap(pane.pdfView.document)
-        var clicked: (stream: TextStream, index: Int)?
+        var clicked: (stream: TextStream, index: Int, word: String)?
         for pageIndex in 0..<document.pageCount {
             guard let page = document.page(at: pageIndex), let text = page.string as NSString? else { continue }
             let location = text.range(of: "marvellous").location
             guard location != NSNotFound else { continue }
-            let bounds = page.characterBounds(at: location + 2)
+            let bounds = page.textBounds(at: location + 2)
             clicked = pane.textPosition(page: pageIndex, point: CGPoint(x: bounds.midX, y: bounds.midY))
         }
         let position = try XCTUnwrap(clicked)
         let match = try XCTUnwrap(TextSync.correspond(position.index, from: position.stream, to: stream))
         XCTAssertEqual(stream.offset(at: match.index), (edited as NSString).range(of: "marvellous").location + 2)
+    }
+
+    /// PDFKit's glyph indices drift from `PDFPage.string` further down a page; a click must still read the word under it.
+    @MainActor func testAClickLowOnAPageReadsTheWordUnderIt() throws {
+        let discovered = Toolchain.discover()
+        guard discovered["pdflatex"] != nil else { throw XCTSkip("Requires a local TeX installation") }
+        var paths = discovered.paths; paths.removeValue(forKey: "latexmk")
+        let tools = Toolchain(environment: discovered.environment, paths: paths)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("bettertex-click-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let paragraphs = (1...14).map { "Paragraph \($0) explains how a receiver with $\\rho_{\($0)} = k/n$ decodes a prefix, and why the first layers matter most for quality." }.joined(separator: "\n\n")
+        let source = "\\documentclass[twocolumn]{article}\n\\begin{document}\n\(paragraphs)\n\nNear the bottom a zygomorphic marker closes the text.\n\\end{document}\n"
+        let main = directory.appendingPathComponent("main.tex")
+        try source.write(to: main, atomically: true, encoding: .utf8)
+        let build = try TeXCompiler().build(active: main, project: directory, selected: .pdfLaTeX, tools: tools)
+        XCTAssertTrue(build.succeeded, build.log)
+        let pane = PDFPane(frame: NSRect(x: 0, y: 0, width: 600, height: 800))
+        pane.load(build.pdf)
+        let page = try XCTUnwrap(pane.pdfView.document?.page(at: 0)), text = try XCTUnwrap(page.string) as NSString
+        let location = text.range(of: "zygomorphic").location
+        XCTAssertNotEqual(location, NSNotFound)
+        let bounds = page.textBounds(at: location + 4)
+        let point = CGPoint(x: bounds.midX, y: bounds.midY)
+        XCTAssertEqual(page.textIndex(at: point), location + 4)
+        let clicked = try XCTUnwrap(pane.textPosition(page: 0, point: point))
+        XCTAssertEqual(clicked.word, "zygomorphic")
+        let found = try XCTUnwrap(TextSync.locate(clicked: clicked, hint: nil, candidates: [(main, source)]))
+        XCTAssertEqual(found.offset, (source as NSString).range(of: "zygomorphic").location + 4)
+        // Blank paper has no text under it.
+        XCTAssertNil(pane.textPosition(page: 0, point: CGPoint(x: 4, y: 4)))
     }
 
     func testWordRangeFindsTheWordUnderTheCaret() {

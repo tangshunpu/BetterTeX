@@ -22,6 +22,32 @@ final class SyncMarkAnnotation: PDFAnnotation {
     }
 }
 
+/// Positions in `PDFPage.string`. `characterIndex(at:)` and `characterBounds(at:)` count glyphs instead, which runs
+/// ahead of the string by the line breaks and spaces PDFKit adds to it, so a click low on a page would land lines
+/// away. Selections are addressed in the string's own terms.
+extension PDFPage {
+    func textBounds(at index: Int) -> CGRect {
+        guard index >= 0, index < (string as NSString?)?.length ?? 0 else { return .zero }
+        return selection(for: NSRange(location: index, length: 1))?.bounds(for: self) ?? .zero
+    }
+    /// The character of `string` under a point, or nil where there is no text.
+    func textIndex(at point: CGPoint) -> Int? {
+        guard let text = string as NSString?, let word = selectionForWord(at: point), word.numberOfTextRanges(on: self) > 0 else { return nil }
+        let range = word.range(at: 0, on: self)
+        guard range.location != NSNotFound, range.length > 0, NSMaxRange(range) <= text.length else { return nil }
+        var best: (index: Int, distance: CGFloat)?
+        for index in range.location..<min(NSMaxRange(range), range.location + 120) {
+            guard let scalar = UnicodeScalar(text.character(at: index)), !CharacterSet.whitespacesAndNewlines.contains(scalar) else { continue }
+            let bounds = textBounds(at: index)
+            guard !bounds.isEmpty else { if best == nil { best = (index, .greatestFiniteMagnitude) }; continue }
+            let dx = point.x < bounds.minX ? bounds.minX - point.x : point.x > bounds.maxX ? point.x - bounds.maxX : 0
+            let dy = point.y < bounds.minY ? bounds.minY - point.y : point.y > bounds.maxY ? point.y - bounds.maxY : 0
+            if best == nil || dx + dy < best!.distance { best = (index, dx + dy) }
+        }
+        return best?.index
+    }
+}
+
 final class SyncedPDFView: PDFView {
     var onInverse: ((Int, Double, Double) -> Void)?
     var onResize: (() -> Void)?
@@ -520,7 +546,7 @@ final class PDFPane: Surface {
             }
             let media = page.bounds(for: .mediaBox)
             return { target in
-                let rect = page.characterBounds(at: stream.offset(at: target))
+                let rect = page.textBounds(at: stream.offset(at: target))
                 let gaps = onPage.map { box -> Double in
                     let bottom = Double(media.maxY) - box.v - 3, top = Double(media.maxY) - box.v + max(box.height, 8)
                     let y = Double(rect.midY)
@@ -535,7 +561,7 @@ final class PDFPane: Surface {
                 guard let stream = pageStream(index) else { continue }
                 let rank = penalty(page: index)
                 guard let match = TextSync.correspond(cursor, from: source, to: stream, penalty: rank) else { continue }
-                let score = match.weight / (1 + rank(match.index))
+                let score = match.score(penalty: rank(match.index))
                 if best == nil || score > best!.score { best = (index, match, score) }
             }
             return best
@@ -563,20 +589,22 @@ final class PDFPane: Surface {
     }
 
     /// The text position under a point of a page, as an index into that page's stream.
-    func textPosition(page index: Int, point: CGPoint) -> (stream: TextStream, index: Int)? {
+    func textPosition(page index: Int, point: CGPoint) -> (stream: TextStream, index: Int, word: String)? {
         guard let page = pdfView.document?.page(at: index), let stream = pageStream(index), stream.count > 0 else { return nil }
-        var character = page.characterIndex(at: point)
-        if character < 0 {
+        var hit = page.textIndex(at: point)
+        if hit == nil {
             // A click between words or lines: take the nearest character within a few points.
-            search: for radius in [3.0, 6.0, 10.0] {
-                for (dx, dy) in [(radius, 0.0), (-radius, 0), (0, radius), (0, -radius)] {
-                    character = page.characterIndex(at: CGPoint(x: point.x + dx, y: point.y + dy))
-                    if character >= 0 { break search }
+            search: for radius in [3.0, 6.0, 10.0, 15.0] {
+                for (dx, dy) in [(radius, 0.0), (-radius, 0), (0, radius), (0, -radius), (radius, radius), (-radius, radius), (radius, -radius), (-radius, -radius)] {
+                    hit = page.textIndex(at: CGPoint(x: point.x + dx, y: point.y + dy))
+                    if hit != nil { break search }
                 }
             }
         }
-        guard character >= 0 else { return nil }
-        return (stream, min(stream.index(atOrAfter: character), stream.count - 1))
+        guard let character = hit else { return nil }
+        let text = page.string ?? ""
+        let word = TextSync.wordRange(in: text, at: character).map { (text as NSString).substring(with: $0) } ?? ""
+        return (stream, min(stream.index(atOrAfter: character), stream.count - 1), word)
     }
 
     private func clearHighlights() {
@@ -629,7 +657,7 @@ final class PDFPane: Surface {
         let wordMarks = marks(on: page, range: word, strength: Theme.syncWordAlpha, inset: CGSize(width: -1.5, height: -1))
         annotations += wordMarks
         flash(annotations, for: 2.4)
-        let focus = wordMarks.first?.0.bounds ?? annotations.first?.0.bounds ?? page.characterBounds(at: caret)
+        let focus = wordMarks.first?.0.bounds ?? annotations.first?.0.bounds ?? page.textBounds(at: caret)
         pdfView.go(to: focus.insetBy(dx: -60, dy: -90), on: page)
     }
 
