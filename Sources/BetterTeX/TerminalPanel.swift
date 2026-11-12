@@ -50,6 +50,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private var activeChat: AgentChatView? { active == "Agent" ? chat : active == "Claude" ? claudeChat : nil }
     private func idleHint(_ provider: AgentProvider) -> String { L10n.tr("↩ 发送给 \(provider.rawValue) · ⇧↩ 换行 · 使用本机 \(provider.rawValue.lowercased()) 登录") }
     var onOpenFile: ((URL) -> Void)?
+    /// A source line or PDF page an agent reply links to.
+    var onOpenLocation: ((AgentLocation) -> Void)?
     private var sandboxButton: ActionButton!
     private var sandbox = CodexSandbox(rawValue: UserDefaults.standard.string(forKey: "agent.codex.sandbox") ?? "") ?? .workspaceWrite
     let content = Surface()
@@ -155,6 +157,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         for view in [chat, claudeChat] {
             let name = view.provider.rawValue
             view.onOpenFile = { [weak self] in self?.onOpenFile?($0) }
+            view.onOpenLocation = { [weak self] in self?.onOpenLocation?($0) }
+            view.projectRoot = { [weak self] in self?.project }
             view.onLog = { [weak self] in self?.append("\n\(name)\n" + $0 + "\n") }
             view.onUsageChange = { [weak self] in self?.updateUsage() }
             view.onChange = { [weak self, weak view] in
@@ -623,7 +627,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
             let chat = target == .claude ? claudeChat : self.chat, tab = target == .claude ? "Claude" : "Agent"
             let apply = { [weak self] in
                 guard let self else { return }
-                if let resume { chat.resume(thread: resume.id, title: resume.title) } else { chat.reset() }
+                if let resume { chat.resume(resume, project: self.project) } else { chat.reset() }
                 self.select(tab)
             }
             if chat.running, let window {

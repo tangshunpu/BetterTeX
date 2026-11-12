@@ -716,3 +716,8 @@
 "%1$@ 个失败" = "%1$@ failed";
 "正在读取文件…" = "Reading files…";
 "正在搜索…" = "Searching…";
+"正在载入之前的消息…" = "Loading earlier messages…";
+"更早的 %1$@ 条记录未显示" = "%1$@ earlier entries not shown";
+"以上是之前的对话 · 继续输入即可接着聊" = "Earlier conversation above · Keep typing to continue";
+"PDF · 第 %1$@ 页" = "PDF · Page %1$@";
+"请先编译文档" = "Compile the document first";

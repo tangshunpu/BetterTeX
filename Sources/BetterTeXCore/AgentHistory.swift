@@ -6,7 +6,9 @@ public struct AgentSession: Equatable {
     public let id: String
     public let title: String
     public let date: Date
-    public init(provider: AgentProvider, id: String, title: String, date: Date) { self.provider = provider; self.id = id; self.title = title; self.date = date }
+    /// The CLI's log of this conversation, read to show its earlier messages on resume.
+    public let file: URL?
+    public init(provider: AgentProvider, id: String, title: String, date: Date, file: URL? = nil) { self.provider = provider; self.id = id; self.title = title; self.date = date; self.file = file }
 }
 
 /// Reads the session logs the Codex and Claude CLIs keep on disk, read-only, to list the
@@ -50,7 +52,7 @@ public enum AgentHistory {
         for (file, date) in files {
             guard result.count < limit else { break }
             guard let title = claudeTitle(head(of: file)) else { continue }
-            result.append(AgentSession(provider: .claude, id: file.deletingPathExtension().lastPathComponent, title: title, date: date))
+            result.append(AgentSession(provider: .claude, id: file.deletingPathExtension().lastPathComponent, title: title, date: date, file: file))
         }
         return result
     }
@@ -84,7 +86,7 @@ public enum AgentHistory {
                         scanned += 1; if scanned > 1500 || result.count >= limit { break scan }
                         guard let entry = codexEntry(head(of: file)), URL(fileURLWithPath: entry.cwd).standardizedFileURL.path == target else { continue }
                         let date = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-                        result.append(AgentSession(provider: .codex, id: entry.id, title: entry.title, date: date))
+                        result.append(AgentSession(provider: .codex, id: entry.id, title: entry.title, date: date, file: file))
                     }
                 }
             }

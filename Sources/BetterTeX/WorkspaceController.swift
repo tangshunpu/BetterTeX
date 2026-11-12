@@ -137,6 +137,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         ui.onDetectTools = { [weak self] in self?.detectTools() }
         ui.terminal.onError = { [weak self] in self?.error($0) }
         ui.terminal.onOpenFile = { [weak self] in self?.openFile($0) }
+        ui.terminal.onOpenLocation = { [weak self] in self?.open($0) }
         ui.terminal.currentContext = { [weak self] in self?.editorContext() }
         ui.terminal.onDiagnostic = { [weak self] path, line in
             guard let self, let root = self.compiledRoot ?? self.active?.url else { return }
@@ -560,8 +561,26 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         }
     }
     @objc func forwardSync() {
-        guard let active, let pdf = compiledPDF, let tools else { setStatus(L10n.tr("请先成功编译文档，再使用双向定位")); return }
-        let (line, col) = ui.editor.lineColumn; let file = active.url; let token = generation
+        guard let active, compiledPDF != nil, tools != nil else { setStatus(L10n.tr("请先成功编译文档，再使用双向定位")); return }
+        let (line, col) = ui.editor.lineColumn
+        forwardSync(file: active.url, line: line, column: col)
+    }
+    /// Follows a link from an agent reply: a source line opens in the editor and, when the document
+    /// has been compiled, the PDF scrolls to it; a page number turns the PDF to that page.
+    func open(_ location: AgentLocation) {
+        switch location {
+        case .pdfPage(let page):
+            guard let document = ui.preview.pdfView.document, let target = document.page(at: min(page, document.pageCount) - 1) else { setStatus(L10n.tr("请先编译文档")); return }
+            ui.pdfItem.isCollapsed = false; ui.preview.pdfView.go(to: target); setStatus(L10n.tr("PDF · 第 \(page) 页"))
+        case .source(let url, let line):
+            openFile(url, line: line)
+            guard let line, ["tex", "ltx"].contains(url.pathExtension.lowercased()), compiledPDF != nil, tools != nil else { return }
+            forwardSync(file: url, line: line, column: 0)
+        }
+    }
+    private func forwardSync(file: URL, line: Int, column col: Int) {
+        guard let pdf = compiledPDF, let tools else { return }
+        let token = generation
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try SyncTeX.forward(file: file, line: line, column: col, pdf: pdf, tools: tools) }
             DispatchQueue.main.async {

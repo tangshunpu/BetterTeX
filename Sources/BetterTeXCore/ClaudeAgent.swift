@@ -7,8 +7,10 @@ public struct ClaudeRequest {
     public var session: String?
     public var configuration: AgentConfiguration
     public var sandbox: CodexSandbox
-    public init(prompt: String, session: String? = nil, configuration: AgentConfiguration = AgentConfiguration(), sandbox: CodexSandbox = .workspaceWrite) {
-        self.prompt = prompt; self.session = session; self.configuration = configuration; self.sandbox = sandbox
+    /// Appended to Claude Code's own system prompt (see `AgentInstructions`).
+    public var instructions: String?
+    public init(prompt: String, session: String? = nil, configuration: AgentConfiguration = AgentConfiguration(), sandbox: CodexSandbox = .workspaceWrite, instructions: String? = nil) {
+        self.prompt = prompt; self.session = session; self.configuration = configuration; self.sandbox = sandbox; self.instructions = instructions
     }
     /// The shared three-step permission picker, expressed as Claude Code permission modes.
     public static func permissionMode(for sandbox: CodexSandbox) -> String {
@@ -25,6 +27,7 @@ public struct ClaudeRequest {
     public func arguments() throws -> [String] {
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BetterTeXError.message(L10n.tr("请输入要发给 Claude 的内容。")) }
         var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", Self.permissionMode(for: sandbox)]
+        if let instructions, !instructions.isEmpty { arguments += ["--append-system-prompt", instructions] }
         arguments += try configuration.arguments(for: .claude)
         if let session {
             guard session.range(of: "^[A-Za-z0-9][A-Za-z0-9-]{7,63}$", options: .regularExpression) != nil else { throw BetterTeXError.message(L10n.tr("会话 ID 无效，无法继续。")) }

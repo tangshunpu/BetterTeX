@@ -13,6 +13,10 @@ final class AgentChatView: NSView {
         case status(String, failed: Bool)
     }
     var onOpenFile: ((URL) -> Void)?
+    /// A source line or PDF page the agent linked to in a reply.
+    var onOpenLocation: ((AgentLocation) -> Void)?
+    /// The open project, for resolving relative links before the first prompt of a resumed session.
+    var projectRoot: (() -> URL?)?
     /// Called when a turn starts or ends, and when the conversation is cleared.
     var onChange: (() -> Void)?
     /// Receives Codex's own start-up warnings (configuration notices), which stay out of the conversation.
@@ -89,11 +93,11 @@ final class AgentChatView: NSView {
         do {
             switch provider {
             case .codex:
-                let request = CodexRequest(prompt: prompt, thread: thread, configuration: configuration, sandbox: sandbox); _ = try request.arguments()
+                let request = CodexRequest(prompt: prompt, thread: thread, configuration: configuration, sandbox: sandbox, instructions: AgentInstructions.text); _ = try request.arguments()
                 let process = CodexTurn(); cancelTurn = { process.cancel() }
                 run = { try process.run(request, executable: executable, directory: directory, environment: environment, onEvent: $0) }
             case .claude:
-                let request = ClaudeRequest(prompt: prompt, session: thread, configuration: configuration, sandbox: sandbox); _ = try request.arguments()
+                let request = ClaudeRequest(prompt: prompt, session: thread, configuration: configuration, sandbox: sandbox, instructions: AgentInstructions.text); _ = try request.arguments()
                 let process = ClaudeTurn(); cancelTurn = { process.cancel() }
                 run = { try process.run(request, executable: executable, directory: directory, environment: environment, onEvent: $0) }
             }
@@ -143,6 +147,31 @@ final class AgentChatView: NSView {
     func resume(thread: String, title: String) {
         reset(); self.thread = thread
         append("s\(UUID().uuidString)", .status(L10n.tr("已接上之前的会话：\(title)。之前的消息不在这里显示，\(name) 仍记得上下文。"), failed: false))
+    }
+    /// Continues a recorded conversation and shows its earlier messages, read from the CLI's log
+    /// off the main thread. If the log can't be read, it falls back to the plain notice.
+    func resume(_ session: AgentSession, project: URL?) {
+        reset(); thread = session.id; directory = project
+        let generation = UUID(); usageGeneration = generation
+        append("hload", .status(L10n.tr("正在载入之前的消息…"), failed: false))
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let (entries, omitted) = AgentTranscript.load(session, project: project)
+            DispatchQueue.main.async {
+                // Drop the result if the user started over, switched sessions or already sent a prompt.
+                guard let self, self.usageGeneration == generation, self.thread == session.id, !self.running, self.order == ["hload"] else { return }
+                guard !entries.isEmpty else { self.resume(thread: session.id, title: session.title); return }
+                self.reset(); self.thread = session.id; self.usageGeneration = generation; self.directory = project
+                if omitted > 0 { self.append("hmore", .status(L10n.tr("更早的 \(omitted) 条记录未显示"), failed: false)) }
+                for (index, entry) in entries.enumerated() {
+                    switch entry {
+                    case .user(let text): self.append("h\(index).u", .user(text))
+                    case .item(let item): self.append("h.\(item.id)", .item(item))
+                    }
+                }
+                self.append("hend", .status(L10n.tr("以上是之前的对话 · 继续输入即可接着聊"), failed: false))
+                self.refreshContextUsage(force: true)
+            }
+        }
     }
     private var elapsed: String {
         let seconds = Int(Date().timeIntervalSince(started))
@@ -252,6 +281,32 @@ final class AgentChatView: NSView {
     private func wrapped(_ text: NSAttributedString, selectable: Bool = true) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: ""); label.attributedStringValue = text; label.isSelectable = selectable
         label.setContentCompressionResistancePriority(.init(1), for: .horizontal); return label
+    }
+    /// Reply text whose links to source lines and PDF pages open inside BetterTeX. Plain mentions of
+    /// project files ("sections/intro.tex:42") become links too.
+    private func linked(_ text: NSAttributedString) -> NSView {
+        let result = NSMutableAttributedString(attributedString: text), root = directory ?? projectRoot?()
+        func local(_ target: String) -> URL? {
+            guard AgentLocation.parse(target, project: root) != nil else { return nil }
+            var parts = URLComponents(); parts.scheme = LinkTextView.scheme; parts.path = "open"; parts.queryItems = [URLQueryItem(name: "target", value: target)]
+            return parts.url
+        }
+        let whole = NSRange(location: 0, length: result.length)
+        result.enumerateAttribute(.link, in: whole) { value, range, _ in
+            guard let value else { return }
+            let target = (value as? URL).map { $0.scheme == nil ? ($0.relativeString.removingPercentEncoding ?? $0.relativeString) : $0.absoluteString } ?? (value as? String ?? "")
+            if let url = local(target) { result.addAttribute(.link, value: url, range: range) }
+        }
+        let string = result.string as NSString
+        for range in AgentLocation.mentions(in: result.string) where result.attribute(.link, at: range.location, effectiveRange: nil) == nil {
+            if let url = local(string.substring(with: range)) { result.addAttribute(.link, value: url, range: range) }
+        }
+        let view = LinkTextView(result)
+        view.onLocation = { [weak self] target in
+            guard let self, let location = AgentLocation.parse(target, project: self.directory ?? self.projectRoot?()) else { return }
+            self.onOpenLocation?(location)
+        }
+        return view
     }
     private func plain(_ text: String, size: CGFloat = 13, color: NSColor = Theme.text, mono: Bool = false) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: mono ? NSFont.monospacedSystemFont(ofSize: size, weight: .regular) : NSFont.systemFont(ofSize: size), .foregroundColor: color])
@@ -510,7 +565,7 @@ final class AgentChatView: NSView {
     /// Message text with fenced code blocks set apart and Markdown headings shown bold.
     private func rich(_ text: String) -> NSView {
         let parts = text.components(separatedBy: "```")
-        guard parts.count > 2 else { return wrapped(markdown(headings(text))) }
+        guard parts.count > 2 else { return linked(markdown(headings(text))) }
         var views: [NSView] = []
         for (index, part) in parts.enumerated() {
             if index % 2 == 1 {
@@ -518,7 +573,7 @@ final class AgentChatView: NSView {
                 var code = part; if let newline = code.firstIndex(of: "\n") { code = String(code[code.index(after: newline)...]) }
                 let body = code.trimmingCharacters(in: .newlines); if !body.isEmpty { views.append(box(wrapped(plain(body, size: 11.5, mono: true)))) }
             } else {
-                let body = part.trimmingCharacters(in: .newlines); if !body.isEmpty { views.append(wrapped(markdown(headings(body)))) }
+                let body = part.trimmingCharacters(in: .newlines); if !body.isEmpty { views.append(linked(markdown(headings(body)))) }
             }
         }
         return column(views)
@@ -622,7 +677,7 @@ final class AgentChatView: NSView {
             return wrapped(plain(text, size: 11.5, color: failed ? Theme.red : Theme.faint), selectable: failed)
         case .item(let item):
             switch item.kind {
-            case .message: return wrapped(markdown(item.text.trimmingCharacters(in: .newlines)))
+            case .message: return linked(markdown(item.text.trimmingCharacters(in: .newlines)))
             case .reasoning: return wrapped(plain(item.text.trimmingCharacters(in: .whitespacesAndNewlines), size: 12, color: Theme.muted))
             case .notice: return wrapped(plain(item.text, size: 11.5, color: Theme.orange))
             case .webSearch, .toolCall:
@@ -662,6 +717,44 @@ final class AgentChatView: NSView {
                 guard open, !lines.isEmpty else { return card(top) }
                 return card(column([top, wrapped(plain(lines.suffix(400).joined(separator: "\n"), size: 11, color: item.status == .failed ? Theme.red : Theme.muted, mono: true))]))
             }
+        }
+    }
+}
+
+/// Selectable, wrapping text for replies that hands BetterTeX's own links to the chat instead of the
+/// browser. Sizes itself to its text at the width layout gives it.
+final class LinkTextView: NSTextView {
+    static let scheme = "bettertex"
+    var onLocation: ((String) -> Void)?
+    convenience init(_ text: NSAttributedString) {
+        let storage = NSTextStorage(attributedString: text), layout = NSLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true; container.lineFragmentPadding = 0; layout.addTextContainer(container)
+        self.init(frame: .zero, textContainer: container)
+        isEditable = false; isSelectable = true; drawsBackground = false; textContainerInset = .zero
+        isVerticallyResizable = false; isHorizontallyResizable = false; isRichText = true
+        linkTextAttributes = [.foregroundColor: Theme.accent, .cursor: NSCursor.pointingHand, .underlineStyle: 0]
+        translatesAutoresizingMaskIntoConstraints = false
+        setContentHuggingPriority(.init(1), for: .horizontal); setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        setContentHuggingPriority(.required, for: .vertical); setContentCompressionResistancePriority(.required, for: .vertical)
+    }
+    override var intrinsicContentSize: NSSize {
+        guard let layoutManager, let textContainer else { return .zero }
+        layoutManager.ensureLayout(for: textContainer)
+        return NSSize(width: NSView.noIntrinsicMetric, height: ceil(layoutManager.usedRect(for: textContainer).height))
+    }
+    override func setFrameSize(_ size: NSSize) {
+        let changed = size.width != frame.width
+        super.setFrameSize(size)
+        if changed { invalidateIntrinsicContentSize() }
+    }
+    override func clicked(onLink link: Any, at charIndex: Int) {
+        let url = link as? URL ?? (link as? String).flatMap(URL.init(string:))
+        if let url, url.scheme == Self.scheme {
+            onLocation?(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "target" }?.value ?? "")
+        } else if let url, ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
+            NSWorkspace.shared.open(url)
         }
     }
 }

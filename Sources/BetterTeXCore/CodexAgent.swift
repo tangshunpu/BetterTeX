@@ -100,8 +100,10 @@ public struct CodexRequest {
     public var thread: String?
     public var configuration: AgentConfiguration
     public var sandbox: CodexSandbox
-    public init(prompt: String, thread: String? = nil, configuration: AgentConfiguration = AgentConfiguration(), sandbox: CodexSandbox = .workspaceWrite) {
-        self.prompt = prompt; self.thread = thread; self.configuration = configuration; self.sandbox = sandbox
+    /// Passed as Codex's developer instructions (see `AgentInstructions`).
+    public var instructions: String?
+    public init(prompt: String, thread: String? = nil, configuration: AgentConfiguration = AgentConfiguration(), sandbox: CodexSandbox = .workspaceWrite, instructions: String? = nil) {
+        self.prompt = prompt; self.thread = thread; self.configuration = configuration; self.sandbox = sandbox; self.instructions = instructions
     }
     /// Arguments for `codex`. The prompt travels as its own argument after `--`, never through a shell.
     public func arguments() throws -> [String] {
@@ -112,6 +114,7 @@ public struct CodexRequest {
             arguments.append("resume")
         }
         arguments += ["--json", "--skip-git-repo-check", "-c", "sandbox_mode=\"\(sandbox.rawValue)\""]
+        if let instructions, !instructions.isEmpty { arguments += ["-c", "developer_instructions=" + AgentInstructions.toml(instructions)] }
         arguments += try configuration.arguments(for: .codex)
         arguments.append("--")
         if let thread { arguments.append(thread) }
