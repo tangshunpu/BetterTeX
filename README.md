@@ -21,6 +21,8 @@ Write, compile and preview in one window — with Overleaf sync and your coding 
 
 ## Features
 
+<img src="docs/images/dev-summary-2026-11-12.png" alt="BetterTeX highlights: structure highlighting, word-level sync, AI agent, word-level diff, smart compile, one-click Overleaf and smart completion">
+
 | | |
 | --- | --- |
 | ✍️ **Editor** | Syntax colouring, outline, command / citation / path completion, and full figure, table and list templates with matching `\end` |

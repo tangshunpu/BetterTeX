@@ -21,6 +21,8 @@
 
 ## 功能
 
+<img src="docs/images/dev-summary-2026-11-12.png" alt="BetterTeX 功能概览：结构高亮、词级同步、AI Agent、词级 diff、智能编译、一键 Overleaf 和智能补全">
+
 | | |
 | --- | --- |
 | ✍️ **编辑器** | 语法着色、文档大纲，命令、文献、路径补全，以及自动配对 `\end` 的图片、表格和列表模板 |
