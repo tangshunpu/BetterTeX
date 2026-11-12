@@ -69,7 +69,8 @@ final class PDFPane: Surface {
     var onReveal: (() -> Void)?
     var onAuto: ((Bool) -> Void)?
     var onReadingMode: ((Bool) -> Void)?
-    private(set) var zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode.v2") ?? "") ?? .fitWidth
+    private(set) var zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode.v2") ?? "") ?? .fitWidth { didSet { updateFitButton() } }
+    private var fitButton: ActionButton!
     private var applyingZoom = false
     private(set) var readingMode = false
     private var readingButton: ActionButton!
@@ -122,7 +123,9 @@ final class PDFPane: Surface {
         readingButton = ActionButton("", symbol: "book") { [weak self] in guard let self else { return }; self.onReadingMode?(!self.readingMode) }
         readingButton.toolTip = L10n.tr("阅读模式  ⌥⌘R"); readingButton.setAccessibilityLabel(L10n.tr("阅读模式"))
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        for view in [stateChip, spacer, autoLabel, autoSwitch, Theme.divider(), reveal, readingButton!, zoom, export] { header.addControl(view) }
+        fitButton = ActionButton("", symbol: "arrow.left.and.right.square") { [weak self] in self?.setZoomMode(.fitWidth) }
+        fitButton.toolTip = L10n.tr("适合宽度"); fitButton.setAccessibilityLabel(L10n.tr("适合宽度")); updateFitButton()
+        for view in [stateChip, spacer, autoLabel, autoSwitch, Theme.divider(), reveal, readingButton!, fitButton!, zoom, export] { header.addControl(view) }
         header.menuActions = [
             (L10n.tr("在 PDF 中定位"), "scope", { [weak self] in self?.onReveal?() }),
             (L10n.tr("适合宽度"), "arrow.left.and.right", { [weak self] in self?.setZoomMode(.fitWidth) }),
@@ -176,6 +179,7 @@ final class PDFPane: Surface {
         autoSwitch.isHidden = bounds.width < 300
         revealButton.isHidden = bounds.width < 260
         readingButton.isHidden = bounds.width < 230
+        fitButton.isHidden = bounds.width < 250
         zoomChip.isHidden = bounds.width < 200
         super.layout()
     }
@@ -191,6 +195,14 @@ final class PDFPane: Surface {
             menu.addItem(ClosureMenuItem("\(percent)%", symbol: nil) { [weak self] in self?.setManualScale(CGFloat(percent) / 100) })
         }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: zoomLabel.bounds.height + 6), in: zoomLabel)
+    }
+    /// Lit while the page follows the pane's width.
+    private func updateFitButton() {
+        guard let fitButton else { return }
+        let on = zoomMode == .fitWidth
+        fitButton.contentTintColor = on ? Theme.accent : Theme.muted
+        fitButton.image = Theme.symbol(on ? "arrow.left.and.right.square.fill" : "arrow.left.and.right.square", size: 15, weight: .medium, description: L10n.tr("适合宽度"))
+        fitButton.setAccessibilityValue(on)
     }
     func setZoomMode(_ mode: ZoomMode) {
         zoomMode = mode; UserDefaults.standard.set(mode.rawValue, forKey: "pdf.zoomMode.v2"); applyZoom()
