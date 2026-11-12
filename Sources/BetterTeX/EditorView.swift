@@ -188,6 +188,7 @@ final class CodeTextView: NSTextView {
     }
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
+        drawEntryBands(in: rect)
         if let line = currentLineRect { Theme.accent.withAlphaComponent(0.10).setFill(); line.fill(using: .sourceOver) }
         guard let layoutManager, let textContainer, !commentRanges.isEmpty else { return }
         let length = (string as NSString).length, origin = textContainerOrigin
@@ -197,6 +198,20 @@ final class CodeTextView: NSTextView {
             layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: textContainer) { rect, _ in
                 rect.offsetBy(dx: origin.x, dy: origin.y).fill(using: .sourceOver)
             }
+        }
+    }
+    /// Header lines of .bib entries: a tinted full-width band plus a stripe in the entry type's colour.
+    var entryBands: [(range: NSRange, color: NSColor)] = [] { didSet { needsDisplay = true } }
+    private func drawEntryBands(in dirty: NSRect) {
+        guard let layoutManager, let textContainer, !entryBands.isEmpty else { return }
+        let length = (string as NSString).length
+        for band in entryBands where NSMaxRange(band.range) <= length {
+            let glyphs = layoutManager.glyphRange(forCharacterRange: band.range, actualCharacterRange: nil)
+            let line = layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer)
+            let rect = NSRect(x: 0, y: line.minY + textContainerInset.height, width: bounds.width, height: line.height)
+            guard rect.intersects(dirty) else { continue }
+            band.color.withAlphaComponent(0.09).setFill(); rect.fill(using: .sourceOver)
+            band.color.withAlphaComponent(0.85).setFill(); NSRect(x: 0, y: rect.minY, width: 3, height: rect.height).fill(using: .sourceOver)
         }
     }
     // MARK: Collaboration overlays
@@ -457,6 +472,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
     private var highlighting: DispatchWorkItem?
     private var outlining: DispatchWorkItem?
     private var loading = false
+    /// The open file is a BibTeX database: bib highlighting and entry-type completion.
+    private(set) var isBib = false
     var onChange: ((String) -> Void)?
     var onSelection: ((Int, Int) -> Void)?
     var onSelectTab: ((URL) -> Void)?
@@ -600,6 +617,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
     }
     func load(_ buffer: EditorBuffer, project: URL) {
         popup.dismiss()
+        isBib = buffer.url.pathExtension.lowercased() == "bib"; if !isBib { textView.entryBands = [] }
         loading = true; textView.string = buffer.text; applyParagraphStyle(); textView.undoManager?.removeAllActions()
         textView.setSelectedRange(NSRange(location: min(buffer.selection.location, (buffer.text as NSString).length), length: 0))
         setBreadcrumb(file: buffer.url.lastPathComponent, section: nil)
@@ -610,7 +628,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
     private func updateCompletion() {
         let selection = textView.selectedRange()
         guard !completionPaused, let completions, let window, window.firstResponder === textView, !textView.hasMarkedText(), selection.length == 0,
-              let request = CompletionRequest.detect(in: textView.string, cursor: selection.location) else { popup.dismiss(); return }
+              let request = isBib ? CompletionRequest.detect(inBib: textView.string, cursor: selection.location)
+                                  : CompletionRequest.detect(in: textView.string, cursor: selection.location) else { popup.dismiss(); return }
         let items = completions(request)
         guard !items.isEmpty else { popup.dismiss(); return }
         completionRequest = request; completionCursor = selection.location
@@ -626,6 +645,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
         completionPaused = false; completionCursor = edit.caret
         // A snippet that leaves the caret inside braces may have more to offer (\cite{ → keys).
         if item.environment != nil || request.kind == .command && item.caret != nil { updateCompletion() }
+        if request.kind == .bibEntry { scheduleHighlight() }
     }
 
     /// Replaces only the changed span so the caret, scroll position and undo history survive
@@ -714,10 +734,60 @@ final class EditorPane: Surface, NSTextViewDelegate {
         guard range.length < 100_000 else { return }
         // Temporary layout attributes do not affect undo history or saved document formatting.
         layout.addTemporaryAttribute(.foregroundColor, value: Theme.code, forCharacterRange: range)
+        layout.removeTemporaryAttribute(.underlineStyle, forCharacterRange: range)
+        if isBib { highlightBib(range, layout: layout); return }
         for (regex, color) in Self.patterns {
             for match in regex.matches(in: textView.string, range: range) { layout.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: match.range) }
         }
     }
+
+    // MARK: BibTeX
+    static func bibColor(_ family: BibEntryType.Family) -> NSColor {
+        switch family {
+        case .journal: return .systemBlue
+        case .conference: return .systemPurple
+        case .book: return .systemOrange
+        case .thesis: return .systemGreen
+        case .report: return .systemTeal
+        case .web: return .systemPink
+        case .other: return .systemBrown
+        case .special: return .systemGray
+        }
+    }
+    private static func regex(_ pattern: String) -> NSRegularExpression { try! NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]) }
+    /// @type{key,   — groups: type, key
+    private static let bibHeader = regex("^[ \\t]*@([a-zA-Z]+)[ \\t]*[{(][ \\t]*([^,\\s{}()]*)")
+    /// field =      — group: name
+    private static let bibField = regex("^[ \\t]*([a-zA-Z][\\w:.+-]*)[ \\t]*=")
+    private static let bibPatterns: [(NSRegularExpression, NSColor)] = [
+        (regex("\\\\[a-zA-Z@]+|\\\\[^a-zA-Z\\s]"), Theme.command), (regex("[{}]"), Theme.brace),
+        (regex("\"(?:[^\"\\\\]|\\\\.)*\""), Theme.option), (regex("(?<==)[ \\t]*\\d+"), Theme.option)
+    ]
+    private func highlightBib(_ range: NSRange, layout: NSLayoutManager) {
+        let text = textView.string, ns = text as NSString
+        for (regex, color) in Self.bibPatterns {
+            for match in regex.matches(in: text, range: range) { layout.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: match.range) }
+        }
+        for match in Self.bibField.matches(in: text, range: range) {
+            layout.addTemporaryAttribute(.foregroundColor, value: Theme.environment, forCharacterRange: match.range(at: 1))
+        }
+        var bands: [(range: NSRange, color: NSColor)] = []
+        for match in Self.bibHeader.matches(in: text, range: range) {
+            let type = ns.substring(with: match.range(at: 1))
+            let color = Self.bibColor(BibEntryType.family(of: type))
+            layout.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: NSRange(location: match.range(at: 1).location - 1, length: match.range(at: 1).length + 1))
+            if match.range(at: 2).length > 0 {
+                layout.addTemporaryAttribute(.foregroundColor, value: Theme.text, forCharacterRange: match.range(at: 2))
+                layout.addTemporaryAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, forCharacterRange: match.range(at: 2))
+                layout.addTemporaryAttribute(.underlineColor, value: color.withAlphaComponent(0.6), forCharacterRange: match.range(at: 2))
+            }
+            bands.append((ns.lineRange(for: match.range), color))
+        }
+        // Lines outside an entry ("junk" in BibTeX terms) and % lines read as comments.
+        for match in Self.bibComment.matches(in: text, range: range) { layout.addTemporaryAttribute(.foregroundColor, value: Theme.comment, forCharacterRange: match.range) }
+        textView.entryBands = bands
+    }
+    private static let bibComment = regex("^[ \\t]*%[^\\n]*")
     func goTo(line: Int, column: Int = 0) {
         let ns = textView.string as NSString; var location = 0
         for _ in 1..<max(1, line) { if location >= ns.length { break }; location = NSMaxRange(ns.lineRange(for: NSRange(location: location, length: 0))) }

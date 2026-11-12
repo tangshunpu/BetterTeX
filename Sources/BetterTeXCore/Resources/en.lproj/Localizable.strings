@@ -685,3 +685,23 @@
 "正在读取「%1$@」…" = "Reading “%1$@”…";
 "重新上传为新的 Overleaf 项目…" = "Re-upload as a New Overleaf Project…";
 "Overleaf 上的「%1$@」已不可用，本地文件未受影响" = "“%1$@” is no longer available on Overleaf; local files are untouched";
+
+/* BibTeX entry types */
+"期刊论文" = "Journal article";
+"会议论文" = "Conference paper";
+"其他（预印本、网页等）" = "Other (preprint, web page, …)";
+"书籍" = "Book";
+"文集中的章节" = "Chapter in a collection";
+"书中的章节或页" = "Chapter or pages of a book";
+"博士论文" = "PhD thesis";
+"硕士论文" = "Master's thesis";
+"技术报告" = "Technical report";
+"网络资源（biblatex）" = "Online resource (biblatex)";
+"会议论文集" = "Conference proceedings";
+"会议论文（同 inproceedings）" = "Conference paper (same as inproceedings)";
+"未发表" = "Unpublished";
+"技术手册" = "Manual";
+"小册子" = "Booklet";
+"字符串缩写" = "String abbreviation";
+"导言" = "Preamble";
+"注释" = "Comment";
