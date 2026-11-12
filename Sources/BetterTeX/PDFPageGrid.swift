@@ -27,8 +27,6 @@ final class PDFPageGrid: NSView {
     }
 
     var onOpenPage: ((Int) -> Void)?
-    /// A ⌘-scroll or pinch inside the grid: the factor to scale pages by.
-    var onZoom: ((CGFloat) -> Void)?
     var onEscape: (() -> Void)?
     var document: PDFDocument? { didSet { thumbnails = [:]; canvas.needsLayout = true; relayout() } }
     var pageWidth: CGFloat = 160 { didSet { if abs(pageWidth - oldValue) > 0.5 { relayout() } } }
@@ -126,11 +124,6 @@ final class PDFPageGrid: NSView {
     fileprivate func click(at point: NSPoint) { if let index = page(at: point) { onOpenPage?(index) } }
     fileprivate func hover(at point: NSPoint?) { hovered = point.flatMap(page(at:)) }
 
-    override func scrollWheel(with event: NSEvent) {
-        if event.modifierFlags.contains(.command) { onZoom?(SyncedPDFView.zoomFactor(for: event)); return }
-        super.scrollWheel(with: event)
-    }
-    override func magnify(with event: NSEvent) { onZoom?(1 + event.magnification) }
 
     private final class Canvas: NSView {
         weak var grid: PDFPageGrid?

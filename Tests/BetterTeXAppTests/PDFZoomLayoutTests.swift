@@ -21,9 +21,12 @@ final class PDFZoomLayoutTests: XCTestCase {
             document.insert(PDFPage(image: image)!, at: index)
         }
         XCTAssertTrue(document.write(to: pdf))
+        // Like the workspace's split view: the pane gets a fixed frame and must fit its content inside it.
         let pane = PDFPane(frame: NSRect(x: 0, y: 0, width: 800, height: 900))
-        let window = NSWindow(contentRect: pane.frame, styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = pane
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        pane.translatesAutoresizingMaskIntoConstraints = true; pane.autoresizingMask = []
+        window.contentView?.addSubview(pane)
         pane.load(pdf); pane.setZoomMode(.fitWidth); pane.layoutSubtreeIfNeeded(); pane.applyZoom()
         return (pane, window, directory)
     }
@@ -62,21 +65,72 @@ final class PDFZoomLayoutTests: XCTestCase {
         XCTAssertEqual(pane.zoomMode, .fitWidth)
     }
 
-    @MainActor func testCommandScrollZoomsAndPlainScrollDoesNot() throws {
+    /// Real scroll and pinch events are delivered to PDFKit's inner views, so the pane intercepts them by position.
+    @MainActor func testCommandScrollOverThePagesZoomsAndPlainScrollDoesNot() throws {
         let (pane, window, directory) = try makePane()
         defer { window.orderOut(nil); try? FileManager.default.removeItem(at: directory) }
         func wheel(_ lines: Int32, command: Bool) -> NSEvent {
             let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0)!
-            event.location = CGPoint(x: 300, y: 300)
             if command { event.flags = .maskCommand }
             return NSEvent(cgEvent: event)!
         }
+        let overPages = pane.pdfView.convert(NSPoint(x: pane.pdfView.bounds.midX, y: pane.pdfView.bounds.midY), to: nil)
+        let overHeader = pane.header.convert(NSPoint(x: 10, y: 10), to: nil)
         let before = pane.pdfView.scaleFactor
-        pane.pdfView.scrollWheel(with: wheel(-3, command: false))
+        XCTAssertFalse(pane.handleZoomGesture(wheel(3, command: false), at: overPages))
+        XCTAssertFalse(pane.handleZoomGesture(wheel(3, command: true), at: overHeader))
         XCTAssertEqual(pane.pdfView.scaleFactor, before, accuracy: 0.0001)
-        pane.pdfView.scrollWheel(with: wheel(-3, command: true))
+        XCTAssertTrue(pane.handleZoomGesture(wheel(3, command: true), at: overPages))
         XCTAssertNotEqual(pane.pdfView.scaleFactor, before, accuracy: 0.01)
         XCTAssertEqual(pane.zoomMode, .manual)
+        // The fit-width button brings it back to exactly the pane's width.
+        pane.setZoomMode(.fitWidth)
+        XCTAssertEqual(pane.pdfView.scaleFactor, before, accuracy: 0.01)
+    }
+
+    /// A narrow pane drops header controls instead of being pushed wider than it is, so fit width fits what you see.
+    @MainActor func testNarrowPaneKeepsThePagesInsideIt() throws {
+        let (pane, window, directory) = try makePane()
+        defer { window.orderOut(nil); try? FileManager.default.removeItem(at: directory) }
+        for width in [520.0, 400, 300, 240] {
+            pane.setFrameSize(NSSize(width: width, height: 900)); pane.layoutSubtreeIfNeeded(); pane.applyZoom()
+            XCTAssertLessThanOrEqual(pane.pdfView.frame.maxX, pane.bounds.width + 0.5, "width \(width)")
+            XCTAssertLessThanOrEqual(pane.header.row.fittingSize.width, width, "width \(width)")
+            let page = try XCTUnwrap(pane.pdfView.document?.page(at: 0))
+            let shown = page.bounds(for: .cropBox).width * pane.pdfView.scaleFactor
+            XCTAssertLessThanOrEqual(shown, pane.pdfView.bounds.width, "width \(width)")
+        }
+    }
+
+    /// Reading mode shows whole pages, two facing ones in a wide pane and one in a narrow one, turned like a book.
+    @MainActor func testReadingModeFitsWholePagesAndPicksOneOrTwo() throws {
+        let (pane, window, directory) = try makePane()
+        defer { window.orderOut(nil); try? FileManager.default.removeItem(at: directory) }
+        func pageHeightShown() throws -> CGFloat { try XCTUnwrap(pane.pdfView.document?.page(at: 0)).bounds(for: .cropBox).height * pane.pdfView.scaleFactor }
+
+        pane.setFrameSize(NSSize(width: 1400, height: 900)); pane.layoutSubtreeIfNeeded()
+        pane.setReadingMode(true)
+        XCTAssertEqual(pane.pdfView.displayMode, .twoUp)
+        XCTAssertEqual(pane.zoomMode, .fitPage)
+        XCTAssertLessThanOrEqual(try pageHeightShown(), pane.pdfView.bounds.height)
+        XCTAssertGreaterThan(try pageHeightShown(), pane.pdfView.bounds.height * 0.8)
+
+        // Turning the window tall and narrow drops to one whole page.
+        pane.setFrameSize(NSSize(width: 600, height: 900)); pane.layoutSubtreeIfNeeded(); pane.applyZoom()
+        XCTAssertEqual(pane.pdfView.displayMode, .singlePage)
+        XCTAssertLessThanOrEqual(try pageHeightShown(), pane.pdfView.bounds.height)
+
+        // Zooming in and back with the fit button returns to whole pages.
+        pane.userZoom(1.5, anchor: nil)
+        XCTAssertEqual(pane.zoomMode, .manual)
+        XCTAssertEqual(pane.pdfView.displayMode, .singlePage)
+        pane.fitToPane()
+        XCTAssertEqual(pane.zoomMode, .fitPage)
+        XCTAssertLessThanOrEqual(try pageHeightShown(), pane.pdfView.bounds.height)
+
+        pane.setReadingMode(false)
+        XCTAssertEqual(pane.pdfView.displayMode, .singlePageContinuous)
+        XCTAssertEqual(pane.zoomMode, .fitWidth)
     }
 
     func testGridColumnsAndShowAllSizing() {

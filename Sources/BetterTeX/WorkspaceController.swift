@@ -430,8 +430,11 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         guard let project, active == nil else { return }
         let sources = TeXProject.sourceFiles(in: project)
         let main = mainFile(among: sources)
+        // Only files that belong to the document: what was just closed, then what the main file brings in.
+        // Other .tex files in the folder (figure sources, old drafts) are reachable from the file list.
+        let included = main.map { DocumentFiles.included(from: $0) } ?? []
         var files: [URL] = []
-        for url in recentlyClosed + sources where url != main && !files.contains(url) && FileManager.default.fileExists(atPath: url.path) { files.append(url) }
+        for url in recentlyClosed + included where url.standardizedFileURL != main?.standardizedFileURL && !files.contains(url) && FileManager.default.fileExists(atPath: url.path) { files.append(url) }
         ui.editor.showEmpty(main: main, files: files, project: project)
     }
     /// The file that is compiled: the last build's root, the main file chosen for the project, else a file with \documentclass (main.tex first).

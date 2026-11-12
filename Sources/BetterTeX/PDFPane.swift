@@ -7,7 +7,7 @@ final class SyncedPDFView: PDFView {
     var onResize: (() -> Void)?
     var onCommandClick: (() -> Void)?
     var onEscape: (() -> Void)?
-    /// A zoom the user asked for (⌘-scroll, pinch, ⌘+ / ⌘−): the factor and, for pointer gestures, the point to keep still.
+    /// ⌘+ / ⌘− from the keyboard. (⌘-scroll and pinch land on PDFKit's inner views, so the pane catches those itself.)
     var onZoom: ((CGFloat, NSPoint?) -> Void)?
     /// Scroll-wheel ticks and trackpad swipes as a zoom factor; moving away from you zooms in, as in Word.
     static func zoomFactor(for event: NSEvent) -> CGFloat {
@@ -24,14 +24,6 @@ final class SyncedPDFView: PDFView {
         super.layout()
         // The inner scroll view settles during layout; fit again once it has, then once more after the pass.
         onResize?(); DispatchQueue.main.async { [weak self] in self?.onResize?() }
-    }
-    override func scrollWheel(with event: NSEvent) {
-        guard event.modifierFlags.contains(.command), let onZoom else { super.scrollWheel(with: event); return }
-        onZoom(Self.zoomFactor(for: event), convert(event.locationInWindow, from: nil))
-    }
-    override func magnify(with event: NSEvent) {
-        guard let onZoom else { super.magnify(with: event); return }
-        onZoom(1 + event.magnification, convert(event.locationInWindow, from: nil))
     }
     override func zoomIn(_ sender: Any?) { if let onZoom { onZoom(1.25, nil) } else { super.zoomIn(sender) } }
     override func zoomOut(_ sender: Any?) { if let onZoom { onZoom(1 / 1.25, nil) } else { super.zoomOut(sender) } }
@@ -99,6 +91,7 @@ final class PDFPane: Surface {
     /// Pages in rows: shown when zoomed out past two pages across, or for "show all pages".
     let grid = PDFPageGrid()
     private(set) var gridVisible = false
+    private var gestureMonitor: Any?
     private var gridButton: ActionButton!
     private var applyingZoom = false
     private(set) var readingMode = false
@@ -155,7 +148,7 @@ final class PDFPane: Surface {
         readingButton = ActionButton("", symbol: "book") { [weak self] in guard let self else { return }; self.onReadingMode?(!self.readingMode) }
         readingButton.toolTip = L10n.tr("阅读模式  ⌥⌘R"); readingButton.setAccessibilityLabel(L10n.tr("阅读模式"))
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        fitButton = ActionButton("", symbol: "arrow.left.and.right.square") { [weak self] in self?.setZoomMode(.fitWidth) }
+        fitButton = ActionButton("", symbol: "arrow.left.and.right.square") { [weak self] in self?.fitToPane() }
         fitButton.toolTip = L10n.tr("适合宽度"); fitButton.setAccessibilityLabel(L10n.tr("适合宽度")); updateFitButton()
         gridButton = ActionButton("", symbol: "square.grid.2x2") { [weak self] in guard let self else { return }; self.showAllPages(!self.gridVisible) }
         gridButton.setAccessibilityLabel(L10n.tr("显示所有页面")); updateGridButton()
@@ -170,7 +163,6 @@ final class PDFPane: Surface {
         ]
         pdfView.onResize = { [weak self] in self?.applyZoom() }
         pdfView.onZoom = { [weak self] factor, anchor in self?.userZoom(factor, anchor: anchor) }
-        grid.onZoom = { [weak self] factor in self?.userZoom(factor, anchor: nil) }
         grid.onOpenPage = { [weak self] in self?.leaveGrid(at: $0) }
         grid.onEscape = { [weak self] in guard let self else { return }; self.leaveGrid(at: self.grid.currentPage) }
         // Jumping to the source needs the editor, so it ends reading mode.
@@ -213,16 +205,19 @@ final class PDFPane: Surface {
     required init?(coder: NSCoder) { fatalError() }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); pdfView.backgroundColor = Theme.pdfBack }
     override func layout() {
-        // Shed secondary header items as the pane narrows.
-        autoLabel.isHidden = bounds.width < 430
-        stateChip.isHidden = state == .none || bounds.width < 360
-        autoSwitch.isHidden = bounds.width < 300
-        revealButton.isHidden = bounds.width < 260
-        readingButton.isHidden = bounds.width < 230
-        fitButton.isHidden = bounds.width < 250
-        gridButton.isHidden = bounds.width < 270
-        zoomChip.isHidden = bounds.width < 200
+        fitHeader()
         super.layout()
+    }
+    /// Drops secondary header controls, least important first, until the row fits. A row wider than the pane
+    /// would stretch the pane's content past its edge, and the PDF would then fit a width nobody sees.
+    private func fitHeader() {
+        let optional: [NSView] = [autoLabel, stateChip, autoSwitch, revealButton, readingButton, gridButton, fitButton, zoomChip]
+        for view in optional { view.isHidden = view === stateChip && state == .none }
+        let available = bounds.width - 1 - 24
+        var index = 0
+        while index < optional.count, header.row.fittingSize.width > available {
+            optional[index].isHidden = true; index += 1
+        }
     }
     @objc private func autoChanged() { onAuto?(autoSwitch.state == .on) }
     @objc private func showZoomMenu() {
@@ -237,16 +232,24 @@ final class PDFPane: Surface {
         }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: zoomLabel.bounds.height + 6), in: zoomLabel)
     }
-    /// Lit while the page follows the pane's width.
+    /// Lit while the pages follow the pane: its width normally, whole pages in reading mode.
     private func updateFitButton() {
         guard let fitButton else { return }
-        let on = zoomMode == .fitWidth
+        let on = readingMode ? zoomMode == .fitPage : zoomMode == .fitWidth
+        let symbol = readingMode ? "arrow.up.left.and.arrow.down.right.square" : "arrow.left.and.right.square"
+        let title = readingMode ? L10n.tr("适合整页") : L10n.tr("适合宽度")
         fitButton.contentTintColor = on ? Theme.accent : Theme.muted
-        fitButton.image = Theme.symbol(on ? "arrow.left.and.right.square.fill" : "arrow.left.and.right.square", size: 15, weight: .medium, description: L10n.tr("适合宽度"))
-        fitButton.setAccessibilityValue(on)
+        fitButton.image = Theme.symbol(on ? symbol + ".fill" : symbol, size: 15, weight: .medium, description: title)
+        fitButton.toolTip = title; fitButton.setAccessibilityLabel(title); fitButton.setAccessibilityValue(on)
+    }
+    /// The fit button: whole pages in reading mode, the pane's width otherwise.
+    func fitToPane() {
+        if gridVisible { leaveGrid(at: grid.currentPage); return }
+        if readingMode { zoomMode = .fitPage; applyZoom() } else { setZoomMode(.fitWidth) }
     }
     func setZoomMode(_ mode: ZoomMode) {
-        zoomMode = mode; UserDefaults.standard.set(mode.rawValue, forKey: "pdf.zoomMode.v2"); applyZoom()
+        // Reading mode keeps its own fit; only the normal view's choice is remembered.
+        zoomMode = mode; if !readingMode { UserDefaults.standard.set(mode.rawValue, forKey: "pdf.zoomMode.v2") }; applyZoom()
     }
     private func zoom(by factor: CGFloat) { userZoom(factor, anchor: nil) }
     private func setManualScale(_ scale: CGFloat) {
@@ -255,6 +258,34 @@ final class PDFPane: Surface {
     }
 
     // MARK: Zoom and page layout
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let gestureMonitor { NSEvent.removeMonitor(gestureMonitor); self.gestureMonitor = nil }
+        guard window != nil else { return }
+        // Scroll and pinch events go to PDFKit's page and scroll views, which use them up; catch them first.
+        gestureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
+            guard let self, event.window === self.window else { return event }
+            return self.handleZoomGesture(event, at: event.locationInWindow) ? nil : event
+        }
+    }
+    deinit { if let gestureMonitor { NSEvent.removeMonitor(gestureMonitor) } }
+    /// ⌘-scroll or a pinch over the pages zooms; returns whether the event was used.
+    func handleZoomGesture(_ event: NSEvent, at windowPoint: NSPoint) -> Bool {
+        guard !isHiddenOrHasHiddenAncestor, pdfView.document != nil else { return false }
+        let target: NSView = gridVisible ? grid : pdfView
+        guard target.bounds.contains(target.convert(windowPoint, from: nil)) else { return false }
+        let anchor = gridVisible ? nil : pdfView.convert(windowPoint, from: nil)
+        switch event.type {
+        case .scrollWheel:
+            guard event.modifierFlags.contains(.command) else { return false }
+            userZoom(SyncedPDFView.zoomFactor(for: event), anchor: anchor)
+        case .magnify:
+            userZoom(1 + event.magnification, anchor: anchor)
+        default: return false
+        }
+        return true
+    }
 
     /// Width of the first page at 100 %, the yardstick for how many pages fit across.
     private var basePageWidth: CGFloat {
@@ -282,7 +313,8 @@ final class PDFPane: Surface {
         markManual()
         let columns = PDFPageGrid.columns(pageWidth: basePageWidth * scale, in: viewportWidth)
         if columns >= 3 { showGrid(pageWidth: basePageWidth * scale, focus: currentPageIndex); return }
-        let mode: PDFDisplayMode = columns == 2 ? .twoUpContinuous : .singlePageContinuous
+        // Reading mode turns pages like a book; elsewhere pages scroll as one strip.
+        let mode: PDFDisplayMode = columns == 2 ? (readingMode ? .twoUp : .twoUpContinuous) : (readingMode ? .singlePage : .singlePageContinuous)
         let shown = max(pdfView.minScaleFactor, scale)
         if pdfView.displayMode != mode {
             let page = pdfView.currentPage
@@ -330,8 +362,7 @@ final class PDFPane: Surface {
     /// Leaves the grid onto `index`, fitted to the width (facing pages in reading mode).
     func leaveGrid(at index: Int) {
         hideGrid()
-        pdfView.displayMode = readingMode ? .twoUpContinuous : .singlePageContinuous
-        if readingMode { zoomMode = .fitWidth } else { setZoomMode(.fitWidth) }
+        if readingMode { zoomMode = .fitPage } else { pdfView.displayMode = .singlePageContinuous; setZoomMode(.fitWidth) }
         pdfView.layoutDocumentView(); applyZoom()
         if let page = pdfView.document?.page(at: index) { pdfView.go(to: page) }
         window?.makeFirstResponder(pdfView); pageChanged(); updateZoomLabel()
@@ -349,7 +380,16 @@ final class PDFPane: Surface {
     }
     /// Scales the page to the pane's width (or whole page) for the fitting modes.
     func applyZoom() {
-        guard !gridVisible, zoomMode != .manual, let scale = fittingScale(), abs(scale - pdfView.scaleFactor) > 0.001 else { return }
+        guard !gridVisible, zoomMode != .manual else { return }
+        if readingMode, zoomMode == .fitPage {
+            let mode = readingDisplayMode()
+            if pdfView.displayMode != mode {
+                let page = pdfView.currentPage
+                pdfView.displayMode = mode; pdfView.layoutDocumentView()
+                if let page { pdfView.go(to: page) }
+            }
+        }
+        guard let scale = fittingScale(), abs(scale - pdfView.scaleFactor) > 0.001 else { return }
         applyingZoom = true; pdfView.scaleFactor = scale; applyingZoom = false
     }
     private func fittingScale() -> CGFloat? {
@@ -359,6 +399,7 @@ final class PDFPane: Surface {
         guard box.width > 0, box.height > 0 else { return nil }
         // The view's own size, not its inner scroll view's, which may not have caught up with a resize yet.
         var viewport = pdfView.bounds.size
+        viewport.height -= readingInsets.top + readingInsets.bottom
         if NSScroller.preferredScrollerStyle == .legacy { viewport.width -= NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) }
         guard viewport.width > 20, viewport.height > 20 else { return nil }
         // Page-break margins grow with the zoom, so they count as part of the page.
@@ -371,16 +412,37 @@ final class PDFPane: Surface {
         return max(pdfView.minScaleFactor, min(pdfView.maxScaleFactor, scale))
     }
     /// Reading mode shows facing pages fitted to the width; the workspace hides the other panes.
+    /// Facing pages when two whole pages fit side by side at nearly the size a single one would get
+    /// (a wide window); one whole page otherwise (a tall or narrow one).
+    private func readingDisplayMode() -> PDFDisplayMode {
+        guard let document = pdfView.document, let page = document.page(at: 0) else { return .singlePage }
+        var size = page.bounds(for: .cropBox).size
+        if page.rotation % 180 != 0 { size = NSSize(width: size.height, height: size.width) }
+        let margins = pdfView.pageBreakMargins
+        let viewport = NSSize(width: pdfView.bounds.width, height: pdfView.bounds.height - readingInsets.top - readingInsets.bottom)
+        guard size.width > 0, size.height > 0, viewport.width > 0, viewport.height > 0 else { return .singlePage }
+        let height = viewport.height / (size.height + margins.top + margins.bottom)
+        let one = min(viewport.width / (size.width + margins.left + margins.right), height)
+        let two = min(viewport.width / (2 * (size.width + margins.left + margins.right)), height)
+        return document.pageCount > 1 && two >= one * 0.8 ? .twoUp : .singlePage
+    }
+    /// Room above the pages and below them (for the page counter) while reading.
+    private var readingInsets: NSEdgeInsets { readingMode ? NSEdgeInsets(top: 22, left: 0, bottom: 52, right: 0) : NSEdgeInsets() }
     func setReadingMode(_ on: Bool) {
         hideGrid()
         readingMode = on
+        if let scroll = pdfView.documentView?.enclosingScrollView {
+            scroll.automaticallyAdjustsContentInsets = false; scroll.contentInsets = readingInsets
+        }
         readingButton.image = Theme.symbol(on ? "book.fill" : "book", size: 15, weight: .medium, description: L10n.tr("阅读模式"))
         readingButton.contentTintColor = on ? Theme.accent : Theme.muted
         readingButton.toolTip = on ? L10n.tr("退出阅读模式  Esc") : L10n.tr("阅读模式  ⌥⌘R")
         let page = pdfView.currentPage
-        pdfView.displayMode = on ? .twoUpContinuous : .singlePageContinuous
-        pdfView.displaysAsBook = false
-        if on { zoomMode = .fitWidth } else { zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode.v2") ?? "") ?? .fitWidth }
+        // Whole pages turned like a book, with a shadow to lift them off the background. Leaving restores
+        // the scrolling strip and the zoom the user had.
+        pdfView.displaysAsBook = false; pdfView.pageShadowsEnabled = on
+        pdfView.displayMode = on ? readingDisplayMode() : .singlePageContinuous
+        if on { zoomMode = .fitPage } else { zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode.v2") ?? "") ?? .fitWidth }
         pdfView.layoutDocumentView(); applyZoom()
         if let page { pdfView.go(to: page) }
         if on { window?.makeFirstResponder(pdfView) }
