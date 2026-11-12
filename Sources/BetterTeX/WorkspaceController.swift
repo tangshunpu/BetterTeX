@@ -48,7 +48,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         // An empty unified toolbar gives the title bar its taller height and centres the traffic lights.
         let toolbar = NSToolbar(identifier: "BetterTeXChrome"); toolbar.showsBaselineSeparator = false
         window.toolbar = toolbar; window.toolbarStyle = .unified
-        window.minSize = NSSize(width: 1120, height: 680); window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 820, height: 560); window.isReleasedWhenClosed = false
         let contentController = NSViewController(); contentController.view = ui; contentController.addChild(ui.mainSplit)
         window.contentViewController = contentController; window.delegate = self; window.center(); window.setFrameAutosaveName("BetterTeXWorkspace")
         ui.onBuild = { [weak self] in self?.buildClicked() }

@@ -4,10 +4,19 @@ import BetterTeXCore
 
 final class SyncedPDFView: PDFView {
     var onInverse: ((Int, Double, Double) -> Void)?
+    var onResize: (() -> Void)?
+    var onCommandClick: (() -> Void)?
+    var onEscape: (() -> Void)?
+    override func setFrameSize(_ newSize: NSSize) {
+        let changed = newSize != frame.size
+        super.setFrameSize(newSize); if changed { onResize?() }
+    }
+    override func cancelOperation(_ sender: Any?) { if let onEscape { onEscape() } else { super.cancelOperation(sender) } }
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.command) {
             let location = convert(event.locationInWindow, from: nil)
             guard let page = page(for: location, nearest: true), let document else { return }
+            onCommandClick?()
             let point = convert(location, to: page); let media = page.bounds(for: .mediaBox)
             onInverse?(document.index(for: page) + 1, point.x - media.minX, media.maxY - point.y)
         } else { super.mouseDown(with: event) }
@@ -40,6 +49,8 @@ final class BuildProgressBar: NSView {
 
 final class PDFPane: Surface {
     enum SyncState { case none, synced, building, failed }
+    /// Fit width and fit page follow the pane as it resizes; manual keeps the user's zoom.
+    enum ZoomMode: String { case fitWidth, fitPage, manual }
     let pdfView = SyncedPDFView()
     let header = PanelHeader("pdf", title: L10n.tr("PDF 预览"))
     let empty = NSStackView()
@@ -47,6 +58,13 @@ final class PDFPane: Surface {
     var onExport: (() -> Void)?
     var onReveal: (() -> Void)?
     var onAuto: ((Bool) -> Void)?
+    var onReadingMode: ((Bool) -> Void)?
+    private(set) var zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode") ?? "") ?? .fitWidth
+    private var applyingZoom = false
+    private(set) var readingMode = false
+    private var readingButton: ActionButton!
+    private var revealButton: ActionButton!
+    private var zoomChip: NSView!
     private let stateChip = Chip(fill: nil, radius: -1)
     private let stateIcon = NSImageView()
     private let stateSpinner = NSProgressIndicator()
@@ -80,27 +98,35 @@ final class PDFPane: Surface {
         stateChip.setContentCompressionResistancePriority(.required, for: .horizontal)
         autoSwitch.controlSize = .mini; autoSwitch.state = .on; autoSwitch.target = self; autoSwitch.action = #selector(autoChanged)
         autoSwitch.toolTip = L10n.tr("停止输入后自动保存并编译"); autoSwitch.setAccessibilityLabel(L10n.tr("自动预览"))
-        let zoomOut = ActionButton("", symbol: "minus") { [weak self] in self?.pdfView.zoomOut(nil) }; zoomOut.toolTip = L10n.tr("缩小")
-        let zoomIn = ActionButton("", symbol: "plus") { [weak self] in self?.pdfView.zoomIn(nil) }; zoomIn.toolTip = L10n.tr("放大")
+        let zoomOut = ActionButton("", symbol: "minus") { [weak self] in self?.zoom(by: 1 / 1.2) }; zoomOut.toolTip = L10n.tr("缩小")
+        let zoomIn = ActionButton("", symbol: "plus") { [weak self] in self?.zoom(by: 1.2) }; zoomIn.toolTip = L10n.tr("放大")
         zoomOut.contentTintColor = Theme.text; zoomIn.contentTintColor = Theme.text
         zoomLabel.alignment = .center; zoomLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium); zoomLabel.size(44, nil)
-        zoomLabel.toolTip = L10n.tr("点按以适合窗口")
-        zoomLabel.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(fitWindow)))
+        zoomLabel.toolTip = L10n.tr("缩放选项")
+        zoomLabel.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(showZoomMenu)))
         let zoomRow = NSStackView(views: [zoomOut, Theme.divider(height: 16), zoomLabel, Theme.divider(height: 16), zoomIn]); zoomRow.spacing = 0; zoomRow.alignment = .centerY
-        let zoom = Chip(fill: Theme.fill, radius: 8); zoom.size(nil, 30); zoom.pin(zoomRow)
+        let zoom = Chip(fill: Theme.fill, radius: 8); zoom.size(nil, 30); zoom.pin(zoomRow); zoomChip = zoom
         let export = ActionButton("", symbol: "arrow.down.to.line", style: .accentIcon) { [weak self] in self?.onExport?() }; export.toolTip = L10n.tr("导出 PDF…")
         let reveal = ActionButton("", symbol: "scope") { [weak self] in self?.onReveal?() }; reveal.toolTip = L10n.tr("在 PDF 中定位  ⇧⌘J")
-        reveal.setAccessibilityLabel(L10n.tr("在 PDF 中定位"))
+        reveal.setAccessibilityLabel(L10n.tr("在 PDF 中定位")); revealButton = reveal
+        readingButton = ActionButton("", symbol: "book") { [weak self] in guard let self else { return }; self.onReadingMode?(!self.readingMode) }
+        readingButton.toolTip = L10n.tr("阅读模式  ⌥⌘R"); readingButton.setAccessibilityLabel(L10n.tr("阅读模式"))
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        for view in [stateChip, spacer, autoLabel, autoSwitch, Theme.divider(), reveal, zoom, export] { header.addControl(view) }
+        for view in [stateChip, spacer, autoLabel, autoSwitch, Theme.divider(), reveal, readingButton!, zoom, export] { header.addControl(view) }
         header.menuActions = [
             (L10n.tr("在 PDF 中定位"), "scope", { [weak self] in self?.onReveal?() }),
-            (L10n.tr("适合窗口"), "arrow.up.left.and.arrow.down.right", { [weak self] in self?.pdfView.autoScales = true }),
+            (L10n.tr("适合宽度"), "arrow.left.and.right", { [weak self] in self?.setZoomMode(.fitWidth) }),
+            (L10n.tr("适合整页"), "arrow.up.left.and.arrow.down.right", { [weak self] in self?.setZoomMode(.fitPage) }),
+            (L10n.tr("阅读模式"), "book", { [weak self] in guard let self else { return }; self.onReadingMode?(!self.readingMode) }),
             (L10n.tr("导出 PDF…"), "arrow.down.to.line", { [weak self] in self?.onExport?() })
         ]
+        pdfView.onResize = { [weak self] in self?.applyZoom() }
+        // Jumping to the source needs the editor, so it ends reading mode.
+        pdfView.onCommandClick = { [weak self] in guard let self, self.readingMode else { return }; self.onReadingMode?(false) }
+        pdfView.onEscape = { [weak self] in guard let self, self.readingMode else { return }; self.onReadingMode?(false) }
         state = .none
 
-        pdfView.autoScales = true; pdfView.displayMode = .singlePageContinuous; pdfView.displaysPageBreaks = true; pdfView.pageBreakMargins = NSEdgeInsets(top: 28, left: 28, bottom: 28, right: 28)
+        pdfView.autoScales = false; pdfView.displayMode = .singlePageContinuous; pdfView.displaysPageBreaks = true; pdfView.pageBreakMargins = NSEdgeInsets(top: 28, left: 28, bottom: 28, right: 28)
         pdfView.setContentCompressionResistancePriority(.init(1), for: .horizontal)
         pdfView.setContentCompressionResistancePriority(.init(1), for: .vertical)
         empty.setContentCompressionResistancePriority(.init(1), for: .horizontal)
@@ -136,11 +162,72 @@ final class PDFPane: Surface {
         // Shed secondary header items as the pane narrows.
         autoLabel.isHidden = bounds.width < 430
         stateChip.isHidden = state == .none || bounds.width < 360
+        autoSwitch.isHidden = bounds.width < 300
+        revealButton.isHidden = bounds.width < 260
+        readingButton.isHidden = bounds.width < 230
+        zoomChip.isHidden = bounds.width < 200
         super.layout()
     }
     @objc private func autoChanged() { onAuto?(autoSwitch.state == .on) }
-    @objc private func fitWindow() { pdfView.autoScales = true }
-    @objc private func scaleChanged() { zoomLabel.stringValue = "\(Int((pdfView.scaleFactor * 100).rounded()))%" }
+    @objc private func showZoomMenu() {
+        let menu = NSMenu()
+        for (title, mode) in [(L10n.tr("适合宽度"), ZoomMode.fitWidth), (L10n.tr("适合整页"), .fitPage)] {
+            let item = ClosureMenuItem(title, symbol: mode == .fitWidth ? "arrow.left.and.right" : "arrow.up.left.and.arrow.down.right") { [weak self] in self?.setZoomMode(mode) }
+            item.state = zoomMode == mode ? .on : .off; menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        for percent in [50, 75, 100, 125, 150, 200] {
+            menu.addItem(ClosureMenuItem("\(percent)%", symbol: nil) { [weak self] in self?.setManualScale(CGFloat(percent) / 100) })
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: zoomLabel.bounds.height + 6), in: zoomLabel)
+    }
+    func setZoomMode(_ mode: ZoomMode) {
+        zoomMode = mode; UserDefaults.standard.set(mode.rawValue, forKey: "pdf.zoomMode"); applyZoom()
+    }
+    private func zoom(by factor: CGFloat) { setManualScale(pdfView.scaleFactor * factor) }
+    private func setManualScale(_ scale: CGFloat) {
+        setZoomMode(.manual); pdfView.scaleFactor = max(pdfView.minScaleFactor, min(pdfView.maxScaleFactor, scale))
+    }
+    /// Scales the page to the pane's width (or whole page) for the fitting modes.
+    func applyZoom() {
+        guard zoomMode != .manual, let scale = fittingScale(), abs(scale - pdfView.scaleFactor) > 0.001 else { return }
+        applyingZoom = true; pdfView.scaleFactor = scale; applyingZoom = false
+    }
+    private func fittingScale() -> CGFloat? {
+        guard let page = pdfView.currentPage ?? pdfView.document?.page(at: 0) else { return nil }
+        var box = page.bounds(for: pdfView.displayBox).size
+        if page.rotation % 180 != 0 { box = NSSize(width: box.height, height: box.width) }
+        guard box.width > 0, box.height > 0 else { return nil }
+        let viewport = pdfView.documentView?.enclosingScrollView?.contentSize ?? pdfView.bounds.size
+        let margins = pdfView.pageBreakMargins
+        let columns: CGFloat = pdfView.displayMode == .twoUp || pdfView.displayMode == .twoUpContinuous ? 2 : 1
+        let width = (viewport.width - (margins.left + margins.right) * columns) / (box.width * columns)
+        let height = (viewport.height - margins.top - margins.bottom) / box.height
+        let scale = zoomMode == .fitPage ? min(width, height) : width
+        guard scale.isFinite, scale > 0 else { return nil }
+        return max(pdfView.minScaleFactor, min(pdfView.maxScaleFactor, scale))
+    }
+    /// Reading mode shows facing pages fitted to the width; the workspace hides the other panes.
+    func setReadingMode(_ on: Bool) {
+        readingMode = on
+        readingButton.image = Theme.symbol(on ? "book.fill" : "book", size: 15, weight: .medium, description: L10n.tr("阅读模式"))
+        readingButton.contentTintColor = on ? Theme.accent : Theme.muted
+        readingButton.toolTip = on ? L10n.tr("退出阅读模式  Esc") : L10n.tr("阅读模式  ⌥⌘R")
+        let page = pdfView.currentPage
+        pdfView.displayMode = on ? .twoUpContinuous : .singlePageContinuous
+        pdfView.displaysAsBook = false
+        if on { zoomMode = .fitWidth } else { zoomMode = ZoomMode(rawValue: UserDefaults.standard.string(forKey: "pdf.zoomMode") ?? "") ?? .fitWidth }
+        pdfView.layoutDocumentView(); applyZoom()
+        if let page { pdfView.go(to: page) }
+        if on { window?.makeFirstResponder(pdfView) }
+    }
+    @objc private func scaleChanged() {
+        // A pinch or a PDFKit shortcut changes the scale outside our zoom controls.
+        if !applyingZoom, zoomMode != .manual, let fit = fittingScale(), abs(fit - pdfView.scaleFactor) > 0.01 {
+            zoomMode = .manual; if !readingMode { UserDefaults.standard.set(ZoomMode.manual.rawValue, forKey: "pdf.zoomMode") }
+        }
+        zoomLabel.stringValue = "\(Int((pdfView.scaleFactor * 100).rounded()))%"
+    }
     func load(_ url: URL) {
         // Read bytes so PDFKit cannot keep a mapped file alive while TeX rewrites it.
         guard let data = try? Data(contentsOf: url) else { return }
@@ -150,14 +237,14 @@ final class PDFPane: Surface {
         loadedData = data
         let oldPage = pdfView.currentPage.flatMap { pdfView.document?.index(for: $0) } ?? 0
         let oldDestination = pdfView.currentDestination
-        let wasAuto = pdfView.autoScales; let scale = pdfView.scaleFactor
-        pdfView.document = document; empty.isHidden = true
+        let scale = pdfView.scaleFactor
+        applyingZoom = true; pdfView.document = document; applyingZoom = false; empty.isHidden = true
         highlightAnnotation = nil; highlightPage = nil
         if let page = document.page(at: min(oldPage, max(0, document.pageCount - 1))) {
             if let destination = oldDestination { pdfView.go(to: PDFDestination(page: page, at: destination.point)) }
             else { pdfView.go(to: page) }
         }
-        pdfView.autoScales = wasAuto; if !wasAuto { pdfView.scaleFactor = scale }
+        if zoomMode == .manual { pdfView.scaleFactor = scale } else { applyZoom() }
         pageChanged(); scaleChanged()
     }
     func clear() { loadedData = nil; pdfView.document = nil; empty.isHidden = false; pageChip.isHidden = true; state = .none }

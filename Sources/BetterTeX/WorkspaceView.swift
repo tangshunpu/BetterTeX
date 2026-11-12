@@ -255,12 +255,12 @@ final class WorkspaceView: Surface {
         mainSplit.splitView.isVertical = true; bodySplit.splitView.isVertical = true; documentSplit.splitView.isVertical = true
         mainSplit.sizing = .fixedFirst; mainSplit.persistenceKey = "layout.sidebarSizes"; bodySplit.sizing = .fixedLast
         func item(_ view: NSView, min: CGFloat) -> PaneItem { let vc = NSViewController(); vc.view = view; let item = PaneItem(viewController: vc); item.minimumThickness = min; return item }
-        explorerItem = item(explorer, min: 200); explorerItem.maximumThickness = 340; explorerItem.canCollapse = true
+        explorerItem = item(explorer, min: 140); explorerItem.maximumThickness = 640; explorerItem.canCollapse = true
         mainSplit.addSplitViewItem(explorerItem)
-        let bodyItem = PaneItem(viewController: bodySplit); bodyItem.minimumThickness = 900; mainSplit.addSplitViewItem(bodyItem)
+        let bodyItem = PaneItem(viewController: bodySplit); bodyItem.minimumThickness = 400; mainSplit.addSplitViewItem(bodyItem)
         docItem = PaneItem(viewController: documentSplit)
-        terminalItem = item(terminal, min: 380); terminalItem.canCollapse = true
-        editorItem = item(editor, min: 250); pdfItem = item(preview, min: 340); pdfItem.canCollapse = true
+        terminalItem = item(terminal, min: 240); terminalItem.canCollapse = true
+        editorItem = item(editor, min: 160); pdfItem = item(preview, min: 180); pdfItem.canCollapse = true
         applyDocking()
 
         // Status bar
@@ -290,6 +290,7 @@ final class WorkspaceView: Surface {
         terminal.header.onMove = { [weak self] in self?.movePanel("agent", to: $0) }
         preview.header.onMove = { [weak self] in self?.movePanel("pdf", to: $0) }
         preview.onAuto = { [weak self] in self?.onAuto?($0) }
+        preview.onReadingMode = { [weak self] in self?.setReadingMode($0) }
         explorer.onSearch = { [weak self] in self?.search.focus() }
         for header in [terminal.header, preview.header] {
             let id = header.panelID
@@ -317,7 +318,7 @@ final class WorkspaceView: Surface {
         layoutSubtreeIfNeeded()
         mainSplit.resetPreferredSizes(first: 236); resetPaneSizes()
         documentSplit.view.layoutSubtreeIfNeeded()
-        preview.pdfView.autoScales = true
+        preview.applyZoom()
     }
     /// In full screen the traffic lights disappear, so the title bar content moves to the edge.
     func setFullScreen(_ fullScreen: Bool) { headerLeading.constant = fullScreen ? 14 : 84 }
@@ -346,9 +347,10 @@ final class WorkspaceView: Surface {
         pullButton.toolTip = L10n.tr("从 \(name) 拉取 · git pull --ff-only"); pushButton.toolTip = L10n.tr("提交并推送到 \(name)")
     }
     func setBranch(_ text: String) { branch.stringValue = text; branch.isHidden = text.isEmpty }
-    func toggleSidebar() { explorerItem.isCollapsed.toggle() }
+    func toggleSidebar() { if readingState != nil { setReadingMode(false) }; explorerItem.isCollapsed.toggle() }
     /// ⌘J folds the Agent panel to a rail and back; a fully hidden panel comes back unfolded.
     func toggleTerminal() {
+        if readingState != nil { setReadingMode(false) }
         if terminalItem.isCollapsed { terminalItem.isCollapsed = false; setAgentFolded(false) } else { setAgentFolded(!agentFolded) }
     }
     func setAgentFolded(_ folded: Bool) {
@@ -357,13 +359,27 @@ final class WorkspaceView: Surface {
     }
     private func applyAgentFold() {
         bodySplit.freezeSizes = agentFolded
-        terminalItem.minimumThickness = agentFolded ? TerminalPanel.railThickness : (agentDock == .bottom ? 240 : 380)
-        terminalItem.maximumThickness = agentFolded ? TerminalPanel.railThickness : (agentDock == .bottom ? 520 : 1000)
+        terminalItem.minimumThickness = agentFolded ? TerminalPanel.railThickness : (agentDock == .bottom ? 140 : 240)
+        terminalItem.maximumThickness = agentFolded ? TerminalPanel.railThickness : .greatestFiniteMagnitude
         terminal.setFolded(agentFolded, horizontal: agentDock == .bottom)
     }
-    func togglePDF() { pdfItem.isCollapsed.toggle() }
-    func showOutput() { terminalItem.isCollapsed = false; if agentFolded { setAgentFolded(false) }; terminal.select("Output") }
-    func showAgent() { terminalItem.isCollapsed = false; if agentFolded { setAgentFolded(false) } }
+    func togglePDF() { if readingState != nil { setReadingMode(false) }; pdfItem.isCollapsed.toggle() }
+    /// Panes hidden by reading mode, restored as they were when it ends.
+    private var readingState: (explorer: Bool, editor: Bool, agent: Bool)?
+    func toggleReadingMode() { setReadingMode(readingState == nil) }
+    func setReadingMode(_ on: Bool) {
+        guard on != (readingState != nil) else { return }
+        if on {
+            readingState = (explorerItem.isCollapsed, editorItem.isCollapsed, terminalItem.isCollapsed)
+            pdfItem.isCollapsed = false; explorerItem.isCollapsed = true; editorItem.isCollapsed = true; terminalItem.isCollapsed = true
+        } else if let state = readingState {
+            readingState = nil
+            explorerItem.isCollapsed = state.explorer; editorItem.isCollapsed = state.editor; terminalItem.isCollapsed = state.agent
+        }
+        layoutSubtreeIfNeeded(); preview.setReadingMode(on)
+    }
+    func showOutput() { setReadingMode(false); terminalItem.isCollapsed = false; if agentFolded { setAgentFolded(false) }; terminal.select("Output") }
+    func showAgent() { setReadingMode(false); terminalItem.isCollapsed = false; if agentFolded { setAgentFolded(false) } }
     private var buildingIndicator: DispatchWorkItem?
     func setBuilding(_ building: Bool) {
         buildingIndicator?.cancel(); buildingIndicator = nil
@@ -450,14 +466,14 @@ final class WorkspaceView: Surface {
     // MARK: Docking
     private func applyDocking() {
         documentSplit.splitView.isVertical = pdfDock != .bottom
-        editorItem.minimumThickness = pdfDock == .bottom ? 160 : 250
-        pdfItem.minimumThickness = pdfDock == .bottom ? 180 : 340
+        editorItem.minimumThickness = pdfDock == .bottom ? 100 : 160
+        pdfItem.minimumThickness = pdfDock == .bottom ? 120 : 180
         documentSplit.persistenceKey = "layout.pdfSizes.\(pdfDock.rawValue)"
         documentSplit.replaceItems(pdfDock == .left ? [pdfItem, editorItem] : [editorItem, pdfItem])
         bodySplit.splitView.isVertical = agentDock != .bottom
         bodySplit.sizing = agentDock == .left ? .fixedFirst : .fixedLast
         bodySplit.persistenceKey = "layout.agentSizes.\(agentDock.rawValue)"
-        docItem.minimumThickness = agentDock == .bottom ? 220 : (pdfDock == .bottom ? 340 : 600)
+        docItem.minimumThickness = agentDock == .bottom ? 160 : (pdfDock == .bottom ? 200 : 360)
         applyAgentFold()
         bodySplit.replaceItems(agentDock == .left ? [terminalItem, docItem] : [docItem, terminalItem])
         terminal.header.position = agentDock; preview.header.position = pdfDock
@@ -468,6 +484,7 @@ final class WorkspaceView: Surface {
         documentSplit.resetPreferredSizes(ratio: 0.5)
     }
     func movePanel(_ panel: String, to position: DockPosition) {
+        setReadingMode(false)
         if panel == "agent" { agentDock = position; terminalItem.isCollapsed = false }
         else { pdfDock = position; pdfItem.isCollapsed = false }
         UserDefaults.standard.set(agentDock.rawValue, forKey: "layout.agentDock")
@@ -478,6 +495,7 @@ final class WorkspaceView: Surface {
         if let pair = item.representedObject as? [String], let position = DockPosition(rawValue: pair[1]) { movePanel(pair[0], to: position) }
     }
     @objc func resetLayout() {
+        setReadingMode(false)
         for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix("layout.") { UserDefaults.standard.removeObject(forKey: key) }
         agentDock = .right; pdfDock = .right; agentFolded = false; explorerItem.isCollapsed = false; terminalItem.isCollapsed = false; pdfItem.isCollapsed = false
         applyDocking(); mainSplit.resetPreferredSizes(first: 236)

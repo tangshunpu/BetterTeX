@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if snippet == .image || snippet == .section { insert.addItem(.separator()) }
         }
         let view = submenu(L10n.tr("显示"))
-        add(view, L10n.tr("搜索文件或章节"), #selector(focusSearch), "k"); view.addItem(.separator()); add(view, L10n.tr("显示 / 隐藏边栏"), #selector(toggleSidebar), "s", modifiers: [.command, .control]); add(view, L10n.tr("PDF 预览"), #selector(togglePDF), "p", modifiers: [.command, .option]); add(view, L10n.tr("Agent / 终端面板"), #selector(toggleTerminal), "j"); view.addItem(.separator()); add(view, L10n.tr("恢复默认布局"), #selector(resetLayout)); view.addItem(.separator()); add(view, L10n.tr("进入全屏幕"), #selector(NSWindow.toggleFullScreen(_:)), "f", modifiers: [.command, .control])
+        add(view, L10n.tr("搜索文件或章节"), #selector(focusSearch), "k"); view.addItem(.separator()); add(view, L10n.tr("显示 / 隐藏边栏"), #selector(toggleSidebar), "s", modifiers: [.command, .control]); add(view, L10n.tr("PDF 预览"), #selector(togglePDF), "p", modifiers: [.command, .option]); add(view, L10n.tr("阅读模式"), #selector(toggleReadingMode), "r", modifiers: [.command, .option]); add(view, L10n.tr("Agent / 终端面板"), #selector(toggleTerminal), "j"); view.addItem(.separator()); add(view, L10n.tr("恢复默认布局"), #selector(resetLayout)); view.addItem(.separator()); add(view, L10n.tr("进入全屏幕"), #selector(NSWindow.toggleFullScreen(_:)), "f", modifiers: [.command, .control])
         let project = submenu(L10n.tr("工作区"))
         add(project, L10n.tr("编译 / 停止"), #selector(build), "\r"); add(project, L10n.tr("在 PDF 中定位"), #selector(sync), "j", modifiers: [.command, .shift]); project.addItem(.separator()); add(project, L10n.tr("与 Overleaf 同步"), #selector(syncOverleaf), "y", modifiers: [.command, .shift]); add(project, L10n.tr("把当前项目上传到 Overleaf…"), #selector(exportOverleaf)); add(project, L10n.tr("邀请合作者…"), #selector(inviteOverleaf)); project.addItem(.separator()); add(project, L10n.tr("本机工具…"), #selector(showTools)); add(project, L10n.tr("重新检测工具"), #selector(detectTools))
         let window = submenu(L10n.tr("窗口")); add(window, L10n.tr("最小化"), #selector(NSWindow.performMiniaturize(_:)), "m"); add(window, L10n.tr("缩放"), #selector(NSWindow.performZoom(_:))); NSApp.windowsMenu = window
@@ -100,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleTerminal() { workspace.ui.toggleTerminal() }
     @objc func insertSnippet(_ sender: NSMenuItem) { if let snippet = Snippet(rawValue: sender.tag) { workspace.ui.editor.insert(snippet) } }
     @objc func togglePDF() { workspace.ui.togglePDF() }
+    @objc func toggleReadingMode() { workspace.ui.toggleReadingMode() }
     @objc func toggleSidebar() { workspace.ui.toggleSidebar() }
     @objc func focusSearch() { workspace.ui.search.focus() }
     @objc func resetLayout() { workspace.ui.resetLayout() }

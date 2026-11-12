@@ -730,3 +730,10 @@
 "配色方案" = "Color scheme";
 "默认" = "Default";
 "系统等宽字体" = "System Monospaced";
+"阅读模式" = "Reading Mode";
+"阅读模式  ⌥⌘R" = "Reading mode  ⌥⌘R";
+"退出阅读模式  Esc" = "Exit reading mode  Esc";
+"适合宽度" = "Fit Width";
+"适合整页" = "Fit Page";
+"缩放选项" = "Zoom options";
+"（无标题）" = "(Untitled)";
