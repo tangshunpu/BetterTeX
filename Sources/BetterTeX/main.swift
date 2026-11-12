@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let updates = UpdateController()
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        Theme.applyAppTheme()
         #if DEBUG
         // Preview either appearance without changing the user's system preference.
         if let appearance = ProcessInfo.processInfo.environment["BETTERTEX_TEST_APPEARANCE"] {

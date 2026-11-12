@@ -1,4 +1,5 @@
 import AppKit
+import BetterTeXCore
 
 /// The iOS-style palette from the BetterTeX UI design: grouped dark surfaces, translucent
 /// grey fills and system tint colours, with light-appearance counterparts.
@@ -27,13 +28,14 @@ enum Theme {
     static let soft = adaptive(0x3A3A3C, 0xD1D1D6)
     static let muted = adaptive(0x6C6C70, 0x98989F)
     static let faint = adaptive(0x8E8E93, 0x636366)
-    // Syntax
-    static let command = adaptive(0xAD3DA4, 0xFF7AB2)
-    static let option = adaptive(0x78492A, 0xD9C97C)
-    static let brace = adaptive(0x6C6C70, 0xA1A1A6)
-    static let code = adaptive(0x1C1C1E, 0xE1E1E3)
-    static let comment = adaptive(0x707F8C, 0x8E959E)
-    static let environment = adaptive(0x03638C, 0xACF2E4)
+    // Syntax: resolved against the chosen editor colour scheme at draw time.
+    static var scheme: EditorColorScheme = AppearancePreferences.saved().colorScheme
+    static let command = syntax(\.command)
+    static let option = syntax(\.option)
+    static let brace = syntax(\.brace)
+    static let code = syntax(\.code)
+    static let comment = syntax(\.comment)
+    static let environment = syntax(\.environment)
     static let lineNumber = adaptive(0x8E8E93, 0x8E8E93)
 
     static func adaptive(_ light: UInt32, _ dark: UInt32, lightAlpha: CGFloat = 1, darkAlpha: CGFloat = 1) -> NSColor {
@@ -54,6 +56,57 @@ enum Theme {
         let view = Chip(fill: Theme.adaptive(0x3C3C43, 0xFFFFFF, lightAlpha: 0.18, darkAlpha: 0.14), radius: 0)
         view.widthAnchor.constraint(equalToConstant: 1).isActive = true; view.heightAnchor.constraint(equalToConstant: height).isActive = true
         return view
+    }
+}
+
+/// Light and dark hex pairs for one syntax palette.
+struct SyntaxPalette {
+    var command: (UInt32, UInt32), option: (UInt32, UInt32), brace: (UInt32, UInt32)
+    var code: (UInt32, UInt32), comment: (UInt32, UInt32), environment: (UInt32, UInt32)
+    static func of(_ scheme: EditorColorScheme) -> SyntaxPalette {
+        switch scheme {
+        case .standard:
+            return SyntaxPalette(command: (0xAD3DA4, 0xFF7AB2), option: (0x78492A, 0xD9C97C), brace: (0x6C6C70, 0xA1A1A6),
+                                 code: (0x1C1C1E, 0xE1E1E3), comment: (0x707F8C, 0x8E959E), environment: (0x03638C, 0xACF2E4))
+        case .github:
+            return SyntaxPalette(command: (0xCF222E, 0xFF7B72), option: (0x0A3069, 0xA5D6FF), brace: (0x57606A, 0x8B949E),
+                                 code: (0x1F2328, 0xE6EDF3), comment: (0x6E7781, 0x8B949E), environment: (0x8250DF, 0xD2A8FF))
+        case .solarized:
+            return SyntaxPalette(command: (0x268BD2, 0x268BD2), option: (0x2AA198, 0x2AA198), brace: (0x6C71C4, 0x6C71C4),
+                                 code: (0x586E75, 0x93A1A1), comment: (0x93A1A1, 0x657B83), environment: (0xB58900, 0xB58900))
+        case .tomorrow:
+            return SyntaxPalette(command: (0x8959A8, 0xB294BB), option: (0x718C00, 0xB5BD68), brace: (0x4D4D4C, 0xC5C8C6),
+                                 code: (0x4D4D4C, 0xC5C8C6), comment: (0x8E908C, 0x969896), environment: (0x4271AE, 0x81A2BE))
+        }
+    }
+}
+
+extension Theme {
+    fileprivate static func syntax(_ key: KeyPath<SyntaxPalette, (UInt32, UInt32)>) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let pair = SyntaxPalette.of(Theme.scheme)[keyPath: key]
+            return NSColor(hex: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? pair.1 : pair.0)
+        }
+    }
+    /// The editor font for the saved family and size, falling back to the system monospaced font.
+    static func editorFont(_ preferences: AppearancePreferences = .saved()) -> NSFont {
+        let size = CGFloat(preferences.fontSize)
+        if !preferences.fontName.isEmpty, let font = NSFontManager.shared.font(withFamily: preferences.fontName, traits: [], weight: 5, size: size) { return font }
+        return .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+    /// Installed fixed-pitch font families, for the settings picker.
+    static func monospacedFamilies() -> [String] {
+        let manager = NSFontManager.shared
+        return manager.availableFontFamilies.filter { family in
+            manager.font(withFamily: family, traits: [], weight: 5, size: 12)?.isFixedPitch == true
+        }
+    }
+    static func applyAppTheme(_ theme: AppTheme = AppearancePreferences.saved().theme) {
+        switch theme {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 }
 

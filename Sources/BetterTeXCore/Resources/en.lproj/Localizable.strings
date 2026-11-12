@@ -721,3 +721,12 @@
 "以上是之前的对话 · 继续输入即可接着聊" = "Earlier conversation above · Keep typing to continue";
 "PDF · 第 %1$@ 页" = "PDF · Page %1$@";
 "请先编译文档" = "Compile the document first";
+"外观" = "Appearance";
+"浅色" = "Light";
+"深色" = "Dark";
+"应用主题" = "App theme";
+"编辑器字体" = "Editor font";
+"字号" = "Font size";
+"配色方案" = "Color scheme";
+"默认" = "Default";
+"系统等宽字体" = "System Monospaced";

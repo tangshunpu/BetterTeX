@@ -547,7 +547,6 @@ final class EditorPane: Surface, NSTextViewDelegate {
         textView.autoresizingMask = [.width]; textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainerInset = NSSize(width: 0, height: 12); textView.textContainer?.lineFragmentPadding = 2
-        textView.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
         textView.isRichText = false; textView.allowsUndo = true; textView.usesFindBar = true
         textView.isAutomaticQuoteSubstitutionEnabled = false; textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false; textView.isAutomaticSpellingCorrectionEnabled = false
@@ -555,9 +554,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
         textView.isAutomaticTextCompletionEnabled = false
         if #available(macOS 15.0, *) { textView.writingToolsBehavior = .none }
         textView.delegate = self
-        let paragraph = NSMutableParagraphStyle(); paragraph.minimumLineHeight = 22; paragraph.maximumLineHeight = 22
-        textView.defaultParagraphStyle = paragraph; textView.typingAttributes[.paragraphStyle] = paragraph
-        textView.typingAttributes[.baselineOffset] = 3
+        applyFontPreferences()
+        NotificationCenter.default.addObserver(self, selector: #selector(appearancePreferencesChanged), name: AppearancePreferences.changed, object: nil)
         scroll.documentView = textView
         scroll.verticalRulerView = LineRuler(scroll: scroll, text: textView)
         scroll.hasVerticalRuler = true; scroll.rulersVisible = true
@@ -576,6 +574,24 @@ final class EditorPane: Surface, NSTextViewDelegate {
     }
     required init?(coder: NSCoder) { fatalError() }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateColors() }
+    private var baselineOffset: CGFloat = 3
+    /// Applies the saved editor font, size and matching fixed line height.
+    private func applyFontPreferences() {
+        let preferences = AppearancePreferences.saved()
+        textView.font = Theme.editorFont(preferences)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = CGFloat(preferences.lineHeight); paragraph.maximumLineHeight = CGFloat(preferences.lineHeight)
+        baselineOffset = CGFloat(preferences.baselineOffset)
+        textView.defaultParagraphStyle = paragraph
+        textView.typingAttributes[.paragraphStyle] = paragraph; textView.typingAttributes[.baselineOffset] = baselineOffset
+        textView.typingAttributes[.font] = textView.font
+    }
+    @objc private func appearancePreferencesChanged() {
+        Theme.scheme = AppearancePreferences.saved().colorScheme
+        applyFontPreferences(); applyParagraphStyle()
+        updateColors(); textView.needsDisplay = true
+        scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true
+    }
     func updateColors() {
         textView.backgroundColor = Theme.canvas; textView.textColor = Theme.code; textView.insertionPointColor = Theme.accent
         textView.selectedTextAttributes = [.backgroundColor: Theme.accent.withAlphaComponent(0.3)]
@@ -613,7 +629,7 @@ final class EditorPane: Surface, NSTextViewDelegate {
     /// Applies the fixed line height to the whole buffer; plain-text edits inherit it.
     private func applyParagraphStyle() {
         guard let storage = textView.textStorage, let paragraph = textView.defaultParagraphStyle else { return }
-        storage.addAttributes([.paragraphStyle: paragraph, .baselineOffset: 3], range: NSRange(location: 0, length: storage.length))
+        storage.addAttributes([.paragraphStyle: paragraph, .baselineOffset: baselineOffset, .font: textView.font ?? Theme.editorFont()], range: NSRange(location: 0, length: storage.length))
     }
     func load(_ buffer: EditorBuffer, project: URL) {
         popup.dismiss()
