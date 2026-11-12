@@ -233,6 +233,7 @@ final class CodeTextView: NSTextView {
         drawEntryBands(in: rect)
         drawStructure(in: rect)
         if let line = currentLineRect { Theme.accent.withAlphaComponent(0.10).setFill(); line.fill(using: .sourceOver) }
+        drawSyncMark()
         guard let layoutManager, let textContainer, !commentRanges.isEmpty else { return }
         let length = (string as NSString).length, origin = textContainerOrigin
         NSColor.systemYellow.withAlphaComponent(0.28).setFill()
@@ -329,6 +330,44 @@ final class CodeTextView: NSTextView {
         color.withAlphaComponent(0.14).setFill(); NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
         (text as NSString).draw(at: NSPoint(x: pill.minX + 5, y: pill.minY + 1), withAttributes: attributes)
     }
+    // MARK: Jump marks
+    /// The sentence and word a PDF → source jump landed on, drawn like the PDF side's marks.
+    private var syncMark: (sentence: NSRange, word: NSRange?)?
+    private var syncFade: CGFloat = 1
+    private var syncToken = 0
+    func flashSync(sentence: NSRange, word: NSRange?, hold: Double = 2.2) {
+        syncToken += 1; let token = syncToken
+        syncMark = (sentence, word); syncFade = 1; needsDisplay = true
+        let steps = 12
+        for step in 1...steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + hold + Double(step) * 0.03) { [weak self] in
+                guard let self, self.syncToken == token else { return }
+                let fade = 1 - CGFloat(step) / CGFloat(steps)
+                self.syncFade = fade * fade
+                if step == steps { self.syncMark = nil }
+                self.needsDisplay = true
+            }
+        }
+    }
+    private func drawSyncMark() {
+        guard let mark = syncMark, let layoutManager, let textContainer else { return }
+        let length = (string as NSString).length, origin = textContainerOrigin
+        func fill(_ range: NSRange, alpha: CGFloat, inset: NSSize) {
+            let range = NSIntersectionRange(range, NSRange(location: 0, length: length))
+            guard range.length > 0 else { return }
+            Theme.syncTint.withAlphaComponent(alpha * syncFade).setFill()
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: textContainer) { rect, _ in
+                let box = rect.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: inset.width, dy: inset.height)
+                guard box.width > 0 else { return }
+                let radius = min(box.height * 0.3, 4)
+                NSBezierPath(roundedRect: box, xRadius: radius, yRadius: radius).fill()
+            }
+        }
+        fill(mark.sentence, alpha: Theme.syncSentenceAlpha, inset: NSSize(width: -2, height: 0.5))
+        if let word = mark.word { fill(word, alpha: Theme.syncWordAlpha, inset: NSSize(width: -1.5, height: 1)) }
+    }
+
     // MARK: Collaboration overlays
     struct RemoteCursor { let offset: Int; let color: NSColor; let name: String }
     /// Carets of collaborators editing this document.
@@ -1306,7 +1345,8 @@ final class EditorPane: Surface, NSTextViewDelegate {
         let caret = NSRange(location: min(max(0, offset), length), length: 0)
         let mark = NSIntersectionRange(sentence, NSRange(location: 0, length: length))
         textView.setSelectedRange(caret); textView.scrollRangeToVisible(mark.length > 0 ? mark : caret)
-        textView.showFindIndicator(for: mark.length > 0 ? mark : (textView.string as NSString).lineRange(for: caret))
+        let word = TextSync.wordRange(in: textView.string, at: caret.location)
+        textView.flashSync(sentence: mark.length > 0 ? mark : Self.trimmedLine(textView.string, at: caret.location), word: word)
         window?.makeFirstResponder(textView)
     }
     func goTo(line: Int, column: Int = 0) {
@@ -1314,7 +1354,17 @@ final class EditorPane: Surface, NSTextViewDelegate {
         for _ in 1..<max(1, line) { if location >= ns.length { break }; location = NSMaxRange(ns.lineRange(for: NSRange(location: location, length: 0))) }
         let range = ns.lineRange(for: NSRange(location: min(location, ns.length), length: 0))
         let target = NSRange(location: min(range.location + max(0, column), NSMaxRange(range)), length: 0)
-        textView.setSelectedRange(target); textView.scrollRangeToVisible(target); textView.showFindIndicator(for: range)
+        textView.setSelectedRange(target); textView.scrollRangeToVisible(target)
+        textView.flashSync(sentence: Self.trimmedLine(textView.string, at: target.location), word: nil, hold: 1.4)
         window?.makeFirstResponder(textView)
+    }
+    /// The line holding `offset`, without its line break or surrounding blanks.
+    static func trimmedLine(_ text: String, at offset: Int) -> NSRange {
+        let ns = text as NSString
+        let line = ns.lineRange(for: NSRange(location: min(max(0, offset), ns.length), length: 0))
+        var start = line.location, end = NSMaxRange(line)
+        while start < end, let c = UnicodeScalar(ns.character(at: start)), CharacterSet.whitespacesAndNewlines.contains(c) { start += 1 }
+        while end > start, let c = UnicodeScalar(ns.character(at: end - 1)), CharacterSet.whitespacesAndNewlines.contains(c) { end -= 1 }
+        return NSRange(location: start, length: end - start)
     }
 }

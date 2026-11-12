@@ -206,6 +206,19 @@ public enum TextSync {
     private static let terminators: Set<Character> = [".", "?", "!", "。", "？", "！", "；"]
     private static let abbreviations: Set<String> = ["e.g", "i.e", "etc", "fig", "figs", "eq", "eqs", "sec", "ref", "refs", "al", "vs", "cf", "no", "approx", "resp", "dr", "mr", "ms", "prof"]
 
+    /// The word (or, in CJK text, the segmented word) of `text` that contains `offset`.
+    public static func wordRange(in text: String, at offset: Int) -> NSRange? {
+        let ns = text as NSString
+        guard offset >= 0, offset < ns.length else { return nil }
+        let start = max(0, offset - 80), window = NSRange(location: start, length: min(ns.length, offset + 80) - start)
+        var found: NSRange?
+        ns.enumerateSubstrings(in: window, options: [.byWords, .substringNotRequired]) { _, range, _, stop in
+            if NSLocationInRange(offset, range) { found = range; stop.pointee = true }
+            else if range.location > offset { stop.pointee = true }
+        }
+        return found
+    }
+
     /// The sentence around a UTF-16 offset of LaTeX source. A blank line ends a sentence; a single line break does not.
     public static func sentenceRange(in text: String, at offset: Int) -> NSRange {
         let ns = text as NSString

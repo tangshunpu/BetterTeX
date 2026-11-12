@@ -9,6 +9,12 @@ enum Theme {
     static let orange = NSColor.systemOrange
     static let red = NSColor.systemRed
     static let indigo = adaptive(0x5856D6, 0x5E5CE6)
+    /// Source ↔ PDF jump marks: one muted slate blue, a faint wash over the sentence and a firmer
+    /// rounded pill on the exact word. PDF pages are always white paper, so they use the light value.
+    static let syncTint = adaptive(0x5F7299, 0x9DADD6)
+    static let syncPaperTint = NSColor(hex: 0x5F7299)
+    static let syncSentenceAlpha: CGFloat = 0.13
+    static let syncWordAlpha: CGFloat = 0.34
     /// Document structure in the editor: one hue per heading level and per float kind,
     /// shared by the section rules, the float tints, the gutter scope bars and their badges.
     static func structure(_ kind: TexStructure.HeadingKind) -> NSColor {

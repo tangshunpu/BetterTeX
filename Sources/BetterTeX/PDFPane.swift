@@ -2,6 +2,26 @@ import AppKit
 import PDFKit
 import BetterTeXCore
 
+/// A jump mark on a PDF page: a rounded, low-saturation fill that can fade out.
+final class SyncMarkAnnotation: PDFAnnotation {
+    let strength: CGFloat
+    var fade: CGFloat = 1
+    init(bounds: CGRect, strength: CGFloat) {
+        self.strength = strength
+        super.init(bounds: bounds, forType: .square, withProperties: nil)
+        color = .clear; border = nil
+    }
+    required init?(coder: NSCoder) { strength = Theme.syncSentenceAlpha; super.init(coder: coder) }
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        let radius = min(bounds.height * 0.32, 4)
+        context.saveGState()
+        context.setFillColor(Theme.syncPaperTint.withAlphaComponent(strength * fade).cgColor)
+        context.addPath(CGPath(roundedRect: bounds, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        context.fillPath()
+        context.restoreGState()
+    }
+}
+
 final class SyncedPDFView: PDFView {
     var onInverse: ((Int, Double, Double) -> Void)?
     var onResize: (() -> Void)?
@@ -563,14 +583,37 @@ final class PDFPane: Surface {
         for (annotation, page) in highlights { page.removeAnnotation(annotation) }
         highlights = []
     }
-    private func flash(_ annotations: [(PDFAnnotation, PDFPage)], for seconds: Double) {
+    /// Shows the marks, holds them, then fades them out.
+    @_optimize(none)
+    private func flash(_ annotations: [(SyncMarkAnnotation, PDFPage)], for seconds: Double) {
         for (annotation, page) in annotations { page.addAnnotation(annotation) }
         highlights = annotations.map { (annotation: $0.0, page: $0.1) }
         let ids = annotations.map { ObjectIdentifier($0.0) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
-            guard let self else { return }
-            for (annotation, page) in annotations { page.removeAnnotation(annotation) }
-            self.highlights.removeAll { ids.contains(ObjectIdentifier($0.annotation)) }
+        let pages = Array(Set(annotations.map { ObjectIdentifier($0.1) })).compactMap { id in annotations.first { ObjectIdentifier($0.1) == id }?.1 }
+        let steps = 12
+        for step in 1...steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds + Double(step) * 0.03) { [weak self] in
+                guard let self, self.highlights.contains(where: { ids.contains(ObjectIdentifier($0.annotation)) }) else { return }
+                if step == steps {
+                    for (annotation, page) in annotations { page.removeAnnotation(annotation) }
+                    self.highlights.removeAll { ids.contains(ObjectIdentifier($0.annotation)) }
+                } else {
+                    let fade = 1 - CGFloat(step) / CGFloat(steps)
+                    for (annotation, _) in annotations { annotation.fade = fade * fade }
+                    for page in pages { self.pdfView.annotationsChanged(on: page) }
+                }
+            }
+        }
+    }
+
+    /// One rounded mark per text line of `range`.
+    @_optimize(none)
+    private func marks(on page: PDFPage, range: NSRange, strength: CGFloat, inset: CGSize) -> [(SyncMarkAnnotation, PDFPage)] {
+        guard let selection = page.selection(for: range) else { return [] }
+        return selection.selectionsByLine().compactMap { line in
+            let bounds = line.bounds(for: page).insetBy(dx: inset.width, dy: inset.height)
+            guard bounds.width > 0, bounds.height > 0 else { return nil }
+            return (SyncMarkAnnotation(bounds: bounds, strength: strength), page)
         }
     }
 
@@ -580,48 +623,14 @@ final class PDFPane: Surface {
     private func mark(page: PDFPage, range: NSRange, caret: Int) {
         clearHighlights()
         lastMark = (page, range, caret)
-        var annotations: [(PDFAnnotation, PDFPage)] = []
-        if let selection = page.selection(for: range) {
-            for line in selection.selectionsByLine() {
-                let bounds = line.bounds(for: page).insetBy(dx: -1.5, dy: -1)
-                guard bounds.width > 0, bounds.height > 0 else { continue }
-                let annotation = PDFAnnotation(bounds: bounds, forType: .square, withProperties: nil)
-                annotation.color = .clear; annotation.interiorColor = Theme.accent.withAlphaComponent(0.2)
-                annotations.append((annotation, page))
-            }
-        }
-        // The word under the caret gets its own, stronger mark inside the sentence.
-        if let word = Self.wordRange(in: page.string ?? "", at: caret), let selection = page.selection(for: word) {
-            for line in selection.selectionsByLine() {
-                let bounds = line.bounds(for: page).insetBy(dx: -1, dy: -0.5)
-                guard bounds.width > 0, bounds.height > 0 else { continue }
-                let annotation = PDFAnnotation(bounds: bounds, forType: .square, withProperties: nil)
-                annotation.color = .clear; annotation.interiorColor = Theme.accent.withAlphaComponent(0.45)
-                annotations.append((annotation, page))
-            }
-        }
-        let caretBounds = page.characterBounds(at: caret)
-        if caretBounds.height > 0 {
-            let bar = PDFAnnotation(bounds: CGRect(x: caretBounds.minX - 1, y: caretBounds.minY - 1, width: 1.6, height: caretBounds.height + 2), forType: .square, withProperties: nil)
-            bar.color = .clear; bar.interiorColor = Theme.accent
-            annotations.append((bar, page))
-        }
+        var annotations = marks(on: page, range: range, strength: Theme.syncSentenceAlpha, inset: CGSize(width: -2, height: -1))
+        // The word under the caret gets its own, firmer pill inside the sentence.
+        let word = TextSync.wordRange(in: page.string ?? "", at: caret) ?? NSRange(location: caret, length: 1)
+        let wordMarks = marks(on: page, range: word, strength: Theme.syncWordAlpha, inset: CGSize(width: -1.5, height: -1))
+        annotations += wordMarks
         flash(annotations, for: 2.4)
-        let focus = caretBounds.height > 0 ? caretBounds : (annotations.first?.0.bounds ?? .zero)
+        let focus = wordMarks.first?.0.bounds ?? annotations.first?.0.bounds ?? page.characterBounds(at: caret)
         pdfView.go(to: focus.insetBy(dx: -60, dy: -90), on: page)
-    }
-
-    /// The word (or, in CJK text, the segmented word) of `text` that contains `offset`.
-    static func wordRange(in text: String, at offset: Int) -> NSRange? {
-        let ns = text as NSString
-        guard offset >= 0, offset < ns.length else { return nil }
-        let start = max(0, offset - 80), window = NSRange(location: start, length: min(ns.length, offset + 80) - start)
-        var found: NSRange?
-        ns.enumerateSubstrings(in: window, options: [.byWords, .substringNotRequired]) { _, range, _, stop in
-            if NSLocationInRange(offset, range) { found = range; stop.pointee = true }
-            else if range.location > offset { stop.pointee = true }
-        }
-        return found
     }
 
     /// Marks the boxes SyncTeX gives for a line, so a fallback jump still shows the column and horizontal
@@ -633,15 +642,11 @@ final class PDFPane: Surface {
         guard let page = pdfView.document?.page(at: first.page - 1) else { return }
         let media = page.bounds(for: .mediaBox)
         let rects = boxes.filter { $0.page == first.page && $0.width > 1 }.map { box in
-            CGRect(x: media.minX + box.h - 1.5, y: media.maxY - box.v - 3, width: box.width + 3, height: max(box.height, 8) + 4)
+            CGRect(x: media.minX + box.h - 2, y: media.maxY - box.v - 3, width: box.width + 4, height: max(box.height, 8) + 4)
         }.filter { media.intersects($0) }
         guard let lead = rects.first else { goTo(first.location); return }
         clearHighlights()
-        flash(rects.map { rect -> (PDFAnnotation, PDFPage) in
-            let annotation = PDFAnnotation(bounds: rect, forType: .square, withProperties: nil)
-            annotation.color = .clear; annotation.interiorColor = Theme.accent.withAlphaComponent(0.18)
-            return (annotation, page)
-        }, for: 1.8)
+        flash(rects.map { (SyncMarkAnnotation(bounds: $0, strength: Theme.syncSentenceAlpha * 1.4), page) }, for: 1.8)
         pdfView.go(to: CGRect(x: lead.minX, y: lead.minY, width: min(lead.width, 240), height: lead.height).insetBy(dx: -40, dy: -60), on: page)
     }
 
@@ -653,8 +658,6 @@ final class PDFPane: Surface {
         let media = page.bounds(for: .mediaBox)
         let point = location.point(mediaHeight: media.height, originX: media.minX, originY: media.minY)
         pdfView.go(to: CGRect(x: max(media.minX, point.x - 15), y: point.y - 35, width: 240, height: 70), on: page)
-        let annotation = PDFAnnotation(bounds: CGRect(x: media.minX + 24, y: point.y - 5, width: media.width - 48, height: 16), forType: .square, withProperties: nil)
-        annotation.color = .clear; annotation.interiorColor = Theme.accent.withAlphaComponent(0.18)
-        flash([(annotation, page)], for: 1.8)
+        flash([(SyncMarkAnnotation(bounds: CGRect(x: media.minX + 24, y: point.y - 5, width: media.width - 48, height: 16), strength: Theme.syncSentenceAlpha * 1.4), page)], for: 1.8)
     }
 }

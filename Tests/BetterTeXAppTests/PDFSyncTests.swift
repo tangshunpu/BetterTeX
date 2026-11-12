@@ -69,8 +69,8 @@ final class PDFSyncTests: XCTestCase {
         let text = "The layered codeword lets the transmitter stop."
         let ns = text as NSString
         let at = ns.range(of: "codeword").location + 3
-        XCTAssertEqual(PDFPane.wordRange(in: text, at: at).map { ns.substring(with: $0) }, "codeword")
-        XCTAssertEqual(PDFPane.wordRange(in: text, at: 0).map { ns.substring(with: $0) }, "The")
-        XCTAssertNil(PDFPane.wordRange(in: text, at: ns.length))
+        XCTAssertEqual(TextSync.wordRange(in: text, at: at).map { ns.substring(with: $0) }, "codeword")
+        XCTAssertEqual(TextSync.wordRange(in: text, at: 0).map { ns.substring(with: $0) }, "The")
+        XCTAssertNil(TextSync.wordRange(in: text, at: ns.length))
     }
 }
