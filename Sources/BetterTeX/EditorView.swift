@@ -538,9 +538,10 @@ final class EditorPane: Surface, NSTextViewDelegate {
         overview.onJump = { [weak self] fraction in
             guard let self else { return }
             let height = self.textView.bounds.height, visible = self.scroll.contentView.bounds.height
-            self.scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, min(height - visible, fraction * height - visible / 2)))); self.scroll.reflectScrolledClipView(self.scroll.contentView)
+            self.scrollEditor(toY: fraction * height - visible / 2)
         }
         scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.borderType = .noBorder
+        scroll.hasHorizontalScroller = false; scroll.horizontalScrollElasticity = .none
         scroll.drawsBackground = false
         textView.minSize = NSSize(width: 0, height: 0); textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true; textView.isHorizontallyResizable = false
@@ -732,7 +733,20 @@ final class EditorPane: Surface, NSTextViewDelegate {
         // Moving the caret without typing closes the list; typing updates `completionCursor` first.
         if popup.isVisible { DispatchQueue.main.async { [weak self] in if let self, !self.completionPending, self.textView.selectedRange().location != self.completionCursor { self.popup.dismiss() } } }
     }
-    @objc func scrolled() { popup.dismiss(); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true }
+    /// The line-number ruler sits over the clip view, so the text's left edge is a negative x.
+    /// Scrolling to x = 0 would slide the text under the ruler; the clip view's own limits give the real edge.
+    private func leftEdgeOrigin(y: CGFloat) -> NSPoint {
+        let clip = scroll.contentView
+        return clip.constrainBoundsRect(NSRect(origin: NSPoint(x: -1_000_000, y: y), size: clip.bounds.size)).origin
+    }
+    private func scrollEditor(toY y: CGFloat) {
+        scroll.contentView.scroll(to: leftEdgeOrigin(y: y)); scroll.reflectScrolledClipView(scroll.contentView)
+    }
+    @objc func scrolled() {
+        // The editor wraps lines, so it never scrolls sideways (a trackpad swipe or a stray jump would cut off text).
+        let origin = scroll.contentView.bounds.origin, edge = leftEdgeOrigin(y: origin.y)
+        if abs(origin.x - edge.x) > 0.5 { scrollEditor(toY: origin.y); return }
+        popup.dismiss(); scheduleHighlight(); scroll.verticalRulerView?.needsDisplay = true; overview.needsDisplay = true }
     func scheduleHighlight() {
         highlighting?.cancel(); let job = DispatchWorkItem { [weak self] in self?.highlight() }; highlighting = job
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: job)
