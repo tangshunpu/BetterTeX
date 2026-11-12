@@ -207,6 +207,8 @@ final class WorkspaceView: Surface {
     var onOverleaf: ((NSView) -> Void)?
     var onShowTools: (() -> Void)?
     var onDetectTools: (() -> Void)?
+    /// The error (true) or warning (false) count in the status bar was clicked; the view anchors the menu.
+    var onShowProblems: ((Bool, NSView) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame); fill = Theme.base
@@ -275,6 +277,9 @@ final class WorkspaceView: Surface {
         position.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular)
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); status.lineBreakMode = .byTruncatingTail
         for label in [errorLabel, warningLabel, branch] { label.isHidden = true }
+        errorLabel.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(errorsClicked)))
+        warningLabel.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(warningsClicked)))
+        errorLabel.toolTip = L10n.tr("查看编译错误"); warningLabel.toolTip = L10n.tr("查看编译警告")
         sync.isHidden = true; syncLabel.superview?.isHidden = true
         activity = .idle
 
@@ -336,6 +341,8 @@ final class WorkspaceView: Surface {
         toolButton.setTitle(engines == 0 ? L10n.tr("TeX 未安装") : L10n.tr("\(engines) 个引擎"))
         syncLabel.superview?.isHidden = !syncTeX
     }
+    @objc private func errorsClicked() { onShowProblems?(true, errorLabel) }
+    @objc private func warningsClicked() { onShowProblems?(false, warningLabel) }
     func setDiagnostics(errors: Int, warnings: Int) {
         errorLabel.stringValue = L10n.tr("\(errors) 错误"); warningLabel.stringValue = L10n.tr("\(warnings) 警告")
         errorLabel.textColor = errors > 0 ? Theme.red : Theme.muted; warningLabel.textColor = warnings > 0 ? Theme.orange : Theme.muted

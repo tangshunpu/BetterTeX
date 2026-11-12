@@ -30,6 +30,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     var completionIndex = ProjectIndex()
     private var indexJob: DispatchWorkItem?
     var buildWarnings: [TeXWarning] = []
+    /// Every warning line of the most recent build, listed when the status bar count is clicked.
+    var buildWarningMessages: [String] = []
     var gitBusy = false
     var compiledPDF: URL?
     var compiledRoot: URL?
@@ -144,6 +146,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         ui.editor.textView.onRevealInPDF = { [weak self] in self?.forwardSync() }
         ui.onShowTools = { [weak self] in self?.showTools() }
         ui.onDetectTools = { [weak self] in self?.detectTools() }
+        ui.onShowProblems = { [weak self] errors, anchor in self?.showProblems(errors: errors, anchor: anchor) }
         ui.terminal.onError = { [weak self] in self?.error($0) }
         ui.terminal.onOpenFile = { [weak self] in self?.openFile($0) }
         ui.terminal.onOpenLocation = { [weak self] in self?.open($0) }
@@ -352,7 +355,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         UserDefaults.standard.set("", forKey: "lastProject")
     }
     private func showStartPage() {
-        project = nil; compiledPDF = nil; compiledRoot = nil; compiledSnapshot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; ui.preview.clear()
+        project = nil; compiledPDF = nil; compiledRoot = nil; compiledSnapshot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; buildWarningMessages = []; ui.preview.clear()
         window.title = "BetterTeX"; ui.setTitle(project: L10n.tr("未打开项目"), file: nil); ui.projectURL = nil; ui.setBranch(""); ui.terminal.contextFile = nil; ui.terminal.project = nil
         ui.explorer.unload(); ui.editor.clear(); ui.editor.textView.isEditable = false; refreshTabs()
         overleaf.projectChanged(); setStatus(L10n.tr("未打开项目"))
@@ -360,7 +363,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     }
     func loadProject(_ url: URL) {
         resetWorkspace(); ui.welcome.isHidden = true; rememberRecent(url.standardizedFileURL)
-        project = url.standardizedFileURL; compiledPDF = nil; compiledRoot = nil; compiledSnapshot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; ui.preview.clear()
+        project = url.standardizedFileURL; compiledPDF = nil; compiledRoot = nil; compiledSnapshot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; buildWarningMessages = []; ui.preview.clear()
         window.title = url.lastPathComponent; ui.setTitle(project: url.lastPathComponent, file: nil); ui.projectURL = url.standardizedFileURL; ui.setBranch(""); ui.terminal.contextFile = nil
         ui.explorer.load(url); ui.editor.clear(); ui.editor.textView.isEditable = false; refreshTabs()
         if let tools { ui.terminal.configure(project: url, tools: tools) }
@@ -577,8 +580,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                 case .success(let build):
                     self.compiledRoot = build.root; self.lastBuildSeconds = build.seconds
                     self.buildErrors = build.succeeded ? [] : build.diagnostics; self.buildWarnings = TeXWarning.parse(build.log); self.refreshProblems()
-                    let warnings = build.log.components(separatedBy: .newlines).filter { $0.contains("Warning:") }.count
-                    self.ui.setDiagnostics(errors: build.succeeded ? 0 : max(1, build.diagnostics.count), warnings: warnings)
+                    self.buildWarningMessages = TeXWarning.messages(build.log)
+                    self.ui.setDiagnostics(errors: build.succeeded ? 0 : max(1, build.diagnostics.count), warnings: self.buildWarningMessages.count)
                     if build.succeeded {
                         for (url, balance) in balances { self.settledBalance[url] = balance }
                         self.compiledPDF = build.pdf; self.compiledSnapshot = snapshot; self.ui.preview.load(build.pdf); self.ui.activity = .idle
@@ -741,6 +744,52 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             }
         }
         indexJob = job; DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: job)
+    }
+    /// Lists the last build's errors or warnings under the status bar count. An entry with a known
+    /// source location opens it; the rest are found in the build log.
+    func showProblems(errors: Bool, anchor: NSView) {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        let limit = 40
+        func short(_ text: String) -> String { text.count > 110 ? String(text.prefix(110)) + "…" : text }
+        if errors {
+            for diagnostic in buildErrors.prefix(limit) {
+                let title = "\(URL(fileURLWithPath: diagnostic.file).lastPathComponent):\(diagnostic.line)  \(short(diagnostic.message))"
+                menu.addItem(ClosureMenuItem(title, symbol: "xmark.octagon") { [weak self] in self?.ui.terminal.onDiagnostic?(diagnostic.file, diagnostic.line) })
+            }
+            if buildErrors.isEmpty, ui.activity == .failed {
+                menu.addItem(ClosureMenuItem(L10n.tr("编译失败，日志中未找到带行号的错误"), enabled: false) {})
+            }
+            if buildErrors.count > limit { menu.addItem(ClosureMenuItem(L10n.tr("还有 \(buildErrors.count - limit) 条…"), enabled: false) {}) }
+        } else {
+            for message in buildWarningMessages.prefix(limit) {
+                let location = warningLocation(message)
+                let title = (location.map { "\($0.url.lastPathComponent):\($0.line)  " } ?? "") + short(message)
+                menu.addItem(ClosureMenuItem(title, symbol: "exclamationmark.triangle") { [weak self] in
+                    guard let self else { return }
+                    if let location { self.openFile(location.url, line: location.line) }
+                    else { self.ui.showOutput(); self.ui.terminal.revealInLog(String(message.prefix(60))) }
+                })
+            }
+            if buildWarningMessages.count > limit { menu.addItem(ClosureMenuItem(L10n.tr("还有 \(buildWarningMessages.count - limit) 条…"), enabled: false) {}) }
+        }
+        if menu.items.isEmpty { menu.addItem(ClosureMenuItem(errors ? L10n.tr("没有错误") : L10n.tr("没有警告"), enabled: false) {}) }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(L10n.tr("显示编译日志"), symbol: "doc.plaintext") { [weak self] in self?.ui.showOutput() })
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
+    }
+    /// The source line an undefined-reference warning points at: the log names only the line, so the
+    /// file is the one whose line mentions the key (the active file first).
+    private func warningLocation(_ message: String) -> (url: URL, line: Int)? {
+        guard let warning = TeXWarning.parse(message).first else { return nil }
+        var candidates: [(URL, String?)] = []
+        if let active { candidates.append((active.url, active.text)) }
+        for buffer in buffers where buffer !== active { candidates.append((buffer.url, buffer.text)) }
+        if let project { for url in TeXProject.sourceFiles(in: project) where url.pathExtension.lowercased() == "tex" && !candidates.contains(where: { $0.0.standardizedFileURL == url.standardizedFileURL }) { candidates.append((url, nil)) } }
+        for (url, text) in candidates {
+            guard let lines = (text ?? (try? String(contentsOf: url, encoding: .utf8)))?.components(separatedBy: "\n") else { continue }
+            if lines.indices.contains(warning.line - 1), lines[warning.line - 1].contains(warning.key) { return (url, warning.line) }
+        }
+        return nil
     }
     /// Shows the last build's errors and undefined references that fall in the active file.
     func refreshProblems() {

@@ -106,6 +106,21 @@ public struct TeXWarning: Equatable {
         }
         return result
     }
+    /// Every warning the log reports, one entry per `… Warning: …` line, joined with the wrapped
+    /// remainder and the `(package)` continuation lines that follow it.
+    public static func messages(_ log: String) -> [String] {
+        var result: [String] = []; var wrapped = false
+        for line in log.components(separatedBy: .newlines) {
+            // TeX breaks log lines at 79 columns; a full-width line continues on the next one.
+            defer { wrapped = line.count == 79 && !result.isEmpty }
+            if wrapped, !result.isEmpty, !line.contains("Warning:") { result[result.count - 1] += line; continue }
+            if line.contains("Warning:") { result.append(line.trimmingCharacters(in: .whitespaces)) }
+            else if let last = result.last, line.hasPrefix("("), let close = line.firstIndex(of: ")"), last.contains(String(line[line.index(after: line.startIndex)..<close])) {
+                result[result.count - 1] = last + " " + line[line.index(after: close)...].trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return result
+    }
 }
 
 public struct TeXDiagnostic {

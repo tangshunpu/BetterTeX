@@ -687,6 +687,13 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         if let diagnostic = TeXDiagnostic.parse(line).first { onDiagnostic?(diagnostic.file, diagnostic.line) }
     }
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+    /// Selects the last occurrence of `text` in the build log and scrolls it into view.
+    @discardableResult func revealInLog(_ text: String) -> Bool {
+        let range = (logView.string as NSString).range(of: text, options: .backwards)
+        guard range.location != NSNotFound else { logView.scrollToEndOfDocument(nil); return false }
+        logView.setSelectedRange(range); logView.scrollRangeToVisible(range); logView.showFindIndicator(for: range)
+        return true
+    }
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
     func processTerminated(source: TerminalView, exitCode: Int32?) {

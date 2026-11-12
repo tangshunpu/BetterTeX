@@ -351,6 +351,25 @@ final class WarningTests: XCTestCase {
         XCTAssertEqual(warnings[0].message, L10n.tr("未定义的引用文献：") + "tang2025osd"); XCTAssertEqual(warnings[1].message, L10n.tr("未定义的交叉引用：") + warnings[1].key)
         XCTAssertTrue(TeXWarning.parse("Output written on main.pdf").isEmpty)
     }
+    func testListsEveryWarningWithItsContinuationLines() {
+        let wrapped = "LaTeX Warning: Reference `fig:a-very-long-label-name-that-wraps-in-the-logs' on"
+        XCTAssertEqual(wrapped.count, 79)
+        let log = """
+        Package hyperref Warning: Token not allowed in a PDF string (Unicode):
+        (hyperref)                removing `math shift' on input line 12.
+        \(wrapped)
+         page 1 undefined on input line 42.
+        Overfull \\hbox (3.0pt too wide) in paragraph at lines 5--6
+        LaTeX Warning: There were undefined references.
+        """
+        let messages = TeXWarning.messages(log)
+        XCTAssertEqual(messages, [
+            "Package hyperref Warning: Token not allowed in a PDF string (Unicode): removing `math shift' on input line 12.",
+            wrapped + " page 1 undefined on input line 42.",
+            "LaTeX Warning: There were undefined references."
+        ])
+        XCTAssertEqual(TeXWarning.parse(messages[1]).first?.line, 42)
+    }
 }
 
 final class CodexAgentTests: XCTestCase {
