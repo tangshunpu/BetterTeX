@@ -818,6 +818,15 @@ final class EditorPane: Surface, NSTextViewDelegate {
         textView.entryBands = bands
     }
     private static let bibComment = regex("^[ \\t]*%[^\\n]*")
+    /// Puts the caret at a UTF-16 offset and briefly marks `sentence` around it.
+    func reveal(offset: Int, sentence: NSRange) {
+        let length = (textView.string as NSString).length
+        let caret = NSRange(location: min(max(0, offset), length), length: 0)
+        let mark = NSIntersectionRange(sentence, NSRange(location: 0, length: length))
+        textView.setSelectedRange(caret); textView.scrollRangeToVisible(mark.length > 0 ? mark : caret)
+        textView.showFindIndicator(for: mark.length > 0 ? mark : (textView.string as NSString).lineRange(for: caret))
+        window?.makeFirstResponder(textView)
+    }
     func goTo(line: Int, column: Int = 0) {
         let ns = textView.string as NSString; var location = 0
         for _ in 1..<max(1, line) { if location >= ns.length { break }; location = NSMaxRange(ns.lineRange(for: NSRange(location: location, length: 0))) }

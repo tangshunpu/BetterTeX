@@ -33,6 +33,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     var gitBusy = false
     var compiledPDF: URL?
     var compiledRoot: URL?
+    /// The sources as the last successful build read them; edits since then are diffed against it so SyncTeX lines still land.
+    var compiledSnapshot: SourceSnapshot?
     var generation = UUID()
     var saveJob: DispatchWorkItem?
     var compileJob: DispatchWorkItem?
@@ -342,7 +344,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         UserDefaults.standard.set("", forKey: "lastProject")
     }
     private func showStartPage() {
-        project = nil; compiledPDF = nil; compiledRoot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; ui.preview.clear()
+        project = nil; compiledPDF = nil; compiledRoot = nil; compiledSnapshot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; ui.preview.clear()
         window.title = "BetterTeX"; ui.setTitle(project: L10n.tr("未打开项目"), file: nil); ui.projectURL = nil; ui.setBranch(""); ui.terminal.contextFile = nil; ui.terminal.project = nil
         ui.explorer.unload(); ui.editor.clear(); ui.editor.textView.isEditable = false; refreshTabs()
         overleaf.projectChanged(); setStatus(L10n.tr("未打开项目"))
@@ -350,7 +352,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     }
     func loadProject(_ url: URL) {
         resetWorkspace(); ui.welcome.isHidden = true; rememberRecent(url.standardizedFileURL)
-        project = url.standardizedFileURL; compiledPDF = nil; compiledRoot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; ui.preview.clear()
+        project = url.standardizedFileURL; compiledPDF = nil; compiledRoot = nil; compiledSnapshot = nil; lastBuildSignature = nil; buildErrors = []; buildWarnings = []; ui.preview.clear()
         window.title = url.lastPathComponent; ui.setTitle(project: url.lastPathComponent, file: nil); ui.projectURL = url.standardizedFileURL; ui.setBranch(""); ui.terminal.contextFile = nil
         ui.explorer.load(url); ui.editor.clear(); ui.editor.textView.isEditable = false; refreshTabs()
         if let tools { ui.terminal.configure(project: url, tools: tools) }
@@ -528,6 +530,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         let token = generation; let compiler = compiler
         ui.terminal.append("\n── \(Date().formatted(date: .omitted, time: .standard)) · Build \(source.lastPathComponent) ──\n")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let snapshot = SourceSnapshot.capture(directory: project)
             let result = Result { try compiler.build(active: source, project: project, selected: selected, tools: tools, onStage: { stage in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.generation == token, self.building else { return }
@@ -547,7 +550,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                     self.ui.setDiagnostics(errors: build.succeeded ? 0 : max(1, build.diagnostics.count), warnings: warnings)
                     if build.succeeded {
                         for (url, balance) in balances { self.settledBalance[url] = balance }
-                        self.compiledPDF = build.pdf; self.ui.preview.load(build.pdf); self.ui.activity = .idle
+                        self.compiledPDF = build.pdf; self.compiledSnapshot = snapshot; self.ui.preview.load(build.pdf); self.ui.activity = .idle
                         self.setStatus(String(format: L10n.tr("编译完成 · %@ · %.1f s"), build.engine.rawValue, build.seconds))
                     } else {
                         // A failed automatic build marks the errors in place; only an explicit build opens the log.
@@ -562,8 +565,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     }
     @objc func forwardSync() {
         guard let active, compiledPDF != nil, tools != nil else { setStatus(L10n.tr("请先成功编译文档，再使用双向定位")); return }
-        let (line, col) = ui.editor.lineColumn
-        forwardSync(file: active.url, line: line, column: col)
+        let (line, _) = ui.editor.lineColumn
+        forwardSync(file: active.url, line: line, cursor: ui.editor.textView.selectedRange().location, text: ui.editor.textView.string)
     }
     /// Follows a link from an agent reply: a source line opens in the editor and, when the document
     /// has been compiled, the PDF scrolls to it; a page number turns the PDF to that page.
@@ -575,30 +578,113 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         case .source(let url, let line):
             openFile(url, line: line)
             guard let line, ["tex", "ltx"].contains(url.pathExtension.lowercased()), compiledPDF != nil, tools != nil else { return }
-            forwardSync(file: url, line: line, column: 0)
+            forwardSync(file: url, line: line, cursor: nil, text: currentText(of: url))
         }
     }
-    private func forwardSync(file: URL, line: Int, column col: Int) {
+    private static func samePath(_ a: URL, _ b: URL) -> Bool {
+        a.standardizedFileURL.resolvingSymlinksInPath().path == b.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+    /// What a source file holds now: the editor's text for open files, otherwise the file on disk.
+    private func currentText(of url: URL) -> String? {
+        if let active, Self.samePath(active.url, url) { return ui.editor.textView.string }
+        if let buffer = buffers.first(where: { Self.samePath($0.url, url) }) { return buffer.text }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Source → PDF. SyncTeX (with the line corrected for edits since the build) names the boxes of the line;
+    /// the words around the caret are then found in the page text, so the PDF lands on the same word and
+    /// marks the sentence, even inside a paragraph written on one long line.
+    private func forwardSync(file: URL, line: Int, cursor: Int?, text: String?) {
         guard let pdf = compiledPDF, let tools else { return }
-        let token = generation
+        let token = generation; let snapshot = compiledSnapshot
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Result { try SyncTeX.forward(file: file, line: line, column: col, pdf: pdf, tools: tools) }
+            let text = text ?? (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            let starts = TextSync.lineStarts(text)
+            let lineStart = starts[min(max(0, line - 1), starts.count - 1)]
+            let lineEnd = line < starts.count ? starts[line] : (text as NSString).length
+            // Without a caret (a link to a line), start at the line's first word.
+            let caret = cursor ?? lineStart
+            let compiledLine = snapshot?.lineMap(for: file, current: text)?.compiled(forCurrent: line) ?? line
+            var boxes: [SyncBox] = []
+            for candidate in stride(from: compiledLine, through: max(1, compiledLine - 6), by: -1) {
+                boxes = SyncTeX.boxes(file: file, line: candidate, pdf: pdf, tools: tools)
+                if !boxes.isEmpty { break }
+            }
+            let stream = TextSync.texStream(text)
+            // Only follow the text when the caret's own line has printed words (not a display equation or a figure).
+            var index = stream.index(atOrAfter: caret)
+            if index >= stream.count || stream.offset(at: index) >= lineEnd {
+                let before = index - 1
+                index = before >= 0 && stream.offset(at: before) >= lineStart ? before : -1
+            }
+            var sentence: ClosedRange<Int>?
+            if index >= 0 {
+                let range = TextSync.sentenceRange(in: text, at: stream.offset(at: index))
+                let first = stream.index(atOrAfter: range.location), last = stream.index(atOrAfter: NSMaxRange(range)) - 1
+                if first <= index, last >= index { sentence = first...last }
+            }
             DispatchQueue.main.async {
                 guard let self, self.generation == token else { return }
-                switch result { case .success(let location): self.ui.pdfItem.isCollapsed = false; self.ui.preview.goTo(location); self.setStatus(L10n.tr("源码 → PDF · 第 \(location.page) 页"))
-                case .failure(let error): self.setStatus(error.localizedDescription) }
+                self.ui.pdfItem.isCollapsed = false
+                if index >= 0, let page = self.ui.preview.reveal(source: stream, cursor: index, sentence: sentence, boxes: boxes) {
+                    self.setStatus(L10n.tr("源码 → PDF · 第 \(page) 页"))
+                } else if let box = boxes.first {
+                    self.ui.preview.goTo(box.location); self.setStatus(L10n.tr("源码 → PDF · 第 \(box.page) 页"))
+                } else {
+                    self.setStatus(L10n.tr("该位置没有 PDF 映射。请先成功编译，并选择正文所在行。"))
+                }
             }
         }
     }
+
+    /// PDF → source. The clicked words are found in the source near the line SyncTeX names (corrected for edits
+    /// since the build), so the caret lands on the clicked word and its sentence is marked.
     func inverseSync(page: Int, x: Double, y: Double) {
         guard let pdf = compiledPDF, let root = compiledRoot, let tools else { setStatus(L10n.tr("请先编译当前文档以生成 SyncTeX 映射")); return }
-        let token = generation
+        var clicked: (stream: TextStream, index: Int)?
+        if let pdfPage = ui.preview.pdfView.document?.page(at: page - 1) {
+            let media = pdfPage.bounds(for: .mediaBox)
+            clicked = ui.preview.textPosition(page: page - 1, point: CGPoint(x: media.minX + x, y: media.maxY - y))
+        }
+        let token = generation; let snapshot = compiledSnapshot
+        let candidates = ([active?.url].compactMap { $0 } + buffers.map(\.url)).filter { ["tex", "ltx"].contains($0.pathExtension.lowercased()) }
+        let texts = Dictionary(candidates.map { ($0, currentText(of: $0) ?? "") }, uniquingKeysWith: { first, _ in first })
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Result { try SyncTeX.inverse(page: page, x: x, y: y, pdf: pdf, root: root, tools: tools) }
+            let synced = try? SyncTeX.inverse(page: page, x: x, y: y, pdf: pdf, root: root, tools: tools)
+            func text(of url: URL) -> String? {
+                texts.first { Self.samePath($0.key, url) }?.value ?? (try? String(contentsOf: url, encoding: .utf8))
+            }
+            var result: (file: URL, offset: Int?, line: Int, text: String)?
+            if let synced, let source = text(of: synced.file) {
+                // Reuse an open tab's URL so the same file is not opened twice under another spelling.
+                let file = candidates.first { Self.samePath($0, synced.file) } ?? synced.file
+                let line = snapshot?.lineMap(for: file, current: source)?.current(forCompiled: synced.line) ?? synced.line
+                result = (file, nil, line, source)
+            }
+            if let clicked {
+                // Search the file SyncTeX named, near its line; without SyncTeX, every open source file.
+                let files: [(URL, String, Int?)] = result.map { [($0.file, $0.text, $0.line)] } ?? candidates.map { ($0, texts[$0] ?? "", nil) }
+                var best: (file: URL, offset: Int, line: Int, text: String, score: Double)?
+                for (file, source, hint) in files where !source.isEmpty {
+                    let stream = TextSync.texStream(source); let starts = TextSync.lineStarts(source)
+                    let penalty: ((Int) -> Double)? = hint.map { hint in { Double(abs(TextSync.line(of: stream.offset(at: $0), starts: starts) - hint)) / 12 } }
+                    guard let match = TextSync.correspond(clicked.index, from: clicked.stream, to: stream, penalty: penalty) else { continue }
+                    let offset = stream.offset(at: match.index)
+                    let score = match.weight / (1 + (penalty?(match.index) ?? 0))
+                    if best == nil || score > best!.score { best = (file, offset, TextSync.line(of: offset, starts: starts), source, score) }
+                }
+                if let best { result = (best.file, best.offset, best.line, best.text) }
+            }
             DispatchQueue.main.async {
                 guard let self, self.generation == token else { return }
-                switch result { case .success(let source): self.openFile(source.file, line: source.line, column: source.column); self.setStatus("PDF → \(source.file.lastPathComponent):\(source.line)")
-                case .failure(let error): self.setStatus(error.localizedDescription) }
+                guard let result else { self.setStatus(L10n.tr("此处没有对应的 TeX 源码。")); return }
+                if let offset = result.offset {
+                    self.openFile(result.file)
+                    self.ui.editor.reveal(offset: offset, sentence: TextSync.sentenceRange(in: result.text, at: offset))
+                } else {
+                    self.openFile(result.file, line: result.line)
+                }
+                self.setStatus("PDF → \(result.file.lastPathComponent):\(result.line)")
             }
         }
     }

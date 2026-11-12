@@ -88,8 +88,11 @@ final class PDFPane: Surface {
     private let zoomLabel = Theme.label("100%", size: 12, weight: .medium)
     private let pageChip = Chip(fill: Theme.adaptive(0xFFFFFF, 0x3A3A3C, lightAlpha: 0.9, darkAlpha: 0.88), radius: -1, border: Theme.line)
     private let pageLabel = Theme.label("", size: 12, color: Theme.soft)
-    private var highlightAnnotation: PDFAnnotation?
-    private var highlightPage: PDFPage?
+    private var highlights: [(annotation: PDFAnnotation, page: PDFPage)] = []
+    /// Comparable text of each page of the loaded document, built on first use.
+    private var pageStreams: [Int: TextStream] = [:]
+    /// The text most recently marked by `reveal`, kept for tests and accessibility.
+    private(set) var lastMark: (page: PDFPage, range: NSRange, caret: Int)?
     var state: SyncState = .none {
         didSet {
             let (color, symbol, text): (NSColor, String, String) = state == .building ? (Theme.orange, "arrow.triangle.2.circlepath", stage ?? L10n.tr("编译中")) : state == .failed ? (Theme.red, "exclamationmark", L10n.tr("编译失败")) : (Theme.green, "checkmark", L10n.tr("已同步"))
@@ -262,7 +265,7 @@ final class PDFPane: Surface {
         let oldDestination = pdfView.currentDestination
         let scale = pdfView.scaleFactor
         applyingZoom = true; pdfView.document = document; applyingZoom = false; empty.isHidden = true
-        highlightAnnotation = nil; highlightPage = nil
+        highlights = []; pageStreams = [:]
         if let page = document.page(at: min(oldPage, max(0, document.pageCount - 1))) {
             if let destination = oldDestination { pdfView.go(to: PDFDestination(page: page, at: destination.point)) }
             else { pdfView.go(to: page) }
@@ -270,23 +273,145 @@ final class PDFPane: Surface {
         if zoomMode == .manual { pdfView.scaleFactor = scale } else { applyZoom() }
         pageChanged(); scaleChanged()
     }
-    func clear() { loadedData = nil; pdfView.document = nil; empty.isHidden = false; pageChip.isHidden = true; state = .none }
+    func clear() { pageStreams = [:]; highlights = []; loadedData = nil; pdfView.document = nil; empty.isHidden = false; pageChip.isHidden = true; state = .none }
     @objc func pageChanged() {
         guard let doc = pdfView.document, let page = pdfView.currentPage else { return }
         pageLabel.stringValue = L10n.tr("第 \(doc.index(for: page) + 1) 页，共 \(doc.pageCount) 页"); pageChip.isHidden = false
     }
+    // MARK: Source ↔ PDF
+
+    func pageStream(_ index: Int) -> TextStream? {
+        if let stream = pageStreams[index] { return stream }
+        guard let text = pdfView.document?.page(at: index)?.string else { return nil }
+        let stream = TextSync.pdfStream(text); pageStreams[index] = stream; return stream
+    }
+
+    /// Finds the source position `cursor` (an index into `source`) on the page and marks the sentence
+    /// `sentence` around it. SyncTeX boxes for the source line say where to look first.
+    /// Returns the 1-based page, or nil when the text could not be found.
+    func reveal(source: TextStream, cursor: Int, sentence: ClosedRange<Int>?, boxes: [SyncBox]) -> Int? {
+        guard let document = pdfView.document, document.pageCount > 0 else { return nil }
+        let hintPages = Array(Set(boxes.map { $0.page - 1 })).filter { $0 >= 0 && $0 < document.pageCount }.sorted()
+        func penalty(page index: Int) -> (Int) -> Double {
+            guard let page = document.page(at: index), let stream = pageStream(index) else { return { _ in 100 } }
+            let onPage = boxes.filter { $0.page - 1 == index }
+            guard !onPage.isEmpty else {
+                // No box here: prefer pages close to the ones SyncTeX named.
+                let distance = hintPages.map { abs($0 - index) }.min() ?? 0
+                return { _ in hintPages.isEmpty ? 0 : 2 + Double(distance) }
+            }
+            let media = page.bounds(for: .mediaBox)
+            return { target in
+                let rect = page.characterBounds(at: stream.offset(at: target))
+                let gaps = onPage.map { box -> Double in
+                    let bottom = Double(media.maxY) - box.v - 3, top = Double(media.maxY) - box.v + max(box.height, 8)
+                    let y = Double(rect.midY)
+                    return y < bottom ? bottom - y : y > top ? y - top : 0
+                }
+                return (gaps.min() ?? 0) / 120
+            }
+        }
+        func search(_ pages: [Int]) -> (page: Int, match: TextMatch, score: Double)? {
+            var best: (page: Int, match: TextMatch, score: Double)?
+            for index in pages {
+                guard let stream = pageStream(index) else { continue }
+                let rank = penalty(page: index)
+                guard let match = TextSync.correspond(cursor, from: source, to: stream, penalty: rank) else { continue }
+                let score = match.weight / (1 + rank(match.index))
+                if best == nil || score > best!.score { best = (index, match, score) }
+            }
+            return best
+        }
+        guard let found = search(hintPages) ?? search(Array(0..<document.pageCount)),
+              let page = document.page(at: found.page), let stream = pageStream(found.page) else { return nil }
+        let caret = stream.offset(at: found.match.index)
+        var range = NSRange(location: caret, length: 1)
+        if let sentence {
+            // Each end is placed on its own, close to where the cursor landed.
+            let near: (Int) -> Double = { Double(abs($0 - found.match.index)) / 80 }
+            let first = TextSync.correspond(sentence.lowerBound, from: source, to: stream, penalty: near)?.index
+            let last = TextSync.correspond(sentence.upperBound, from: source, to: stream, penalty: near)?.index
+            if let first, let last, first <= found.match.index, last >= found.match.index, last - first < 1500 {
+                let start = stream.offset(at: first); var end = stream.offset(at: last) + 1
+                // Take in the closing punctuation, which the comparable text leaves out.
+                if let text = page.string as NSString? {
+                    while end < text.length, let scalar = UnicodeScalar(text.character(at: end)), ".?!。？！；)\"”’".unicodeScalars.contains(scalar) { end += 1 }
+                }
+                range = NSRange(location: start, length: end - start)
+            }
+        }
+        mark(page: page, range: range, caret: caret)
+        return found.page + 1
+    }
+
+    /// The text position under a point of a page, as an index into that page's stream.
+    func textPosition(page index: Int, point: CGPoint) -> (stream: TextStream, index: Int)? {
+        guard let page = pdfView.document?.page(at: index), let stream = pageStream(index), stream.count > 0 else { return nil }
+        var character = page.characterIndex(at: point)
+        if character < 0 {
+            // A click between words or lines: take the nearest character within a few points.
+            search: for radius in [3.0, 6.0, 10.0] {
+                for (dx, dy) in [(radius, 0.0), (-radius, 0), (0, radius), (0, -radius)] {
+                    character = page.characterIndex(at: CGPoint(x: point.x + dx, y: point.y + dy))
+                    if character >= 0 { break search }
+                }
+            }
+        }
+        guard character >= 0 else { return nil }
+        return (stream, min(stream.index(atOrAfter: character), stream.count - 1))
+    }
+
+    private func clearHighlights() {
+        for (annotation, page) in highlights { page.removeAnnotation(annotation) }
+        highlights = []
+    }
+    private func flash(_ annotations: [(PDFAnnotation, PDFPage)], for seconds: Double) {
+        for (annotation, page) in annotations { page.addAnnotation(annotation) }
+        highlights = annotations.map { (annotation: $0.0, page: $0.1) }
+        let ids = annotations.map { ObjectIdentifier($0.0) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self else { return }
+            for (annotation, page) in annotations { page.removeAnnotation(annotation) }
+            self.highlights.removeAll { ids.contains(ObjectIdentifier($0.annotation)) }
+        }
+    }
+
     // Swift 6.4's constant-propagation pass crashes on this PDFKit annotation bridge.
-    // Limit the workaround to this infrequent UI action; keep the app optimized.
+    // Limit the workaround to these infrequent UI actions; keep the app optimized.
+    @_optimize(none)
+    private func mark(page: PDFPage, range: NSRange, caret: Int) {
+        clearHighlights()
+        lastMark = (page, range, caret)
+        var annotations: [(PDFAnnotation, PDFPage)] = []
+        if let selection = page.selection(for: range) {
+            for line in selection.selectionsByLine() {
+                let bounds = line.bounds(for: page).insetBy(dx: -1.5, dy: -1)
+                guard bounds.width > 0, bounds.height > 0 else { continue }
+                let annotation = PDFAnnotation(bounds: bounds, forType: .square, withProperties: nil)
+                annotation.color = .clear; annotation.interiorColor = Theme.accent.withAlphaComponent(0.2)
+                annotations.append((annotation, page))
+            }
+        }
+        let caretBounds = page.characterBounds(at: caret)
+        if caretBounds.height > 0 {
+            let bar = PDFAnnotation(bounds: CGRect(x: caretBounds.minX - 1, y: caretBounds.minY - 1, width: 1.6, height: caretBounds.height + 2), forType: .square, withProperties: nil)
+            bar.color = .clear; bar.interiorColor = Theme.accent
+            annotations.append((bar, page))
+        }
+        flash(annotations, for: 2.4)
+        let focus = caretBounds.height > 0 ? caretBounds : (annotations.first?.0.bounds ?? .zero)
+        pdfView.go(to: focus.insetBy(dx: -60, dy: -90), on: page)
+    }
+
     @_optimize(none)
     func goTo(_ location: PDFLocation) {
         guard let page = pdfView.document?.page(at: location.page - 1) else { return }
-        if let annotation = highlightAnnotation { highlightPage?.removeAnnotation(annotation) }
+        clearHighlights()
         let media = page.bounds(for: .mediaBox)
         let point = location.point(mediaHeight: media.height, originX: media.minX, originY: media.minY)
         pdfView.go(to: CGRect(x: max(media.minX, point.x - 15), y: point.y - 35, width: 240, height: 70), on: page)
         let annotation = PDFAnnotation(bounds: CGRect(x: media.minX + 24, y: point.y - 5, width: media.width - 48, height: 16), forType: .square, withProperties: nil)
         annotation.color = .clear; annotation.interiorColor = Theme.accent.withAlphaComponent(0.18)
-        page.addAnnotation(annotation); highlightAnnotation = annotation; highlightPage = page
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak page, weak annotation] in if let annotation { page?.removeAnnotation(annotation) } }
+        flash([(annotation, page)], for: 1.8)
     }
 }
