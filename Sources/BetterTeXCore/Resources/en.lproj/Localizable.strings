@@ -644,3 +644,5 @@
 "额度接近上限" = "Approaching quota limit";
 "额度刷新失败，稍后重试" = "Quota refresh failed; try again later";
 "刷新用量" = "Refresh Usage";
+"选择要编译的主文件" = "Choose the Main File to Build";
+"此项目有多个含 \\documentclass 的文件。BetterTeX 会记住你的选择；打开其他主文件再编译，或在子文件首行添加 % !TeX root，可以编译别的文件。" = "This project has several files with \\documentclass. BetterTeX remembers your choice; to build another file, open that main file and build, or add % !TeX root on the first line of a subfile.";

@@ -26,7 +26,22 @@ final class CoreTests: XCTestCase {
     func testAmbiguousProjectDoesNotChooseArbitraryRoot() throws {
         try write("a.tex", "\\documentclass{article}"); try write("b.tex", "\\documentclass{book}")
         let child = try write("section.tex", "A section")
+        XCTAssertThrowsError(try TeXProject.root(active: child, project: directory)) { error in
+            XCTAssertEqual((error as? AmbiguousMainError)?.candidates.map(\.lastPathComponent), ["a.tex", "b.tex"])
+        }
+    }
+    func testChosenMainResolvesAmbiguityUntilItStopsBeingAMainFile() throws {
+        try write("a.tex", "\\documentclass{article}"); let b = try write("sub/b.tex", "\\documentclass{book}")
+        let child = try write("section.tex", "A section")
+        defer { TeXProject.setChosenMain(nil, for: directory) }
+        TeXProject.setChosenMain(b, for: directory)
+        XCTAssertEqual(try TeXProject.root(active: child, project: directory).resolvingSymlinksInPath().path, b.resolvingSymlinksInPath().path)
+        // An open main file still builds itself.
+        let a = directory.appendingPathComponent("a.tex")
+        XCTAssertEqual(try TeXProject.root(active: a, project: directory).lastPathComponent, "a.tex")
+        try FileManager.default.removeItem(at: b); try write("c.tex", "\\documentclass{article}")
         XCTAssertThrowsError(try TeXProject.root(active: child, project: directory))
+        TeXProject.setChosenMain(nil, for: directory); XCTAssertNil(TeXProject.chosenMain(for: directory))
     }
     func testEngineDirectiveAndOverride() {
         XCTAssertEqual(TeXProject.engine(for: "% !TEX program = lualatex", selected: .automatic), .luaLaTeX)

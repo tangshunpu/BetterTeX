@@ -9,6 +9,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     var active: EditorBuffer?
     var tools: Toolchain?
     var compiler = TeXCompiler()
+    private var mainPromptedFor: String?
     var building = false
     var buildPending = false
     /// Fingerprint of the inputs of the last build, so automatic triggers never repeat it.
@@ -286,6 +287,27 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             self.ui.welcome.setProgress(nil)
         }
     }
+    /// Several files have `\\documentclass`: let the user pick which one this project builds, and remember it.
+    private func chooseMain(from candidates: [URL], project: URL) {
+        guard let window = ui.window, window.attachedSheet == nil else { return }
+        mainPromptedFor = project.path
+        let base = project.standardizedFileURL.path + "/"
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26))
+        for url in candidates {
+            popup.addItem(withTitle: url.path.hasPrefix(base) ? String(url.path.dropFirst(base.count)) : url.path)
+        }
+        let alert = NSAlert(); alert.messageText = L10n.tr("选择要编译的主文件")
+        alert.informativeText = L10n.tr("此项目有多个含 \\documentclass 的文件。BetterTeX 会记住你的选择；打开其他主文件再编译，或在子文件首行添加 % !TeX root，可以编译别的文件。")
+        alert.accessoryView = popup; alert.addButton(withTitle: L10n.tr("编译")); alert.addButton(withTitle: L10n.tr("取消"))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, self.project?.path == project.path else { return }
+            guard response == .alertFirstButtonReturn, candidates.indices.contains(popup.indexOfSelectedItem) else {
+                self.setStatus(AmbiguousMainError(candidates: candidates).localizedDescription); return
+            }
+            TeXProject.setChosenMain(candidates[popup.indexOfSelectedItem], for: project)
+            self.build()
+        }
+    }
     /// Stops everything tied to the open project: builds, timers, the watcher, terminals and buffers.
     private func resetWorkspace() {
         generation = UUID(); saveJob?.cancel(); compileJob?.cancel(); compiler.runner.cancel(); compiler = TeXCompiler()
@@ -430,7 +452,12 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         if building { buildPending = true; return }
         guard saveAll() else { return }
         let selected = TeXEngine(rawValue: ui.selectedEngine) ?? .automatic
-        let rootPath = (try? TeXProject.root(active: active.url, project: project))?.path ?? active.url.path
+        let resolved = Result { try TeXProject.root(active: active.url, project: project) }
+        if case .failure(let error as AmbiguousMainError) = resolved {
+            // Ask once per project for automatic builds; pressing Build always asks again.
+            if !automatic || mainPromptedFor != project.path { chooseMain(from: error.candidates, project: project); return }
+        }
+        let rootPath = (try? resolved.get())?.path ?? active.url.path
         let signature = BuildSignature.compute(project: project, root: rootPath, engine: selected.rawValue)
         if automatic, signature == lastBuildSignature { return }
         lastBuildSignature = signature

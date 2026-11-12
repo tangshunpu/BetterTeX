@@ -32,8 +32,26 @@ public enum TeXProject {
         let mains = files.filter { ((try? String(contentsOf: $0, encoding: .utf8)) ?? "").contains("\\documentclass") }
         if let main = mains.first(where: { $0.lastPathComponent == "main.tex" }) { return main }
         if mains.count == 1 { return mains[0] }
-        if mains.count > 1 { throw BetterTeXError.message(L10n.tr("发现多个主文件。请打开要编译的主文件，或在子文件首行添加 % !TeX root = ../main.tex。")) }
+        if mains.count > 1 {
+            // The file the user picked for this project wins over guessing; a stale pick is ignored.
+            if let chosen = chosenMain(for: project)?.resolvingSymlinksInPath().path,
+               let main = mains.first(where: { $0.resolvingSymlinksInPath().path == chosen }) { return main }
+            throw AmbiguousMainError(candidates: mains)
+        }
         throw BetterTeXError.message(L10n.tr("未找到含 \\documentclass 的主文件。请打开 LaTeX 项目或设置 % !TeX root。"))
+    }
+
+    /// The main file the user picked when a project has several, remembered per project folder.
+    public static func chosenMain(for project: URL, defaults: UserDefaults = .standard) -> URL? {
+        guard let relative = (defaults.dictionary(forKey: "projectMainFiles") as? [String: String])?[project.standardizedFileURL.path] else { return nil }
+        return project.standardizedFileURL.appendingPathComponent(relative).standardizedFileURL
+    }
+    public static func setChosenMain(_ main: URL?, for project: URL, defaults: UserDefaults = .standard) {
+        var all = defaults.dictionary(forKey: "projectMainFiles") as? [String: String] ?? [:]
+        // Symlinked prefixes (/var vs /private/var) must not hide that the file is inside the project.
+        let base = project.standardizedFileURL.path, resolved = project.resolvingSymlinksInPath().path
+        if let path = main?.resolvingSymlinksInPath().path, path.hasPrefix(resolved + "/") { all[base] = String(path.dropFirst(resolved.count + 1)) } else { all[base] = nil }
+        defaults.set(all, forKey: "projectMainFiles")
     }
 
     public static func sourceFiles(in directory: URL) -> [URL] {
@@ -55,6 +73,13 @@ public enum TeXProject {
         if text.contains("\\usepackage{fontspec}") || text.contains("\\setmainfont") || text.contains("ctex") || text.contains("xeCJK") { return .xeLaTeX }
         return .pdfLaTeX
     }
+}
+
+/// Several files contain `\\documentclass` and nothing says which one to build; the app asks the user.
+public struct AmbiguousMainError: LocalizedError {
+    public let candidates: [URL]
+    public init(candidates: [URL]) { self.candidates = candidates }
+    public var errorDescription: String? { L10n.tr("发现多个主文件。请打开要编译的主文件，或在子文件首行添加 % !TeX root = ../main.tex。") }
 }
 
 public struct DiskSnapshot: Equatable {

@@ -75,7 +75,7 @@ Swift 6.4 优化器在 PDFKit 高亮桥接函数上存在编译崩溃；`PDFPane
 
 支持 Auto、latexmk、pdfLaTeX、XeLaTeX、LuaLaTeX。已安装 latexmk 时由它管理增量编译、多轮引用与参考文献；缺少 latexmk 时使用所选引擎，按需运行 BibTeX / Biber，再进行两轮编译。显式选择 latexmk 但没有安装时会提示缺失。
 
-主文件依次通过 `% !TeX root`、当前文件的 `\documentclass`、项目中的 `main.tex` 或唯一主文件识别。多个主文件存在歧义时会提示。Auto 尊重 `% !TeX program`；检测到 ctex、xeCJK 或 fontspec 时选择 XeLaTeX，否则选择 pdfLaTeX。
+主文件依次通过 `% !TeX root`、当前文件的 `\documentclass`、项目中的 `main.tex` 或唯一主文件识别。多个主文件存在歧义时会弹出选择框，选定的主文件按项目记住；之后打开另一个主文件再编译仍会编译那个文件，手动点「编译」且仍有歧义时会重新询问。Auto 尊重 `% !TeX program`；检测到 ctex、xeCJK 或 fontspec 时选择 XeLaTeX，否则选择 pdfLaTeX。
 
 ```tex
 % !TeX root = ../main.tex
