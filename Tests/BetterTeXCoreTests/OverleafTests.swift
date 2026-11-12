@@ -158,6 +158,12 @@ final class OverleafTests: XCTestCase {
         XCTAssertTrue(OverleafFiles.isText(path: "a.tex", data: Data("hi".utf8)))
         XCTAssertFalse(OverleafFiles.isText(path: "a.png", data: Data([0x89, 0x50, 0, 1])))
     }
+    func testScanSkipsCompiledPDFsButKeepsFigures() throws {
+        try write("draft.tex", "x"); try write("draft.pdf", "pdf"); try write("draft.synctex.gz", "x")
+        try write("build/draft/draft.pdf", "pdf"); try write("build/draft/draft.fls", "x")
+        try write("figures/plot.pdf", "pdf"); try write("figures/plot.tex", "x")
+        XCTAssertEqual(Set(OverleafFiles.scan(directory).keys), ["draft.tex", "figures/plot.pdf", "figures/plot.tex"])
+    }
     func testLinkPersistsBaseAndAncestorText() throws {
         var link = OverleafLink(host: OverleafClient.defaultHost, projectID: "0123456789abcdef01234567", name: "Paper")
         link.mode = .interval; link.intervalMinutes = 15; link.lastSync = Date(timeIntervalSince1970: 1_700_000_000)

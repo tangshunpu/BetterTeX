@@ -71,6 +71,7 @@ public final class OverleafClient {
             let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             let detail = object?["message"] as? String ?? (object?["message"] as? [String: Any])?["text"] as? String ?? object?["error"] as? String ?? ""
             if http.statusCode == 403 && detail.isEmpty { throw OverleafError.http(403, L10n.tr("没有权限，或登录已失效")) }
+            if http.statusCode == 413 { throw OverleafError.http(413, L10n.tr("上传内容超过 Overleaf 的大小上限（50 MB）")) }
             if http.statusCode == 429 { throw OverleafError.http(429, L10n.tr("请求过于频繁，请稍后再试")) }
             throw OverleafError.http(http.statusCode, detail)
         }
