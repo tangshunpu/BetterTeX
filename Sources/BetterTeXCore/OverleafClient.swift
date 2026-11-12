@@ -132,7 +132,10 @@ public final class OverleafClient {
         try FileManager.default.moveItem(at: file, to: target); return target
     }
 
-    private func multipart(_ path: String, query: [String: String], fields: [(String, String)], fileName: String, file: Data) async throws -> [String: Any] {
+    /// Called with (bytes sent, total bytes) while a request body uploads.
+    public typealias UploadProgress = @Sendable (Int64, Int64) -> Void
+
+    private func multipart(_ path: String, query: [String: String], fields: [(String, String)], fileName: String, file: Data, progress: UploadProgress? = nil) async throws -> [String: Any] {
         let boundary = "BetterTeX-\(UUID().uuidString)"
         var body = Data()
         func line(_ text: String) { body.append(Data((text + "\r\n").utf8)) }
@@ -145,7 +148,7 @@ public final class OverleafClient {
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.setValue(try await token(), forHTTPHeaderField: "X-Csrf-Token")
-            let (data, response) = try await session.upload(for: request, from: body)
+            let (data, response) = try await session.upload(for: request, from: body, delegate: progress.map(UploadObserver.init))
             _ = try check(response, data); return object(data)
         }
         do { return try await attempt() }
@@ -162,8 +165,8 @@ public final class OverleafClient {
     }
 
     /// Uploads a zip archive as a brand-new project and returns its id.
-    public func createProject(name: String, archive: URL) async throws -> String {
-        let result = try await multipart("project/new/upload", query: [:], fields: [("name", name + ".zip")], fileName: name + ".zip", file: try Data(contentsOf: archive))
+    public func createProject(name: String, archive: URL, progress: UploadProgress? = nil) async throws -> String {
+        let result = try await multipart("project/new/upload", query: [:], fields: [("name", name + ".zip")], fileName: name + ".zip", file: try Data(contentsOf: archive), progress: progress)
         guard let id = result["project_id"] as? String else { throw OverleafError.message(L10n.tr("Overleaf 未能创建项目：\(result["error"] as? String ?? L10n.tr("未知错误"))")) }
         return id
     }
@@ -297,5 +300,14 @@ public final class OverleafSocket: NSObject, URLSessionWebSocketDelegate {
         guard !closed else { return }
         closed = true; isOpen = false; acks.removeAll()
         task?.send(.string("0::")) { _ in }; task?.cancel(with: .normalClosure, reason: nil); task = nil
+    }
+}
+
+/// Forwards body-upload progress of one task.
+private final class UploadObserver: NSObject, URLSessionTaskDelegate {
+    let report: OverleafClient.UploadProgress
+    init(_ report: @escaping OverleafClient.UploadProgress) { self.report = report }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        report(totalBytesSent, totalBytesExpectedToSend)
     }
 }

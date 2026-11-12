@@ -43,6 +43,9 @@ final class OverleafController {
     private var generation = 0
     private var retries = 0
     private var jobs: [String: DispatchWorkItem] = [:]
+    /// A new-project upload is running; `uploadPercent` is the last percentage shown for it.
+    private var uploading = false
+    private var uploadPercent = -1
     private var poll: Timer?
     private let popover = NSPopover()
     private let panel = OverleafPanel()
@@ -641,12 +644,30 @@ final class OverleafController {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let title = name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, workspace.saveAll() else { return }
+        guard !uploading else { return }
+        uploading = true
         run(L10n.tr("上传失败"), alert: true) { [self] in
-            workspace.setStatus(L10n.tr("正在上传到 Overleaf…"))
+            let bar = ui.transfer
+            defer { uploading = false; bar.state = .hidden }
+            bar.state = .waiting; workspace.setStatus(L10n.tr("正在打包项目…"))
             let archive = FileManager.default.temporaryDirectory.appendingPathComponent("BetterTeX-upload-\(UUID().uuidString).zip")
             defer { try? FileManager.default.removeItem(at: archive) }
             let files = try await background { () -> [String] in try OverleafFiles.zip(project: project, to: archive); return Array(OverleafFiles.scan(project).keys) }
-            let id = try await withLogin { try await $0.createProject(name: title, archive: archive) }
+            workspace.setStatus(L10n.tr("正在上传到 Overleaf…"))
+            uploadPercent = -1
+            let progress: OverleafClient.UploadProgress = { sent, total in
+                Task { @MainActor [weak self] in
+                    guard let self, self.uploading, total > 0 else { return }
+                    let percent = Int(Double(sent) * 100 / Double(total))
+                    guard percent != self.uploadPercent else { return }
+                    self.uploadPercent = percent
+                    if sent >= total { bar.state = .waiting; self.workspace.setStatus(L10n.tr("Overleaf 正在创建项目…")); return }
+                    bar.state = .fraction(Double(sent) / Double(total))
+                    let mb = { (bytes: Int64) in String(format: "%.1f", Double(bytes) / 1_048_576) }
+                    self.workspace.setStatus(L10n.tr("正在上传到 Overleaf… \(percent)% · \(mb(sent)) / \(mb(total)) MB"))
+                }
+            }
+            let id = try await withLogin { try await $0.createProject(name: title, archive: archive, progress: progress) }
             guard self.project == project else { return }
             var link = OverleafLink(host: host.absoluteString, projectID: id, name: title)
             for path in files { link.setBase(project: project, path: path, data: try? Data(contentsOf: project.appendingPathComponent(path))) }

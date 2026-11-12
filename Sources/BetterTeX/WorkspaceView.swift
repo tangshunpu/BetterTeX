@@ -109,6 +109,39 @@ private final class StatusDot: NSView {
     }
 }
 
+/// A slim bar in the status bar for long transfers: indeterminate while preparing or waiting, filling while bytes move.
+final class TransferBar: NSProgressIndicator {
+    enum State: Equatable { case hidden, waiting, fraction(Double) }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        style = .bar; controlSize = .small; minValue = 0; maxValue = 1; isDisplayedWhenStopped = false
+        translatesAutoresizingMaskIntoConstraints = false; widthAnchor.constraint(equalToConstant: 120).isActive = true
+        isHidden = true; alphaValue = 0
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    var state: State = .hidden {
+        didSet {
+            guard state != oldValue else { return }
+            switch state {
+            case .hidden:
+                NSAnimationContext.runAnimationGroup({ $0.duration = 0.25; animator().alphaValue = 0 }) { [weak self] in
+                    guard let self, self.state == .hidden else { return }
+                    self.stopAnimation(nil); self.isHidden = true
+                }
+            case .waiting:
+                isIndeterminate = true; startAnimation(nil); reveal()
+            case .fraction(let value):
+                if isIndeterminate { stopAnimation(nil); isIndeterminate = false }
+                doubleValue = min(max(value, 0), 1); reveal()
+            }
+        }
+    }
+    private func reveal() {
+        guard isHidden || alphaValue < 1 else { return }
+        isHidden = false; NSAnimationContext.runAnimationGroup { $0.duration = 0.2; animator().alphaValue = 1 }
+    }
+}
+
 /// The whole window content: title bar, sidebar, editor / PDF / agent panes and status bar.
 final class WorkspaceView: Surface {
     enum Activity { case idle, busy, failed }
@@ -122,6 +155,7 @@ final class WorkspaceView: Surface {
     let welcome = WelcomeView()
     let status = Theme.label(L10n.tr("正在检测本机工具…"), size: 11.5, color: Theme.soft)
     let branch = Theme.label("", size: 11.5, color: Theme.muted)
+    let transfer = TransferBar()
     let position = Theme.label("Ln 1, Col 1", size: 11.5, color: Theme.muted)
     private let projectLabel = Theme.label("BetterTeX", size: 13.5, weight: .semibold)
     private let fileLabel = Theme.label("", size: 13.5, color: Theme.muted, weight: .medium)
@@ -236,8 +270,8 @@ final class WorkspaceView: Surface {
         statusDot.size(13, 13); syncIcon.image = Theme.symbol("checkmark", size: 9, weight: .bold); syncIcon.contentTintColor = Theme.green
         let sync = NSStackView(views: [syncLabel, syncIcon]); sync.spacing = 4
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let bottomRow = NSStackView(views: [statusDot, status, errorLabel, warningLabel, spacer, branch, toolButton, sync, position, Theme.label("UTF-8", size: 11.5, color: Theme.muted), Theme.label("LaTeX", size: 11.5, color: Theme.muted)])
-        bottomRow.spacing = 16; bottomRow.setCustomSpacing(6, after: statusDot); bottomRow.alignment = .centerY; bottom.pinRow(bottomRow, leading: 12, trailing: 14)
+        let bottomRow = NSStackView(views: [statusDot, status, transfer, errorLabel, warningLabel, spacer, branch, toolButton, sync, position, Theme.label("UTF-8", size: 11.5, color: Theme.muted), Theme.label("LaTeX", size: 11.5, color: Theme.muted)])
+        bottomRow.spacing = 16; bottomRow.setCustomSpacing(6, after: statusDot); bottomRow.setCustomSpacing(10, after: status); bottomRow.alignment = .centerY; bottom.pinRow(bottomRow, leading: 12, trailing: 14)
         position.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular)
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); status.lineBreakMode = .byTruncatingTail
         for label in [errorLabel, warningLabel, branch] { label.isHidden = true }

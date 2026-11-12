@@ -651,3 +651,6 @@
 "%1$@ 中有未闭合的括号或环境 · 补全后自动编译" = "%1$@ has an unclosed brace or environment · builds automatically once complete";
 "上传内容超过 Overleaf 的大小上限（50 MB）" = "the upload is larger than Overleaf's 50 MB limit";
 "项目压缩后有 %1$@，超过 Overleaf 的 50 MB 上传上限。最大的文件：\n%2$@" = "The project archive is %1$@, above Overleaf's 50 MB upload limit. Largest files:\n%2$@";
+"正在打包项目…" = "Packing the project…";
+"Overleaf 正在创建项目…" = "Overleaf is creating the project…";
+"正在上传到 Overleaf… %1$@%% · %2$@ / %3$@ MB" = "Uploading to Overleaf… %1$@%% · %2$@ / %3$@ MB";
