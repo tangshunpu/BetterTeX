@@ -128,7 +128,7 @@ final class WorkspaceView: Surface {
     private let slash = Theme.label("/", size: 13.5, color: Theme.muted)
     private let errorLabel = Theme.label("", size: 11.5, color: Theme.muted)
     private let warningLabel = Theme.label("", size: 11.5, color: Theme.muted)
-    private let toolLabel = Theme.label("", size: 11.5, color: Theme.muted)
+    private var toolButton: ActionButton!
     private let syncLabel = Theme.label("SyncTeX", size: 11.5, color: Theme.muted)
     private let syncIcon = NSImageView()
     private let statusDot = StatusDot()
@@ -171,6 +171,8 @@ final class WorkspaceView: Surface {
     var onOpenFile: ((URL) -> Void)?
     var onHome: (() -> Void)?
     var onOverleaf: ((NSView) -> Void)?
+    var onShowTools: (() -> Void)?
+    var onDetectTools: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame); fill = Theme.base
@@ -228,15 +230,17 @@ final class WorkspaceView: Surface {
         applyDocking()
 
         // Status bar
+        toolButton = ActionButton(L10n.tr("本机工具"), symbol: "chevron.up.chevron.down", style: .plain) { [weak self] in self?.showToolsMenu() }
+        toolButton.toolTip = L10n.tr("查看或重新检测本机工具")
         let bottom = Surface(); bottom.fill = Theme.sidebar; bottom.lineColor = Theme.line; bottom.topLine = true
         statusDot.size(13, 13); syncIcon.image = Theme.symbol("checkmark", size: 9, weight: .bold); syncIcon.contentTintColor = Theme.green
         let sync = NSStackView(views: [syncLabel, syncIcon]); sync.spacing = 4
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let bottomRow = NSStackView(views: [statusDot, status, errorLabel, warningLabel, spacer, branch, toolLabel, sync, position, Theme.label("UTF-8", size: 11.5, color: Theme.muted), Theme.label("LaTeX", size: 11.5, color: Theme.muted)])
+        let bottomRow = NSStackView(views: [statusDot, status, errorLabel, warningLabel, spacer, branch, toolButton, sync, position, Theme.label("UTF-8", size: 11.5, color: Theme.muted), Theme.label("LaTeX", size: 11.5, color: Theme.muted)])
         bottomRow.spacing = 16; bottomRow.setCustomSpacing(6, after: statusDot); bottomRow.alignment = .centerY; bottom.pinRow(bottomRow, leading: 12, trailing: 14)
         position.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular)
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); status.lineBreakMode = .byTruncatingTail
-        for label in [errorLabel, warningLabel, branch, toolLabel] { label.isHidden = true }
+        for label in [errorLabel, warningLabel, branch] { label.isHidden = true }
         sync.isHidden = true; syncLabel.superview?.isHidden = true
         activity = .idle
 
@@ -287,8 +291,14 @@ final class WorkspaceView: Surface {
         projectLabel.stringValue = project; fileLabel.stringValue = file ?? ""
         fileLabel.isHidden = file == nil; slash.isHidden = file == nil
     }
+    private func showToolsMenu() {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        menu.addItem(ClosureMenuItem(L10n.tr("本机工具…"), symbol: "wrench.and.screwdriver") { [weak self] in self?.onShowTools?() })
+        menu.addItem(ClosureMenuItem(L10n.tr("重新检测工具"), symbol: "arrow.clockwise") { [weak self] in self?.onDetectTools?() })
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: toolButton.bounds.height + 4), in: toolButton)
+    }
     func setTools(engines: Int, syncTeX: Bool) {
-        toolLabel.stringValue = engines == 0 ? L10n.tr("TeX 未安装") : L10n.tr("\(engines) 个引擎"); toolLabel.isHidden = false
+        toolButton.setTitle(engines == 0 ? L10n.tr("TeX 未安装") : L10n.tr("\(engines) 个引擎"))
         syncLabel.superview?.isHidden = !syncTeX
     }
     func setDiagnostics(errors: Int, warnings: Int) {

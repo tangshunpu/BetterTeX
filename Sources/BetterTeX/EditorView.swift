@@ -58,6 +58,7 @@ final class CodeTextView: NSTextView {
     var sourceContext: (() -> AgentSourceContext?)?
     var onAttachContext: ((AgentSourceContext) -> Void)?
     var onProofread: ((AgentSourceContext) -> Void)?
+    var onRevealInPDF: (() -> Void)?
     var onContextMenu: (() -> Void)?
     /// Offered every key press first; returns true when the completion list consumed it.
     var onCompletionKey: ((NSEvent) -> Bool)?
@@ -90,6 +91,10 @@ final class CodeTextView: NSTextView {
                 menu.addItem(item)
             }
             if !menu.items.isEmpty { menu.addItem(.separator()) }
+        }
+        if onRevealInPDF != nil {
+            menu.addItem(ClosureMenuItem(L10n.tr("在 PDF 中定位"), symbol: "scope") { [weak self] in self?.onRevealInPDF?() })
+            menu.addItem(.separator())
         }
         if isEditable, onInsertSnippet != nil {
             let insert = NSMenu(title: L10n.tr("插入"))

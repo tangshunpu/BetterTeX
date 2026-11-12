@@ -121,6 +121,10 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         }
         ui.preview.pdfView.onInverse = { [weak self] in self?.inverseSync(page: $0, x: $1, y: $2) }
         ui.preview.onExport = { [weak self] in self?.exportPDF() }
+        ui.preview.onReveal = { [weak self] in self?.forwardSync() }
+        ui.editor.textView.onRevealInPDF = { [weak self] in self?.forwardSync() }
+        ui.onShowTools = { [weak self] in self?.showTools() }
+        ui.onDetectTools = { [weak self] in self?.detectTools() }
         ui.terminal.onError = { [weak self] in self?.error($0) }
         ui.terminal.onOpenFile = { [weak self] in self?.openFile($0) }
         ui.terminal.currentContext = { [weak self] in self?.editorContext() }

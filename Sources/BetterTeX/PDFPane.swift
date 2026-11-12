@@ -45,6 +45,7 @@ final class PDFPane: Surface {
     let empty = NSStackView()
     let autoSwitch = NSSwitch()
     var onExport: (() -> Void)?
+    var onReveal: (() -> Void)?
     var onAuto: ((Bool) -> Void)?
     private let stateChip = Chip(fill: nil, radius: -1)
     private let stateIcon = NSImageView()
@@ -88,9 +89,12 @@ final class PDFPane: Surface {
         let zoomRow = NSStackView(views: [zoomOut, Theme.divider(height: 16), zoomLabel, Theme.divider(height: 16), zoomIn]); zoomRow.spacing = 0; zoomRow.alignment = .centerY
         let zoom = Chip(fill: Theme.fill, radius: 8); zoom.size(nil, 30); zoom.pin(zoomRow)
         let export = ActionButton("", symbol: "arrow.down.to.line", style: .accentIcon) { [weak self] in self?.onExport?() }; export.toolTip = L10n.tr("导出 PDF…")
+        let reveal = ActionButton("", symbol: "scope") { [weak self] in self?.onReveal?() }; reveal.toolTip = L10n.tr("在 PDF 中定位  ⇧⌘J")
+        reveal.setAccessibilityLabel(L10n.tr("在 PDF 中定位"))
         let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        for view in [stateChip, spacer, autoLabel, autoSwitch, Theme.divider(), zoom, export] { header.addControl(view) }
+        for view in [stateChip, spacer, autoLabel, autoSwitch, Theme.divider(), reveal, zoom, export] { header.addControl(view) }
         header.menuActions = [
+            (L10n.tr("在 PDF 中定位"), "scope", { [weak self] in self?.onReveal?() }),
             (L10n.tr("适合窗口"), "arrow.up.left.and.arrow.down.right", { [weak self] in self?.pdfView.autoScales = true }),
             (L10n.tr("导出 PDF…"), "arrow.down.to.line", { [weak self] in self?.onExport?() })
         ]
