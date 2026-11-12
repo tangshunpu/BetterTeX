@@ -64,7 +64,11 @@ final class AgentUsageViewTests: XCTestCase {
         view.update(provider: .claude, context: nil, quota: nil)
         XCTAssertNil(view.ring.usage)
         XCTAssertEqual(view.quotaButton.title, L10n.tr("额度 —"))
-        XCTAssertTrue(view.detailsMenu().items.contains { $0.title == L10n.tr("Claude 在会话响应中更新用量；未上报的额度无法显示") })
+        XCTAssertEqual(view.detailsMenu().items.last?.title, L10n.tr("刷新用量"))
+        let plan = AgentQuotaSnapshot(windows: [.init(id: "five_hour", usedPercent: 2, durationMinutes: 300), .init(id: "seven_day_fable", usedPercent: 41, durationMinutes: 10080, scope: "Fable")], observedAt: now)
+        view.update(provider: .claude, context: nil, quota: plan, now: now)
+        XCTAssertEqual(view.quotaButton.title, L10n.tr("额度剩余 \(59)%"))
+        XCTAssertTrue(view.detailsMenu(now: now).items.contains { $0.title.contains("Fable") })
     }
     @MainActor func testExpiredQuotaShowsRefreshInsteadOfFullAvailability() async throws {
         _ = NSApplication.shared
@@ -77,7 +81,7 @@ final class AgentUsageViewTests: XCTestCase {
         XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item))
         XCTAssertTrue(refreshed)
     }
-    @MainActor func testComposerUsageFitsBesideLongContextAndRendersRing() async throws {
+    @MainActor func testUsageStripSitsAboveComposerAndRendersRing() async throws {
         _ = NSApplication.shared
         let panel = TerminalPanel(frame: NSRect(x: 0, y: 0, width: 380, height: 680))
         let window = NSWindow(contentRect: panel.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -88,7 +92,15 @@ final class AgentUsageViewTests: XCTestCase {
         panel.layoutSubtreeIfNeeded()
         let ring = panel.usageView.ring.convert(panel.usageView.ring.bounds, to: panel)
         XCTAssertGreaterThan(ring.minX, 0); XCTAssertLessThanOrEqual(ring.maxX, panel.bounds.maxX)
-        XCTAssertEqual(ring.width, 28, accuracy: 0.1)
+        // The strip is its own line above the composer card, inside the panel on both sides.
+        let quota = panel.usageView.quotaButton.convert(panel.usageView.quotaButton.bounds, to: panel)
+        let hint = panel.hint.convert(panel.hint.bounds, to: panel)
+        XCTAssertGreaterThan(quota.minX, 12); XCTAssertLessThan(quota.maxX, ring.minX)
+        XCTAssertEqual(quota.midY, ring.midY, accuracy: 1)
+        XCTAssertFalse(panel.usageView.isHidden)
+        XCTAssertEqual(panel.usageView.frame.height, 18, accuracy: 0.1)
+        // At least the composer card's minimum height separates the strip from the hint below.
+        XCTAssertGreaterThan(panel.isFlipped ? hint.minY - ring.maxY : ring.minY - hint.maxY, 60)
         // Include the composer so placement, truncation and both indicators can be inspected together.
         if let path = ProcessInfo.processInfo.environment["BETTERTEX_USAGE_PREVIEW"] {
             let view = panel

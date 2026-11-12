@@ -51,6 +51,7 @@ Release、示例单页 PDF、两个源码标签、无运行中的 Agent：`vmmap
 - 全量回归：112 项，109 通过、3 项环境跳过（Overleaf 在线检查、默认关闭的 Codex 额度在线检查、需要前台 GUI 的更新焦点检查），无失败。
 - 新增 15 项测试，覆盖只读额度握手、超时与取消、周期过期与未知值、当前请求与累计 token 区分、缓存与子 Agent、上下文压缩、模型切换、历史会话恢复、清空时取消旧数据、Provider 切换、手动刷新及 380 点窄面板布局。
 - 单独启用 `BETTERTEX_CODEX_USAGE_LIVE=1` 的真实 Codex 额度测试通过；仅执行 `account/rateLimits/read`，没有发送模型请求。Claude 事件解析与面板联动使用本地 CLI 替身验证，未调用真实 Claude 模型。
+- 单独启用 `BETTERTEX_CLAUDE_USAGE_LIVE=1` 的真实 Claude 额度测试通过（CLI 2.1.302）；只发送 `get_usage` 控制请求，不带提示词，没有发送模型请求。用量条移到输入卡片上方后的位置由 AppKit 布局测试和 `BETTERTEX_USAGE_PREVIEW` 截图检查。
 - AppKit 位图检查确认额度文字与上下文圆环布局正常；未知值显示横线，高占用圆环显示提醒色。实窗检查因 Mac 锁屏未能完成。
 - Debug 构建成功，缓存中的 Staging 应用通过 `verify_bundle.sh`（资源完整性与深度签名检查）。`dist` 副本仍因 FileProvider 重新附加 FinderInfo 未通过签名验证，本次没有将其视为可分发构建。
 - 额度改为输入框上缘右侧的短进度条后，定向回归 16 项全部通过（用量界面、编辑器上下文、本地化）。完整面板位图确认 380 点宽度下进度条与圆环对齐，长文件名单行居中省略，不额外占行。该调整已重新编译，未重新生成应用分发包。

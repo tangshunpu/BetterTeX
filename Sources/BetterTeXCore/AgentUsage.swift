@@ -26,8 +26,10 @@ public struct AgentQuotaWindow: Equatable {
     public let usedPercent: Double?
     public let durationMinutes: Int?
     public let resetsAt: Date?
-    public init(id: String, usedPercent: Double?, durationMinutes: Int? = nil, resetsAt: Date? = nil) {
-        self.id = id
+    /// A server-supplied name for a window scoped to one model, shown after the period.
+    public let scope: String?
+    public init(id: String, usedPercent: Double?, durationMinutes: Int? = nil, resetsAt: Date? = nil, scope: String? = nil) {
+        self.id = id; self.scope = scope
         self.usedPercent = usedPercent.flatMap { $0.isFinite && $0 >= 0 ? min(100, $0) : nil }
         self.durationMinutes = durationMinutes.flatMap { $0 > 0 ? $0 : nil }
         self.resetsAt = resetsAt
@@ -36,7 +38,8 @@ public struct AgentQuotaWindow: Equatable {
         guard resetsAt == nil || resetsAt! > now else { return nil }
         return usedPercent.map { 100 - $0 }
     }
-    public var title: String {
+    public var title: String { scope.map { period + " · " + $0 } ?? period }
+    private var period: String {
         if let minutes = durationMinutes {
             if minutes % 1440 == 0 { return L10n.tr("\(minutes / 1440) 天") }
             if minutes % 60 == 0 { return L10n.tr("\(minutes / 60) 小时") }
@@ -90,6 +93,31 @@ public struct AgentQuotaSnapshot: Equatable {
                                       resetsAt: number(info["resetsAt"]).map(Date.init(timeIntervalSince1970:)))
         return .init(windows: [window], observedAt: observedAt, status: info["errorCode"] as? String ?? status)
     }
+    /// The `get_usage` control response: the plan windows behind Claude Code's `/usage`.
+    public static func claudeUsage(_ usage: [String: Any], observedAt: Date = Date()) -> AgentQuotaSnapshot? {
+        guard usage["rate_limits_available"] as? Bool != false, let limits = usage["rate_limits"] as? [String: Any] else { return nil }
+        func window(_ id: String, _ value: Any?, minutes: Int, scope: String? = nil) -> AgentQuotaWindow? {
+            guard let value = value as? [String: Any], let percent = number(value["utilization"]) else { return nil }
+            return .init(id: id, usedPercent: percent, durationMinutes: minutes, resetsAt: (value["resets_at"] as? String).flatMap(isoDate), scope: scope)
+        }
+        var windows = [window("five_hour", limits["five_hour"], minutes: 300), window("seven_day", limits["seven_day"], minutes: 10080)].compactMap { $0 }
+        for (id, name) in [("seven_day_opus", "Opus"), ("seven_day_sonnet", "Sonnet")] {
+            if let scoped = window(id, limits[id], minutes: 10080, scope: name) { windows.append(scoped) }
+        }
+        for model in limits["model_scoped"] as? [[String: Any]] ?? [] {
+            guard let name = model["display_name"] as? String, !name.isEmpty, !windows.contains(where: { $0.scope == name }),
+                  let scoped = window("seven_day_" + name.lowercased(), model, minutes: 10080, scope: String(name.prefix(40))) else { continue }
+            windows.append(scoped)
+        }
+        guard !windows.isEmpty else { return nil }
+        return .init(windows: windows, observedAt: observedAt, plan: usage["subscription_type"] as? String)
+    }
+}
+
+/// ISO 8601 with or without fractional seconds of any length.
+func isoDate(_ text: String) -> Date? {
+    let plain = text.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression)
+    return ISO8601DateFormatter().date(from: plain)
 }
 
 // JSON booleans and negative/overflowing values must not turn into token counts.

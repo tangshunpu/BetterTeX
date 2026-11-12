@@ -127,4 +127,40 @@ final class AgentUsageTests: XCTestCase {
         let quota = try XCTUnwrap(CodexQuotaClient().read(executable: executable, environment: tools.environment, directory: directory))
         XCTAssertFalse(quota.windows.isEmpty)
     }
+    func testClaudeUsageResponseBecomesWindowsWithoutModelTurn() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let script = directory.appendingPathComponent("claude")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" > arguments
+        IFS= read -r request
+        printf '%s\\n' "$request" > requests
+        printf '{"type":"system","subtype":"status"}\\n'
+        printf '{"type":"control_response","response":{"subtype":"success","request_id":"usage","response":{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":2,"resets_at":"2099-11-12T09:40:00.437263+00:00"},"seven_day":{"utilization":22,"resets_at":"2099-11-17T12:00:00+00:00"},"seven_day_opus":null,"model_scoped":[{"display_name":"Fable","utilization":41,"resets_at":null}]}}}}\\n'
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        let quota = try XCTUnwrap(ClaudeQuotaClient().read(executable: script.path, environment: [:], directory: directory, timeout: 2))
+        XCTAssertEqual(quota.windows.map(\.usedPercent), [2, 22, 41])
+        XCTAssertEqual(quota.windows.map(\.durationMinutes), [300, 10080, 10080])
+        XCTAssertEqual(quota.windows.last?.scope, "Fable"); XCTAssertTrue(quota.windows.last?.title.hasSuffix("· Fable") == true)
+        XCTAssertEqual(quota.windows.first?.resetsAt, ISO8601DateFormatter().date(from: "2099-11-12T09:40:00+00:00"))
+        XCTAssertEqual(quota.remainingPercent(at: quota.observedAt), 59); XCTAssertEqual(quota.plan, "max")
+        let request = try object(String(contentsOf: directory.appendingPathComponent("requests")))
+        XCTAssertEqual((request["request"] as? [String: Any])?["subtype"] as? String, "get_usage")
+        // A prompt argument would start a model turn.
+        XCTAssertFalse(try String(contentsOf: directory.appendingPathComponent("arguments")).contains("--  "))
+        XCTAssertNil(AgentQuotaSnapshot.claudeUsage(["rate_limits_available": false, "rate_limits": NSNull()]))
+        XCTAssertNil(AgentQuotaSnapshot.claudeUsage(["rate_limits_available": true, "rate_limits": ["five_hour": ["utilization": NSNull()]]]))
+        try "#!/bin/sh\nIFS= read -r request\nprintf '{\"type\":\"control_response\",\"response\":{\"subtype\":\"error\",\"request_id\":\"usage\",\"error\":\"unsupported\"}}\\n'\n".write(to: script, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try ClaudeQuotaClient().read(executable: script.path, environment: [:], directory: directory, timeout: 2))
+    }
+    func testLiveClaudeQuotaReadWithoutModelTurn() throws {
+        guard ProcessInfo.processInfo.environment["BETTERTEX_CLAUDE_USAGE_LIVE"] == "1" else { throw XCTSkip("Set BETTERTEX_CLAUDE_USAGE_LIVE=1 to check the installed CLI's read-only usage request.") }
+        let tools = Toolchain.discover(), directory = URL(fileURLWithPath: NSTemporaryDirectory())
+        let executable = try XCTUnwrap(tools["claude"])
+        let quota = try XCTUnwrap(ClaudeQuotaClient().read(executable: executable, environment: tools.environment, directory: directory))
+        XCTAssertFalse(quota.windows.isEmpty)
+    }
 }

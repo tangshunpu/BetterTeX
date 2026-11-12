@@ -68,11 +68,12 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
     private let contextChip = Chip(fill: Theme.fill, radius: -1)
     private let contextLabel = NSTextField(labelWithString: "")
     let usageView = AgentUsageView(frame: .zero)
-    private var quotaSnapshot: AgentQuotaSnapshot?
-    private var quotaClient: CodexQuotaClient?
+    // Account quota is read per provider by a short-lived local CLI connection.
+    private var quotaSnapshots: [AgentProvider: AgentQuotaSnapshot] = [:]
+    private var quotaClients: [AgentProvider: AgentQuotaClient] = [:]
+    private var lastQuotaAttempts: [AgentProvider: Date] = [:]
+    private var quotaFailures: Set<AgentProvider> = []
     private var quotaTimer: Timer?
-    private var lastQuotaAttempt = Date.distantPast
-    private var quotaFailed = false
     var terminals: [String: AdaptiveTerminal] = [:]
     var active = "Agent"
     var project: URL?
@@ -132,7 +133,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         contextLabel.lineBreakMode = .byTruncatingMiddle
         contextLabel.maximumNumberOfLines = 1
         contextLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let contextRow = NSStackView(views: [contextChip, NSView(), usageView, compactAttach]); contextRow.spacing = 6; contextRow.alignment = .centerY
+        let contextRow = NSStackView(views: [contextChip, NSView(), compactAttach]); contextRow.spacing = 6; contextRow.alignment = .centerY
         usageView.onRefresh = { [weak self] in self?.refreshUsage(force: true) }
         composer.isRichText = false; composer.drawsBackground = false; composer.font = .systemFont(ofSize: 13.5); composer.textColor = Theme.text
         composer.insertionPointColor = Theme.accent; composer.textContainerInset = NSSize(width: 0, height: 2); composer.textContainer?.lineFragmentPadding = 0
@@ -177,8 +178,10 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         field.addGestureRecognizer({ let click = NSClickGestureRecognizer(target: self, action: #selector(focusComposer)); click.delaysPrimaryMouseButtonEvents = false; return click }())
         hint.alignment = .center; hint.lineBreakMode = .byTruncatingTail
         hint.setContentCompressionResistancePriority(.init(100), for: .horizontal)
-        let footer = NSStackView(views: [field, hint]); footer.orientation = .vertical; footer.spacing = 8; footer.alignment = .leading
-        for row in [field, hint] { row.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
+        // Usage sits on its own slim line above the card, so the card's first row belongs to the context chip.
+        let footer = NSStackView(views: [usageView, field, hint]); footer.orientation = .vertical; footer.spacing = 8; footer.alignment = .leading
+        footer.setCustomSpacing(4, after: usageView)
+        for row in [usageView, field, hint] { row.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
 
         for view in [header, content, footer] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
         NSLayoutConstraint.activate([
@@ -317,6 +320,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         let agentRunning = AgentProvider(rawValue: active) != nil && terminals[active] != nil
         let hidden = active == "Shell" || active == "Output"
         composerCard.isHidden = hidden || !rail.isHidden; updateRail()
+        usageView.isHidden = composerCard.isHidden || activeChat == nil
         sandboxButton.isHidden = activeChat == nil
         composerScroll.isHidden = agentRunning; composerTools.isHidden = agentRunning; compactAttach.isHidden = !agentRunning
         placeholder.isHidden = agentRunning || !composer.string.isEmpty
@@ -328,7 +332,7 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         composerHeight.constant = min(max(22, layout.usedRect(for: container).height + 4), 112)
     }
     func configure(project: URL, tools: Toolchain) {
-        quotaClient?.cancel(); quotaClient = nil; quotaSnapshot = nil; lastQuotaAttempt = .distantPast
+        cancelQuotaReads(); quotaSnapshots.removeAll(); lastQuotaAttempts.removeAll()
         self.project = project; self.tools = tools
         chat.configureUsage(environment: tools.environment); claudeChat.configureUsage(environment: tools.environment)
         quotaTimer?.invalidate()
@@ -338,35 +342,43 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         }
         refreshUsage()
     }
+    private func cancelQuotaReads() { quotaClients.values.forEach { $0.cancel() }; quotaClients.removeAll(); quotaFailures.removeAll() }
     private func updateUsage() {
         guard let chat = activeChat else { return }
-        let quota: AgentQuotaSnapshot?
-        if chat.provider == .codex {
-            quota = [quotaSnapshot, chat.quota].compactMap { $0 }.max { $0.observedAt < $1.observedAt }
-        } else { quota = chat.quota }
-        usageView.update(provider: chat.provider, context: chat.contextUsage, quota: quota,
-                         refreshing: chat.provider == .codex && quotaClient != nil, failed: chat.provider == .codex && quotaFailed)
+        let provider = chat.provider, polled = quotaSnapshots[provider]
+        var quota = [polled, chat.quota].compactMap { $0 }.max { $0.observedAt < $1.observedAt }
+        // Claude's stream often reports only a status; keep the polled windows unless it carries a number or a refusal.
+        if provider == .claude, let event = chat.quota, quota == event, let polled,
+           event.windows.allSatisfy({ $0.usedPercent == nil }), event.status != "rejected", event.status != "credits_required" { quota = polled }
+        usageView.update(provider: provider, context: chat.contextUsage, quota: quota,
+                         refreshing: quotaClients[provider] != nil, failed: quotaFailures.contains(provider))
     }
     private func refreshUsage(force: Bool = false) {
         activeChat?.refreshContextUsage(force: force)
-        guard activeChat?.provider == .codex, quotaClient == nil, force || Date().timeIntervalSince(lastQuotaAttempt) >= 60,
+        guard let provider = activeChat?.provider, quotaClients[provider] == nil,
+              force || Date().timeIntervalSince(lastQuotaAttempts[provider] ?? .distantPast) >= 60,
               force || window?.isVisible == true,
-              let project, let tools, let executable = tools["codex"] else { updateUsage(); return }
-        let client = CodexQuotaClient(); quotaClient = client; lastQuotaAttempt = Date(); quotaFailed = false; updateUsage()
+              let project, let tools, let executable = tools[provider.rawValue.lowercased()] else { updateUsage(); return }
+        let read: () throws -> AgentQuotaSnapshot?, client: AgentQuotaClient
+        switch provider {
+        case .codex: let codex = CodexQuotaClient(); client = codex; read = { try codex.read(executable: executable, environment: tools.environment, directory: project) }
+        case .claude: let claude = ClaudeQuotaClient(); client = claude; read = { try claude.read(executable: executable, environment: tools.environment, directory: project) }
+        }
+        quotaClients[provider] = client; lastQuotaAttempts[provider] = Date(); quotaFailures.remove(provider); updateUsage()
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let result = Result { try client.read(executable: executable, environment: tools.environment, directory: project) }
+            let result = Result { try read() }
             DispatchQueue.main.async {
-                guard let self, self.quotaClient === client else { return }
-                self.quotaClient = nil
+                guard let self, self.quotaClients[provider] === client else { return }
+                self.quotaClients[provider] = nil
                 switch result {
-                case .success(let snapshot): self.quotaSnapshot = snapshot; self.quotaFailed = false
-                case .failure: self.quotaFailed = true
+                case .success(let snapshot): self.quotaSnapshots[provider] = snapshot
+                case .failure: self.quotaFailures.insert(provider)
                 }
                 self.updateUsage()
             }
         }
     }
-    deinit { quotaTimer?.invalidate(); quotaClient?.cancel() }
+    deinit { quotaTimer?.invalidate(); quotaClients.values.forEach { $0.cancel() } }
     /// The conversation tab shows the start page until the first message.
     private func showChatOrEmpty() {
         guard let view = activeChat else { return }
@@ -645,8 +657,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         hint.stringValue = L10n.tr("会话已结束 · 点击标签重新启动")
     }
     func stopAll() {
-        quotaTimer?.invalidate(); quotaTimer = nil; quotaClient?.cancel(); quotaClient = nil
-        quotaSnapshot = nil; quotaFailed = false; project = nil; tools = nil
+        quotaTimer?.invalidate(); quotaTimer = nil; cancelQuotaReads()
+        quotaSnapshots.removeAll(); project = nil; tools = nil
         for terminal in terminals.values { terminal.processDelegate = nil; terminal.terminate() }
         terminals.removeAll(); chat.reset(); claudeChat.reset(); logView.string = ""
         attachedContext = nil; includeContext = true; setComposer(""); updateContextChip(); select("Agent")

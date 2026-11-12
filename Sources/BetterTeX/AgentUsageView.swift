@@ -1,18 +1,30 @@
 import AppKit
 import BetterTeXCore
 
-/// A compact remaining-quota bar, sharing the context row rather than adding another row.
+/// One quiet line above the composer: the remaining-quota label followed by a thin bar.
 final class QuotaUsageBar: NSButton {
+    private static let font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+    private static let barWidth: CGFloat = 44
     var remainingFraction: Double? { didSet { needsDisplay = true } }
+    override var title: String { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
     override init(frame: NSRect) {
         super.init(frame: frame); isBordered = false; setButtonType(.momentaryChange)
-        size(112, 28)
+        translatesAutoresizingMaskIntoConstraints = false
+        setContentCompressionResistancePriority(.init(400), for: .horizontal)
     }
     required init?(coder: NSCoder) { fatalError() }
     override var isFlipped: Bool { false }
+    private var textWidth: CGFloat { ceil((title as NSString).size(withAttributes: [.font: Self.font]).width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: textWidth + 7 + Self.barWidth, height: 18) }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
-        let trackRect = NSRect(x: 4, y: 3, width: bounds.width - 8, height: 4)
+        // The bar keeps its width; a narrow pane truncates the label instead.
+        let barX = max(0, bounds.width - Self.barWidth)
+        let style = NSMutableParagraphStyle(); style.lineBreakMode = .byTruncatingTail
+        let attributes: [NSAttributedString.Key: Any] = [.font: Self.font, .foregroundColor: Theme.muted, .paragraphStyle: style]
+        let height = ceil(Self.font.ascender - Self.font.descender)
+        (title as NSString).draw(in: NSRect(x: 0, y: (bounds.height - height) / 2, width: max(0, barX - 7), height: height), withAttributes: attributes)
+        let trackRect = NSRect(x: barX, y: bounds.midY - 2, width: Self.barWidth, height: 4)
         let track = NSBezierPath(roundedRect: trackRect, xRadius: 2, yRadius: 2)
         Theme.fill.setFill(); track.fill()
         if let fraction = remainingFraction {
@@ -31,44 +43,49 @@ final class QuotaUsageBar: NSButton {
             unknown.lineWidth = 1; unknown.setLineDash([2, 3], count: 2, phase: 0)
             Theme.muted.withAlphaComponent(0.35).setStroke(); unknown.stroke()
         }
-        let style = NSMutableParagraphStyle(); style.lineBreakMode = .byTruncatingTail
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium), .foregroundColor: Theme.muted, .paragraphStyle: style]
-        (title as NSString).draw(in: NSRect(x: 4, y: 11, width: bounds.width - 8, height: 13), withAttributes: attributes)
     }
 }
 
-/// A small, accessible ring in the existing composer context row.
+/// A small ring with the context percentage beside it, on the same line as the quota.
 final class ContextUsageRing: NSButton {
+    private static let font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+    private static let diameter: CGFloat = 12
     var usage: AgentContextUsage? { didSet { updateLabel(); needsDisplay = true } }
+    private var caption = ""
     override init(frame: NSRect) {
         super.init(frame: frame); isBordered = false; title = ""; setButtonType(.momentaryChange)
-        size(28, 28); updateLabel()
+        translatesAutoresizingMaskIntoConstraints = false
+        setContentCompressionResistancePriority(.required, for: .horizontal); updateLabel()
     }
     required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { false }
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: Self.diameter + 2 + 5 + ceil((caption as NSString).size(withAttributes: [.font: Self.font]).width), height: 18)
+    }
     private func updateLabel() {
-        let label = usage?.fraction.map { L10n.tr("上下文已用 \(Int(($0 * 100).rounded()))%") } ?? L10n.tr("上下文用量尚未获取")
-        toolTip = label; setAccessibilityLabel(label)
+        let percent = usage?.fraction.map { Int(($0 * 100).rounded()) }
+        let label = percent.map { L10n.tr("上下文已用 \($0)%") } ?? L10n.tr("上下文用量尚未获取")
+        caption = percent.map { L10n.tr("上下文 \($0)%") } ?? L10n.tr("上下文 —")
+        toolTip = label; setAccessibilityLabel(label); invalidateIntrinsicContentSize()
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
-        let rect = bounds.insetBy(dx: 3, dy: 3), track = NSBezierPath(ovalIn: rect)
-        track.lineWidth = 2.5; Theme.fill.setStroke(); track.stroke()
-        let fraction = usage?.fraction
-        if let fraction, fraction > 0 {
+        let rect = NSRect(x: 1, y: bounds.midY - Self.diameter / 2, width: Self.diameter, height: Self.diameter), track = NSBezierPath(ovalIn: rect)
+        track.lineWidth = 2; Theme.fill.setStroke(); track.stroke()
+        if let fraction = usage?.fraction, fraction > 0 {
             let arc = NSBezierPath()
-            arc.appendArc(withCenter: NSPoint(x: bounds.midX, y: bounds.midY), radius: rect.width / 2,
+            arc.appendArc(withCenter: NSPoint(x: rect.midX, y: rect.midY), radius: rect.width / 2,
                           startAngle: 90, endAngle: 90 - CGFloat(fraction) * 360, clockwise: true)
-            arc.lineWidth = 2.5; arc.lineCapStyle = .round
+            arc.lineWidth = 2; arc.lineCapStyle = .round
             (fraction >= 0.9 ? Theme.red : fraction >= 0.75 ? Theme.orange : Theme.accent).setStroke(); arc.stroke()
         }
-        let value = fraction.map { String(Int(($0 * 100).rounded())) } ?? "—"
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .medium), .foregroundColor: Theme.muted]
-        let size = (value as NSString).size(withAttributes: attributes)
-        (value as NSString).draw(at: NSPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2), withAttributes: attributes)
+        let attributes: [NSAttributedString.Key: Any] = [.font: Self.font, .foregroundColor: Theme.muted]
+        let size = (caption as NSString).size(withAttributes: attributes)
+        (caption as NSString).draw(at: NSPoint(x: rect.maxX + 6, y: bounds.midY - size.height / 2), withAttributes: attributes)
     }
 }
 
-/// Quota remaining and context used stay distinct; details appear only on demand.
+/// A slim strip above the composer card. Quota remaining and context used stay distinct; details appear only on demand.
 final class AgentUsageView: NSStackView {
     let ring = ContextUsageRing(frame: .zero)
     let quotaButton = QuotaUsageBar(frame: .zero)
@@ -81,8 +98,10 @@ final class AgentUsageView: NSStackView {
         super.init(frame: frame); orientation = .horizontal; alignment = .centerY; spacing = 6
         quotaButton.target = self; quotaButton.action = #selector(quotaClicked)
         ring.target = self; ring.action = #selector(ringClicked)
-        addArrangedSubview(quotaButton); addArrangedSubview(ring)
-        setContentCompressionResistancePriority(.required, for: .horizontal)
+        // Quota leads, context trails; the strip lines up with the composer card's text inset.
+        let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        addArrangedSubview(quotaButton); addArrangedSubview(spacer); addArrangedSubview(ring)
+        edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 10)
         update(provider: .codex, context: nil, quota: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -134,12 +153,9 @@ final class AgentUsageView: NSStackView {
             row(L10n.tr("更新于 \(Self.date(quota.observedAt))"))
         } else { row(L10n.tr("额度尚未获取")) }
         if failed { row(L10n.tr("额度刷新失败，稍后重试")) }
-        if provider == .claude { row(L10n.tr("Claude 在会话响应中更新用量；未上报的额度无法显示")) }
-        else {
-            menu.addItem(.separator())
-            let refresh = ClosureMenuItem(refreshing ? L10n.tr("额度刷新中…") : L10n.tr("刷新用量")) { [weak self] in self?.onRefresh?() }
-            refresh.isEnabled = !refreshing; menu.addItem(refresh)
-        }
+        menu.addItem(.separator())
+        let refresh = ClosureMenuItem(refreshing ? L10n.tr("额度刷新中…") : L10n.tr("刷新用量")) { [weak self] in self?.onRefresh?() }
+        refresh.isEnabled = !refreshing; menu.addItem(refresh)
         return menu
     }
     private static func date(_ date: Date) -> String {

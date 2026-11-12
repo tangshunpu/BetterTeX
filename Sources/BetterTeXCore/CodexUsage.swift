@@ -1,8 +1,9 @@
 import Foundation
 import Darwin
 
-/// A short-lived, read-only app-server connection. The app never reads credentials or starts model turns.
-public final class CodexQuotaClient: @unchecked Sendable {
+/// A short-lived, read-only connection to a local agent CLI speaking JSON lines over stdio.
+/// The app never reads credentials or starts model turns.
+public class AgentQuotaClient: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
     private var cancelled = false
@@ -11,9 +12,11 @@ public final class CodexQuotaClient: @unchecked Sendable {
         lock.lock(); cancelled = true; let child = process; lock.unlock()
         if let child, child.isRunning { child.terminate() }
     }
-    public func read(executable: String, environment: [String: String], directory: URL, timeout: TimeInterval = 12) throws -> AgentQuotaSnapshot? {
+    /// Sends `opening`, then hands each reply to `handle` until it returns a snapshot (or `.some(nil)` for "no quota applies").
+    func exchange(executable: String, arguments: [String], environment: [String: String], directory: URL, timeout: TimeInterval,
+                  opening: [[String: Any]], handle: ([String: Any], ([String: Any]) throws -> Void) throws -> AgentQuotaSnapshot??) throws -> AgentQuotaSnapshot? {
         let child = Process(), input = Pipe(), output = Pipe()
-        child.executableURL = URL(fileURLWithPath: executable); child.arguments = ["app-server", "--listen", "stdio://"]
+        child.executableURL = URL(fileURLWithPath: executable); child.arguments = arguments
         child.environment = environment; child.currentDirectoryURL = directory
         child.standardInput = input; child.standardOutput = output; child.standardError = FileHandle.nullDevice
         lock.lock()
@@ -36,8 +39,8 @@ public final class CodexQuotaClient: @unchecked Sendable {
             var data = try JSONSerialization.data(withJSONObject: message); data.append(10)
             try input.fileHandleForWriting.write(contentsOf: data)
         }
-        try send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "bettertex", "title": "BetterTeX", "version": "1.0"], "capabilities": ["explicitGatewayOauth": true]]])
-        var pending = Data(), requested = false
+        for message in opening { try send(message) }
+        var pending = Data()
         while true {
             let chunk = output.fileHandleForReading.availableData
             if chunk.isEmpty { break }
@@ -46,18 +49,47 @@ public final class CodexQuotaClient: @unchecked Sendable {
             while let newline = pending.firstIndex(of: 10) {
                 let line = pending[..<newline]; pending.removeSubrange(...newline)
                 guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { continue }
-                let id = integer(object["id"])
-                if id == 1, !requested {
-                    guard object["error"] == nil else { throw BetterTeXError.message(L10n.tr("无法读取 Agent 额度")) }
-                    try send(["method": "initialized"])
-                    try send(["id": 2, "method": "account/rateLimits/read"]); requested = true
-                } else if id == 2 {
-                    guard object["error"] == nil else { throw BetterTeXError.message(L10n.tr("无法读取 Agent 额度")) }
-                    return AgentQuotaSnapshot.codex(object)
-                }
+                if let result = try handle(object, send) { return result }
             }
         }
         throw BetterTeXError.message(L10n.tr("无法读取 Agent 额度"))
+    }
+}
+
+/// `codex app-server`: initialize/initialized, then only `account/rateLimits/read`.
+public final class CodexQuotaClient: AgentQuotaClient, @unchecked Sendable {
+    public func read(executable: String, environment: [String: String], directory: URL, timeout: TimeInterval = 12) throws -> AgentQuotaSnapshot? {
+        var requested = false
+        let hello: [String: Any] = ["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "bettertex", "title": "BetterTeX", "version": "1.0"], "capabilities": ["explicitGatewayOauth": true]]]
+        return try exchange(executable: executable, arguments: ["app-server", "--listen", "stdio://"], environment: environment, directory: directory, timeout: timeout, opening: [hello]) { object, send in
+            let id = integer(object["id"])
+            if id == 1, !requested {
+                guard object["error"] == nil else { throw BetterTeXError.message(L10n.tr("无法读取 Agent 额度")) }
+                try send(["method": "initialized"])
+                try send(["id": 2, "method": "account/rateLimits/read"]); requested = true
+            } else if id == 2 {
+                guard object["error"] == nil else { throw BetterTeXError.message(L10n.tr("无法读取 Agent 额度")) }
+                return .some(AgentQuotaSnapshot.codex(object))
+            }
+            return nil
+        }
+    }
+}
+
+/// `claude -p` in stream-json mode answers the `get_usage` control request (the data behind `/usage`)
+/// without a prompt, so no model turn starts. Returns nil when plan limits do not apply (API key, Bedrock…).
+public final class ClaudeQuotaClient: AgentQuotaClient, @unchecked Sendable {
+    public func read(executable: String, environment: [String: String], directory: URL, timeout: TimeInterval = 20) throws -> AgentQuotaSnapshot? {
+        let request: [String: Any] = ["type": "control_request", "request_id": "usage", "request": ["subtype": "get_usage", "skip_behaviors": true]]
+        return try exchange(executable: executable, arguments: ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands"],
+                            environment: environment, directory: directory, timeout: timeout, opening: [request]) { object, _ in
+            guard object["type"] as? String == "control_response", let response = object["response"] as? [String: Any],
+                  response["request_id"] as? String == "usage" else { return nil }
+            guard response["subtype"] as? String == "success", let usage = response["response"] as? [String: Any] else {
+                throw BetterTeXError.message(L10n.tr("无法读取 Agent 额度"))
+            }
+            return .some(AgentQuotaSnapshot.claudeUsage(usage))
+        }
     }
 }
 

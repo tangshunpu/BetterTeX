@@ -622,6 +622,8 @@
 "使用额度" = "Usage limit";
 "无法读取 Agent 额度" = "Could not read agent quota";
 "上下文已用 %1$@%%" = "Context %1$@%% used";
+"上下文 %1$@%%" = "Context %1$@%%";
+"上下文 —" = "Context —";
 "上下文用量尚未获取" = "Context usage not yet available";
 "额度剩余 %1$@%%" = "Quota %1$@%% left";
 "额度受限" = "Quota limited";
@@ -641,5 +643,4 @@
 "额度尚未获取" = "Quota not yet available";
 "额度接近上限" = "Approaching quota limit";
 "额度刷新失败，稍后重试" = "Quota refresh failed; try again later";
-"Claude 在会话响应中更新用量；未上报的额度无法显示" = "Claude updates usage with responses; unreported limits are unavailable";
 "刷新用量" = "Refresh Usage";
