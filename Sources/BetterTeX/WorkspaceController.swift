@@ -574,6 +574,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         setStatus(L10n.tr("正在编译…"))
         let token = generation; let compiler = compiler
         ui.terminal.append("\n── \(Date().formatted(date: .omitted, time: .standard)) · Build \(source.lastPathComponent) ──\n")
+        // TeX prints line by line; posting every chunk would flood the main queue and stall typing.
+        let output = BuildOutput { [weak self] text in if self?.generation == token { self?.ui.terminal.append(text) } }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let snapshot = SourceSnapshot.capture(directory: project)
             let result = Result { try compiler.build(active: source, project: project, selected: selected, tools: tools, onStage: { stage in
@@ -581,26 +583,33 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
                     guard let self, self.generation == token, self.building else { return }
                     self.ui.setBuildStage(stage); self.setStatus(L10n.tr("正在编译 · \(stage.title)"))
                 }
-            }, onOutput: { text in
-                DispatchQueue.main.async { [weak self] in if self?.generation == token { self?.ui.terminal.append(text) } }
-            }) }
+            }, onOutput: output.append) }
+            output.flush()
+            // Parsing the log and the PDF takes long enough on big documents to be felt while typing.
+            let report = (try? result.get()).map { build in
+                (diagnostics: build.diagnostics, warnings: TeXWarning.parse(build.log), messages: TeXWarning.messages(build.log),
+                 pdf: build.succeeded ? PDFPane.prepare(build.pdf) : nil)
+            }
             DispatchQueue.main.async {
                 guard let self, self.generation == token else { return }
                 self.building = false; self.ui.setBuilding(false)
                 switch result {
                 case .success(let build):
+                    let report = report!
                     self.compiledRoot = build.root; self.lastBuildSeconds = build.seconds
-                    self.buildErrors = build.succeeded ? [] : build.diagnostics; self.buildWarnings = TeXWarning.parse(build.log); self.refreshProblems()
-                    self.buildWarningMessages = TeXWarning.messages(build.log)
-                    self.ui.setDiagnostics(errors: build.succeeded ? 0 : max(1, build.diagnostics.count), warnings: self.buildWarningMessages.count)
+                    self.buildErrors = build.succeeded ? [] : report.diagnostics; self.buildWarnings = report.warnings; self.refreshProblems()
+                    self.buildWarningMessages = report.messages
+                    self.ui.setDiagnostics(errors: build.succeeded ? 0 : max(1, report.diagnostics.count), warnings: self.buildWarningMessages.count)
                     if build.succeeded {
                         for (url, balance) in balances { self.settledBalance[url] = balance }
-                        self.compiledPDF = build.pdf; self.compiledSnapshot = snapshot; self.ui.preview.load(build.pdf); self.ui.activity = .idle
+                        self.compiledPDF = build.pdf; self.compiledSnapshot = snapshot
+                        if let pdf = report.pdf { self.ui.preview.show(pdf.data, document: pdf.document) } else { self.ui.preview.load(build.pdf) }
+                        self.ui.activity = .idle
                         self.setStatus(String(format: L10n.tr("编译完成 · %@ · %.1f s"), build.engine.rawValue, build.seconds))
                     } else {
                         // A failed automatic build marks the errors in place; only an explicit build opens the log.
                         self.setStatus(L10n.tr("编译失败 · 保留上次预览")); self.ui.activity = .failed; if !automatic { self.ui.showOutput() }
-                        if let first = build.diagnostics.first { self.ui.terminal.append(L10n.tr("\n错误：\(first.message)\n双击上方文件:行号可定位源码。\n")) }
+                        if let first = report.diagnostics.first { self.ui.terminal.append(L10n.tr("\n错误：\(first.message)\n双击上方文件:行号可定位源码。\n")) }
                     }
                 case .failure(let error): self.setStatus(error.localizedDescription); self.ui.activity = .failed; self.ui.terminal.append("\n\(error.localizedDescription)\n"); if !automatic { self.ui.showOutput() }
                 }
@@ -992,4 +1001,23 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         return true
     }
     func shutdown() { overleaf.shutdown(); saveJob?.cancel(); compileJob?.cancel(); compiler.runner.cancel(); ui.terminal.stopAll(); watcher.stop() }
+}
+
+/// Collects build output from the compiler's thread and hands it to the main thread in batches.
+final class BuildOutput: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending = ""
+    private var scheduled = false
+    private let deliver: (String) -> Void
+    init(deliver: @escaping (String) -> Void) { self.deliver = deliver }
+    func append(_ text: String) {
+        lock.lock(); pending += text; let schedule = !scheduled; scheduled = true; lock.unlock()
+        if schedule { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [self] in drain() } }
+    }
+    /// Delivers what is left; the compiler calls this once its programs have exited.
+    func flush() { DispatchQueue.main.async { [self] in drain() } }
+    private func drain() {
+        lock.lock(); let text = pending; pending = ""; scheduled = false; lock.unlock()
+        if !text.isEmpty { deliver(text) }
+    }
 }

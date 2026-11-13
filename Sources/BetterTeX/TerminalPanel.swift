@@ -210,6 +210,8 @@ final class TerminalPanel: Surface, LocalProcessTerminalViewDelegate, NSTextView
         logView.isEditable = false; logView.isSelectable = true; logView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         logView.textContainerInset = NSSize(width: 12, height: 10); logView.autoresizingMask = [.width]
         logView.isVerticallyResizable = true; logView.textContainer?.widthTracksTextView = true
+        // Builds append to a long log; laying out only what is visible keeps scrolling to the end cheap.
+        logView.layoutManager?.allowsNonContiguousLayout = true
         logScroll.hasVerticalScroller = true; logScroll.autohidesScrollers = true; logScroll.documentView = logView; logScroll.drawsBackground = false
         let gesture = NSClickGestureRecognizer(target: self, action: #selector(logClicked(_:))); gesture.numberOfClicksRequired = 2; logView.addGestureRecognizer(gesture)
         buildEmptyState()

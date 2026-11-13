@@ -497,9 +497,18 @@ final class PDFPane: Surface {
     func load(_ url: URL) {
         // Read bytes so PDFKit cannot keep a mapped file alive while TeX rewrites it.
         guard let data = try? Data(contentsOf: url) else { return }
+        show(data, document: nil)
+    }
+    /// Reads and parses a PDF; large documents take a while, so callers run this off the main thread.
+    nonisolated static func prepare(_ url: URL) -> (data: Data, document: PDFDocument)? {
+        guard let data = try? Data(contentsOf: url), let document = PDFDocument(data: data) else { return nil }
+        return (data, document)
+    }
+    /// Shows a PDF's bytes, using `document` when it was already parsed from them.
+    func show(_ data: Data, document parsed: PDFDocument?) {
         // An unchanged PDF keeps its rendered pages; replacing the document would only make it blink.
         if data == loadedData, pdfView.document != nil { return }
-        guard let document = PDFDocument(data: data) else { return }
+        guard let document = parsed ?? PDFDocument(data: data) else { return }
         loadedData = data
         let oldPage = pdfView.currentPage.flatMap { pdfView.document?.index(for: $0) } ?? 0
         let oldDestination = pdfView.currentDestination
