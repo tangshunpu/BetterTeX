@@ -20,7 +20,7 @@ final class EditorContextMenuTests: XCTestCase {
         text.onAttachContext = { attachment = $0 }; text.onProofread = { _ in }
         let menu = text.editingMenu(at: selected.location + 1)
         XCTAssertEqual(text.selectedRange(), selected)
-        XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title), [L10n.tr("加入 Agent 上下文"), L10n.tr("校对选中文字"), L10n.tr("插入"), L10n.tr("剪切"), L10n.tr("复制"), L10n.tr("粘贴"), L10n.tr("全选")])
+        XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title), [L10n.tr("加入 Agent 上下文"), L10n.tr("校对选中文字"), L10n.tr("插入"), L10n.tr("剪切"), L10n.tr("复制"), L10n.tr("粘贴"), L10n.tr("全选"), L10n.tr("切换注释")])
         // The action uses the snapshot made when the menu opened.
         text.setSelectedRange(NSRange(location: 0, length: 0))
         try invoke(try XCTUnwrap(menu.items.first))
@@ -44,7 +44,12 @@ final class EditorContextMenuTests: XCTestCase {
         text.onAttachContext = { _ in }; text.onProofread = { _ in }; text.onInsertSnippet = { _ in }
         let menu = text.editingMenu(at: 8)
         XCTAssertEqual(text.selectedRange(), NSRange(location: 8, length: 0))
-        XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.count, 5)
+        XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.count, 6)
+        try invoke(try XCTUnwrap(menu.items.first { $0.title == L10n.tr("切换注释") }))
+        XCTAssertEqual(text.string, "% one two three")
+        XCTAssertEqual(text.selectedRange(), NSRange(location: 10, length: 0))
+        try invoke(try XCTUnwrap(text.editingMenu(at: 10).items.first { $0.title == L10n.tr("切换注释") }))
+        XCTAssertEqual(text.string, "one two three")
         XCTAssertFalse(try XCTUnwrap(menu.items.first { $0.title == L10n.tr("复制") }).isEnabled)
         text.isEditable = false
         XCTAssertNil(text.editingMenu(at: 8).items.first { $0.submenu != nil })

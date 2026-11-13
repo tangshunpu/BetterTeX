@@ -116,6 +116,8 @@ final class CodeTextView: NSTextView {
         let canPaste = NSPasteboard.general.availableType(from: [.string, .fileURL, .png, .tiff]) != nil
         edit(L10n.tr("粘贴"), #selector(paste(_:)), "v", enabled: isEditable && canPaste)
         edit(L10n.tr("全选"), #selector(selectAll(_:)), "a", enabled: !string.isEmpty)
+        menu.addItem(.separator())
+        edit(L10n.tr("切换注释"), #selector(toggleComment(_:)), "/", enabled: isEditable)
         return menu
     }
     // MARK: Grammar
@@ -178,6 +180,17 @@ final class CodeTextView: NSTextView {
         if isEditable, pasteboard.string(forType: .string) == nil, let onPasteImage,
            let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff).flatMap({ NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) }) { onPasteImage(data); return }
         super.paste(sender)
+    }
+    /// Comments or uncomments the selected lines with `%` (⌘/); undoable as one edit.
+    @objc func toggleComment(_ sender: Any?) {
+        guard isEditable else { return }
+        let edit = LineComment.toggle(in: string, selection: selectedRange())
+        insertText(edit.replacement, replacementRange: edit.range)
+        setSelectedRange(edit.selection); scrollRangeToVisible(edit.selection)
+    }
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleComment(_:)) { return isEditable }
+        return super.validateMenuItem(menuItem)
     }
     /// Wraps the selection (or a selected placeholder) in a snippet; undoable as one edit.
     func insertSnippet(before: String, after: String, placeholder: String, block: Bool) {
