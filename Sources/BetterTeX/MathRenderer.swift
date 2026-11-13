@@ -11,22 +11,29 @@ final class MathRenderer {
     /// TeX sets math at 10pt; chat text is 13pt.
     static let scale: CGFloat = 1.3
     private var cache: [String: State] = [:]
-    private var waiting: [String: [() -> Void]] = [:]
+    /// Formula key → the requests still waiting on it.
+    private var waiting: [String: [Int]] = [:]
+    /// Request → its callback and how many of its formulas are still being typeset.
+    private var pending: [Int: (left: Int, done: () -> Void)] = [:]
+    private var nextRequest = 0
     private let queue = DispatchQueue(label: "dev.bettertex.math", qos: .userInitiated)
 
     private static func key(_ tex: String, _ display: Bool) -> String { (display ? "D:" : "I:") + tex }
     func state(_ tex: String, display: Bool) -> State? { cache[Self.key(tex, display)] }
 
-    /// Typesets the formulas not seen yet and calls `done` on the main thread when they are ready.
+    /// Typesets the formulas not seen yet and calls `done` on the main thread, once, when all of
+    /// them are ready.
     func request(_ formulas: [(tex: String, display: Bool)], done: @escaping () -> Void) {
         guard let tools else { return }
-        var fresh: [(tex: String, display: Bool)] = []
+        let id = nextRequest; nextRequest += 1
+        var fresh: [(tex: String, display: Bool)] = [], keys = Set<String>()
         for formula in formulas {
             let key = Self.key(formula.tex, formula.display)
-            guard cache[key] == nil else { continue }
+            guard cache[key] == nil, keys.insert(key).inserted else { continue }
             if waiting[key] == nil { fresh.append(formula) }
-            waiting[key, default: []].append(done)
+            waiting[key, default: []].append(id)
         }
+        if !keys.isEmpty { pending[id] = (keys.count, done) }
         guard !fresh.isEmpty else { return }
         queue.async { [weak self] in
             let results = (try? MathTypesetter.render(fresh, tools: tools)) ?? fresh.map { _ in nil }
@@ -39,7 +46,12 @@ final class MathRenderer {
                 var callbacks: [() -> Void] = []
                 for (formula, state) in zip(fresh, images) {
                     let key = Self.key(formula.tex, formula.display)
-                    self.cache[key] = state; callbacks += self.waiting.removeValue(forKey: key) ?? []
+                    self.cache[key] = state
+                    for id in self.waiting.removeValue(forKey: key) ?? [] {
+                        guard var entry = self.pending[id] else { continue }
+                        entry.left -= 1
+                        if entry.left > 0 { self.pending[id] = entry } else { self.pending[id] = nil; callbacks.append(entry.done) }
+                    }
                 }
                 callbacks.forEach { $0() }
             }

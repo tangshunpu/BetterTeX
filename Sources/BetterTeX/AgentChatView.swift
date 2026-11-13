@@ -55,6 +55,8 @@ final class AgentChatView: NSView {
     /// The row being built, and rows whose formulas are still being typeset.
     private var building: String?
     private var mathWaiting = Set<String>()
+    /// A rebuild of the waiting rows is queued; further typeset callbacks fold into it.
+    private var mathScheduled = false
     // A finished turn folds its steps behind a "Worked for …" line and lists the files it changed.
     private var turnIndex = 0
     private var turnOf: [String: Int] = [:]
@@ -493,7 +495,7 @@ final class AgentChatView: NSView {
         }
         if !missing.isEmpty, renderer.tools != nil, let key = building {
             mathWaiting.insert(key)
-            renderer.request(missing) { [weak self] in self?.mathReady() }
+            renderer.request(missing) { [weak self] in self?.scheduleMathReady() }
         }
         return linked(text)
     }
@@ -704,12 +706,23 @@ final class AgentChatView: NSView {
     // MARK: Collapsible tool rows
     /// Tool calls start folded to a single line; failures open so the error is in view.
     private func isOpen(_ key: String, default value: Bool = false) -> Bool { disclosed[key] ?? value }
+    /// Many typeset batches can finish in one main-queue pass; rebuild the waiting rows once after them.
+    private func scheduleMathReady() {
+        guard !mathScheduled else { return }
+        mathScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.mathScheduled = false; self.mathReady()
+        }
+    }
     /// Rebuilds the rows that were waiting for typeset formulas.
     private func mathReady() {
         let keys = mathWaiting; mathWaiting.removeAll()
         for key in keys {
-            if groupMembers[key] != nil { building = key; place(key, groupRow(key)); building = nil }
-            else if let entry = entries[key] { append(key, entry) }
+            autoreleasepool {
+                if groupMembers[key] != nil { building = key; place(key, groupRow(key)); building = nil }
+                else if let entry = entries[key] { append(key, entry) }
+            }
         }
     }
     private func toggle(_ key: String, from open: Bool) {
