@@ -157,6 +157,10 @@ final class PDFPane: Surface {
     private let pageChip = Chip(fill: Theme.adaptive(0xFFFFFF, 0x3A3A3C, lightAlpha: 0.9, darkAlpha: 0.88), radius: -1, border: Theme.line)
     private let pageLabel = Theme.label("", size: 12, color: Theme.soft)
     private var highlights: [(annotation: PDFAnnotation, page: PDFPage)] = []
+    /// ⌘F over the pages. Its matches live here because extensions cannot store them.
+    let findBar = PDFFindBar()
+    var findMatches: [PDFSelection] = []
+    var findIndex: Int?
     /// Comparable text of each page of the loaded document, built on first use.
     private var pageStreams: [Int: TextStream] = [:]
     /// The text most recently marked by `reveal`, kept for tests and accessibility.
@@ -213,7 +217,16 @@ final class PDFPane: Surface {
         grid.onEscape = { [weak self] in guard let self else { return }; self.leaveGrid(at: self.grid.currentPage) }
         // Jumping to the source needs the editor, so it ends reading mode.
         pdfView.onCommandClick = { [weak self] in guard let self, self.readingMode else { return }; self.onReadingMode?(false) }
-        pdfView.onEscape = { [weak self] in guard let self, self.readingMode else { return }; self.onReadingMode?(false) }
+        pdfView.onEscape = { [weak self] in
+            guard let self else { return }
+            if self.findVisible { self.closeFind() } else if self.readingMode { self.onReadingMode?(false) }
+        }
+        findBar.isHidden = true
+        findBar.onQuery = { [weak self] _ in self?.runFind(scroll: true) }
+        findBar.onNext = { [weak self] in self?.findNext() }
+        findBar.onPrevious = { [weak self] in self?.findPrevious() }
+        findBar.onClose = { [weak self] in self?.closeFind() }
+        findBar.onCaseSensitive = { [weak self] _ in self?.runFind(scroll: true) }
         state = .none
 
         pdfView.autoScales = false; pdfView.displayMode = .singlePageContinuous; pdfView.displaysPageBreaks = true; pdfView.pageBreakMargins = NSEdgeInsets(top: 28, left: 28, bottom: 28, right: 28)
@@ -236,14 +249,18 @@ final class PDFPane: Surface {
         pageLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         pageChip.size(nil, 26); pageChip.pinRow(pageLabel, leading: 12, trailing: 12); pageChip.isHidden = true
         grid.isHidden = true
-        for view in [header, pdfView, grid, empty, pageChip, progressBar] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        for view in [header, pdfView, grid, empty, pageChip, progressBar, findBar] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: topAnchor), header.leadingAnchor.constraint(equalTo: leadingAnchor), header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), header.heightAnchor.constraint(equalToConstant: 46),
             pdfView.topAnchor.constraint(equalTo: header.bottomAnchor), pdfView.leadingAnchor.constraint(equalTo: leadingAnchor), pdfView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), pdfView.bottomAnchor.constraint(equalTo: bottomAnchor),
             grid.topAnchor.constraint(equalTo: header.bottomAnchor), grid.leadingAnchor.constraint(equalTo: leadingAnchor), grid.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), grid.bottomAnchor.constraint(equalTo: bottomAnchor),
             empty.centerXAnchor.constraint(equalTo: centerXAnchor), empty.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 23),
             progressBar.topAnchor.constraint(equalTo: header.bottomAnchor), progressBar.leadingAnchor.constraint(equalTo: leadingAnchor), progressBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1), progressBar.heightAnchor.constraint(equalToConstant: 2),
-            pageChip.centerXAnchor.constraint(equalTo: centerXAnchor), pageChip.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16)
+            pageChip.centerXAnchor.constraint(equalTo: centerXAnchor), pageChip.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
+            findBar.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10), findBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -15),
+            findBar.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 14), {
+                let width = findBar.widthAnchor.constraint(equalToConstant: 360); width.priority = .init(700); return width
+            }()
         ])
         NotificationCenter.default.addObserver(self, selector: #selector(pageChanged), name: .PDFViewPageChanged, object: pdfView)
         NotificationCenter.default.addObserver(self, selector: #selector(scaleChanged), name: .PDFViewScaleChanged, object: pdfView)
@@ -522,8 +539,10 @@ final class PDFPane: Surface {
         if zoomMode == .manual { pdfView.scaleFactor = scale } else { applyZoom() }
         if gridVisible { grid.document = document; grid.currentPage = min(grid.currentPage, max(0, document.pageCount - 1)) }
         pageChanged(); scaleChanged()
+        // A rebuilt PDF keeps the search open; its matches move with the text but the view stays put.
+        if findVisible { runFind(scroll: false) }
     }
-    func clear() { hideGrid(); grid.document = nil; pageStreams = [:]; highlights = []; loadedData = nil; pdfView.document = nil; empty.isHidden = false; pageChip.isHidden = true; state = .none }
+    func clear() { closeFind(); hideGrid(); grid.document = nil; pageStreams = [:]; highlights = []; loadedData = nil; pdfView.document = nil; empty.isHidden = false; pageChip.isHidden = true; state = .none }
     @objc func pageChanged() {
         guard let doc = pdfView.document, let page = pdfView.currentPage else { return }
         pageLabel.stringValue = L10n.tr("第 \(doc.index(for: page) + 1) 页，共 \(doc.pageCount) 页"); pageChip.isHidden = gridVisible

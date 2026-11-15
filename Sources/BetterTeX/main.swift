@@ -64,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(file, L10n.tr("所有项目"), #selector(closeProject), "p", modifiers: [.command, .shift]); add(file, L10n.tr("打开文件夹…"), #selector(open), "o", modifiers: [.command, .shift]); add(file, L10n.tr("新建文件…"), #selector(newFile), "n"); add(file, L10n.tr("保存全部"), #selector(save), "s"); add(file, L10n.tr("关闭标签"), #selector(closeTab), "w"); add(file, L10n.tr("关闭项目"), #selector(closeProject)); add(file, L10n.tr("关闭窗口"), #selector(NSWindow.performClose(_:)), "w", modifiers: [.command, .shift])
         let edit = submenu(L10n.tr("编辑"))
         add(edit, L10n.tr("撤销"), Selector(("undo:")), "z"); add(edit, L10n.tr("重做"), Selector(("redo:")), "z", modifiers: [.command, .shift]); edit.addItem(.separator())
-        add(edit, L10n.tr("剪切"), #selector(NSText.cut(_:)), "x"); add(edit, L10n.tr("复制"), #selector(NSText.copy(_:)), "c"); add(edit, L10n.tr("粘贴"), #selector(NSText.paste(_:)), "v"); add(edit, L10n.tr("全选"), #selector(NSText.selectAll(_:)), "a"); add(edit, L10n.tr("查找…"), #selector(find), "f"); edit.addItem(.separator()); add(edit, L10n.tr("切换注释"), #selector(CodeTextView.toggleComment(_:)), "/")
+        add(edit, L10n.tr("剪切"), #selector(NSText.cut(_:)), "x"); add(edit, L10n.tr("复制"), #selector(NSText.copy(_:)), "c"); add(edit, L10n.tr("粘贴"), #selector(NSText.paste(_:)), "v"); add(edit, L10n.tr("全选"), #selector(NSText.selectAll(_:)), "a"); add(edit, L10n.tr("查找…"), #selector(find), "f"); add(edit, L10n.tr("查找下一个"), #selector(findNext), "g"); add(edit, L10n.tr("查找上一个"), #selector(findPrevious), "g", modifiers: [.command, .shift]); edit.addItem(.separator()); add(edit, L10n.tr("切换注释"), #selector(CodeTextView.toggleComment(_:)), "/")
         let insert = submenu(L10n.tr("插入"))
         let shortcuts: [Snippet: (String, NSEvent.ModifierFlags)] = [.image: ("i", [.command, .shift]), .itemize: ("l", [.command, .shift]), .equation: ("m", [.command, .shift]), .bold: ("b", .command), .italic: ("i", .command)]
         for snippet in Snippet.allCases {
@@ -106,7 +106,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func resetLayout() { workspace.ui.resetLayout() }
     @objc func showTools() { workspace.showTools() }
     @objc func detectTools() { workspace.detectTools() }
-    @objc func find() { let item = NSMenuItem(); item.tag = NSTextFinder.Action.showFindInterface.rawValue; workspace.window.makeFirstResponder(workspace.ui.editor.textView); workspace.ui.editor.textView.performFindPanelAction(item) }
+    /// ⌘F searches the PDF when the pointer is over it (or focus is in it, or the editor is hidden), the source otherwise.
+    private var findTargetsPDF: Bool {
+        let pdf = workspace.ui.preview
+        guard pdf.pdfView.document != nil, !pdf.isHiddenOrHasHiddenAncestor else { return false }
+        return pdf.ownsFind() || workspace.ui.editor.textView.isHiddenOrHasHiddenAncestor
+    }
+    @objc func find() {
+        if findTargetsPDF { workspace.ui.preview.showFind(); return }
+        editorFind(.showFindInterface)
+    }
+    @objc func findNext() { if findTargetsPDF { workspace.ui.preview.findNext() } else { editorFind(.nextMatch) } }
+    @objc func findPrevious() { if findTargetsPDF { workspace.ui.preview.findPrevious() } else { editorFind(.previousMatch) } }
+    private func editorFind(_ action: NSTextFinder.Action) {
+        let item = NSMenuItem(); item.tag = action.rawValue
+        workspace.window.makeFirstResponder(workspace.ui.editor.textView); workspace.ui.editor.textView.performFindPanelAction(item)
+    }
     @objc func about() { NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "BetterTeX", .applicationVersion: ReleaseVersion.installed(), .credits: NSAttributedString(string: "A quiet workspace for your next idea.\nNative LaTeX editor · PDFKit · SwiftTerm")]) }
 }
 
